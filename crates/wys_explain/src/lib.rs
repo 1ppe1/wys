@@ -130,7 +130,7 @@ pub fn explain_file(fe: &Frontend) -> Option<String> {
     let report = FileReport {
         schema_version: SCHEMA_VERSION,
         kind: "file",
-        file: fe.file.file_name(0),
+        file: &fe.file.entry().name,
         functions: tc
             .sigs
             .iter()
@@ -185,7 +185,7 @@ fn function_json<'a>(
     let arc = program
         .funcs
         .iter()
-        .filter(|f| is_instance_of(&f.name, &sig.name))
+        .filter(|f| is_instance_of(&f.name, &sig.name, !sig.type_params.is_empty()))
         .map(|f| instance_json(f, &info.locals))
         .collect();
     FunctionJson {
@@ -206,13 +206,15 @@ fn function_json<'a>(
     }
 }
 
-/// IR の関数 `ir_name` が、ソースの関数 `name` のインスタンスか（Generic 関数は `name__N`）。
-fn is_instance_of(ir_name: &str, name: &str) -> bool {
+/// IR の関数 `ir_name` が、ソースの関数 `name` のインスタンスか。Generic 関数のインスタンスは `name__N`。
+/// Generic でない関数は名前の完全一致だけ（ユーザーが `f__1` という関数を定義していても `f` に数えない）。
+fn is_instance_of(ir_name: &str, name: &str, generic: bool) -> bool {
     ir_name == name
-        || ir_name
-            .strip_prefix(name)
-            .and_then(|rest| rest.strip_prefix("__"))
-            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+        || generic
+            && ir_name
+                .strip_prefix(name)
+                .and_then(|rest| rest.strip_prefix("__"))
+                .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn instance_json<'a>(
@@ -429,10 +431,11 @@ mod tests {
 
     #[test]
     fn instance_names_match_only_numeric_suffixes() {
-        assert!(is_instance_of("f", "f"));
-        assert!(is_instance_of("f__3", "f"));
-        assert!(!is_instance_of("f__x", "f"));
-        assert!(!is_instance_of("ff", "f"));
+        assert!(is_instance_of("f", "f", false));
+        assert!(is_instance_of("f__3", "f", true));
+        assert!(!is_instance_of("f__3", "f", false));
+        assert!(!is_instance_of("f__x", "f", true));
+        assert!(!is_instance_of("ff", "f", true));
     }
 
     #[test]
