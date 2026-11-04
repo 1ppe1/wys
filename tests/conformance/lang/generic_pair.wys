@@ -1,0 +1,15 @@
+# Generic なレコード型と、それを受け取る Generic 関数
+# expect-stdout: x
+# expect-stdout: 2
+# expect-stdout: 10
+type Pair[A, B] = {first: A, second: B}
+
+def swap[A, B](p: Pair[A, B]) -> Pair[B, A]:
+    return Pair(first=p.second, second=p.first)
+
+def main() -> None:
+    q = swap(Pair(first=1, second="x"))
+    print(q.first)
+    print(q.second + 1)
+    nums: Pair[int, int] = Pair(first=3, second=7)
+    print(nums.first + nums.second)

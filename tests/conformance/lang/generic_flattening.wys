@@ -1,0 +1,22 @@
+# T = str | None を与えると T | None は str | None に平坦化される
+# expect-stdout: inner none
+# expect-stdout: outer none
+# expect-stdout: hi
+def first_or_none[T](x: T, use_it: bool) -> T | None:
+    if use_it:
+        return x
+    return None
+
+def show(v: str | None) -> None:
+    if v is None:
+        print("outer none")
+    else:
+        print(v)
+
+def main() -> None:
+    inner: str | None = None
+    r = first_or_none(inner, True)
+    if r is None:
+        print("inner none")
+    show(first_or_none(inner, False))
+    show(first_or_none("hi", True))

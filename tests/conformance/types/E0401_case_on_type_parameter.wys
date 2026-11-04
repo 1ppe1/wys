@@ -1,0 +1,10 @@
+# expect-error: E0401 4:14
+def describe[T](x: T | None) -> None:
+    match x:
+        case int():
+            print("int")
+        case _:
+            pass
+
+def main() -> None:
+    describe(1)

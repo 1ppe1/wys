@@ -34,12 +34,16 @@ pub enum TypeExprKind {
     Name(String),
     /// `A | B | ...`（2つ以上）。
     Union(Vec<TypeExpr>),
+    /// `Pair[int, str]`（型引数の適用）。
+    Apply(String, Vec<TypeExpr>),
 }
 
 /// トップレベルの `type Name = ...`。
 #[derive(Debug, Clone)]
 pub struct TypeDef {
     pub name: Ident,
+    /// `type Pair[A, B] = ...` の型パラメータ。
+    pub params: Vec<Ident>,
     pub value: TypeDefValue,
     pub span: Span,
 }
@@ -61,6 +65,8 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub struct FuncDef {
     pub name: Ident,
+    /// `def f[T](...)` の型パラメータ。
+    pub type_params: Vec<Ident>,
     pub params: Vec<Param>,
     pub ret: TypeExpr,
     pub body: Vec<Stmt>,

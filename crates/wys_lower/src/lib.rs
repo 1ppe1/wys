@@ -6,60 +6,133 @@
 //! `coerce` が値を変換する。基本型 → Union は `MakeUnion`、Union → 基本型は `UnionPayload`、
 //! Union → Union はタグで分岐して詰め直す。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use wys_ast::{self as ast, ExprKind, PatternKind, StmtKind, UnaryOp};
 use wys_ir::*;
-use wys_typeck::{Ty as TTy, TypeckResult};
+use wys_typeck::{Subst, Ty as TTy, TypeckResult, Types};
 
-fn ir_ty(t: TTy) -> Option<Ty> {
-    match t {
-        TTy::Int => Some(Ty::Int),
-        TTy::Bool => Some(Ty::Bool),
-        TTy::Str => Some(Ty::Str),
-        TTy::None => None,
-        TTy::Error => panic!("lowering received a type error; run the type checker first"),
-        TTy::Union(u) => Some(Ty::Union(UnionId(u.0))),
-        TTy::Record(r) => Some(Ty::Record(RecordId(r.0))),
+/// 関数をまたいで共有する状態: 型の登録表（単相化で増える）、IR の型 ID の対応、文字列、関数のインスタンス。
+struct Shared<'t> {
+    tc: &'t TypeckResult,
+    types: Types,
+    union_ids: HashMap<wys_typeck::UnionId, UnionId>,
+    unions: Vec<Vec<Member>>,
+    record_ids: HashMap<wys_typeck::RecordId, RecordId>,
+    records: Vec<Vec<(String, Ty)>>,
+    strings: Vec<String>,
+    func_index: HashMap<String, usize>,
+    /// (関数の番号, 型引数) → IR の関数。Generic でない関数は型引数が空。
+    instances: HashMap<(usize, Vec<TTy>), FuncId>,
+    queue: VecDeque<(usize, Vec<TTy>, FuncId)>,
+}
+
+impl Shared<'_> {
+    /// 型検査の型を IR の型にする。Union とレコードは、使われたものだけを IR に登録する。
+    fn ir_ty(&mut self, t: TTy) -> Option<Ty> {
+        match t {
+            TTy::Int => Some(Ty::Int),
+            TTy::Bool => Some(Ty::Bool),
+            TTy::Str => Some(Ty::Str),
+            TTy::None => None,
+            TTy::Union(u) => Some(Ty::Union(self.ir_union(u))),
+            TTy::Record(r) => Some(Ty::Record(self.ir_record(r))),
+            TTy::Param(_) => {
+                panic!("type parameter reached code generation; monomorphization missed it")
+            }
+            TTy::Error => panic!("lowering received a type error; run the type checker first"),
+        }
+    }
+
+    fn ir_union(&mut self, u: wys_typeck::UnionId) -> UnionId {
+        if let Some(&id) = self.union_ids.get(&u) {
+            return id;
+        }
+        let members: Vec<Member> = self
+            .types
+            .members(TTy::Union(u))
+            .into_iter()
+            .map(|m| self.ir_ty(m))
+            .collect();
+        let id = UnionId(self.unions.len() as u32);
+        self.unions.push(members);
+        self.union_ids.insert(u, id);
+        id
+    }
+
+    fn ir_record(&mut self, r: wys_typeck::RecordId) -> RecordId {
+        if let Some(&id) = self.record_ids.get(&r) {
+            return id;
+        }
+        let fields: Vec<(String, Ty)> = self
+            .types
+            .record_def(r)
+            .fields
+            .clone()
+            .into_iter()
+            .map(|(n, t)| (n, self.ir_ty(t).expect("record fields are never None")))
+            .collect();
+        let id = RecordId(self.records.len() as u32);
+        self.records.push(fields);
+        self.record_ids.insert(r, id);
+        id
+    }
+
+    /// 関数のインスタンス（Generic でなければ型引数は空）を求め、まだなければ生成待ちに積む。
+    fn request(&mut self, index: usize, args: Vec<TTy>) -> FuncId {
+        let key = (index, args);
+        if let Some(&id) = self.instances.get(&key) {
+            return id;
+        }
+        let id = FuncId(self.instances.len() as u32);
+        self.instances.insert(key.clone(), id);
+        self.queue.push_back((key.0, key.1, id));
+        id
     }
 }
 
+/// AST と型検査の結果から IR を作る。Generic 関数は、使われた型引数ごとに単相化する（ADR-0006）。
 pub fn lower(module: &ast::Module, tc: &TypeckResult) -> Program {
-    let func_ids: HashMap<&str, FuncId> = module
-        .funcs
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (f.name.name.as_str(), FuncId(i as u32)))
-        .collect();
-    let unions = tc
-        .types
-        .unions()
-        .iter()
-        .map(|members| members.iter().map(|m| ir_ty(*m)).collect())
-        .collect();
-    let records = tc
-        .types
-        .records()
-        .iter()
-        .map(|def| {
-            def.fields
-                .iter()
-                .map(|(n, t)| (n.clone(), ir_ty(*t).expect("record fields are never None")))
-                .collect()
-        })
-        .collect();
-    let mut strings = Vec::new();
-    let funcs = module
-        .funcs
-        .iter()
-        .enumerate()
-        .map(|(i, f)| FnLower::run(f, i, tc, &func_ids, &mut strings))
-        .collect();
+    let mut sh = Shared {
+        tc,
+        types: tc.types.clone(),
+        union_ids: HashMap::new(),
+        unions: Vec::new(),
+        record_ids: HashMap::new(),
+        records: Vec::new(),
+        strings: Vec::new(),
+        func_index: module
+            .funcs
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.name.name.clone(), i))
+            .collect(),
+        instances: HashMap::new(),
+        queue: VecDeque::new(),
+    };
+    // Generic でない関数を先に登録する（関数番号はソースの順になる）
+    for (i, sig) in tc.sigs.iter().enumerate() {
+        if sig.type_params.is_empty() {
+            sh.request(i, Vec::new());
+        }
+    }
+    let mut funcs: Vec<Option<Function>> = Vec::new();
+    while let Some((i, args, id)) = sh.queue.pop_front() {
+        let f = FnLower::run(&module.funcs[i], i, args, id, &mut sh);
+        if funcs.len() <= id.0 as usize {
+            funcs.resize(id.0 as usize + 1, None);
+        }
+        funcs[id.0 as usize] = Some(f);
+    }
+    let entry = sh.instances[&(sh.func_index["main"], Vec::new())];
     Program {
-        strings,
-        unions,
-        records,
-        funcs,
-        entry: func_ids["main"],
+        strings: sh.strings,
+        unions: sh.unions,
+        records: sh.records,
+        funcs: funcs
+            .into_iter()
+            .map(|f| f.expect("every instance is lowered"))
+            .collect(),
+        entry,
     }
 }
 
@@ -68,11 +141,11 @@ struct Bb {
     term: Option<Terminator>,
 }
 
-struct FnLower<'a> {
-    tc: &'a TypeckResult,
+struct FnLower<'s, 't> {
+    sh: &'s mut Shared<'t>,
+    /// この関数インスタンスの型パラメータの置き換え（Generic でなければ空）。
+    subst: Subst,
     ret: TTy,
-    func_ids: &'a HashMap<&'a str, FuncId>,
-    strings: &'a mut Vec<String>,
     locals: Vec<Ty>,
     local_ids: HashMap<String, LocalId>,
     /// ローカル変数の宣言された型（絞り込み前）。
@@ -82,21 +155,33 @@ struct FnLower<'a> {
     cur: usize,
 }
 
-impl<'a> FnLower<'a> {
+impl<'s, 't> FnLower<'s, 't> {
     fn run(
         f: &ast::FuncDef,
         index: usize,
-        tc: &'a TypeckResult,
-        func_ids: &'a HashMap<&'a str, FuncId>,
-        strings: &'a mut Vec<String>,
+        args: Vec<TTy>,
+        id: FuncId,
+        sh: &'s mut Shared<'t>,
     ) -> Function {
+        let tc = sh.tc;
         let info = &tc.funcs[index];
         let sig = &tc.sigs[index];
+        let subst: Subst = sig
+            .type_params
+            .iter()
+            .copied()
+            .zip(args.iter().copied())
+            .collect();
+        let ret = sh.types.subst(sig.ret, &subst);
+        let name = if args.is_empty() {
+            f.name.name.clone()
+        } else {
+            format!("{}__{}", f.name.name, id.0)
+        };
         let mut l = FnLower {
-            tc,
-            ret: sig.ret,
-            func_ids,
-            strings,
+            sh,
+            subst,
+            ret,
             locals: Vec::new(),
             local_ids: HashMap::new(),
             local_decl: HashMap::new(),
@@ -107,15 +192,16 @@ impl<'a> FnLower<'a> {
             }],
             cur: 0,
         };
-        for (name, ty) in &info.locals {
-            let id = LocalId(l.locals.len() as u32);
-            l.locals
-                .push(ir_ty(*ty).expect("locals never have type None"));
-            l.local_ids.insert(name.clone(), id);
-            l.local_decl.insert(name.clone(), *ty);
+        for (lname, ty) in &info.locals {
+            let lid = LocalId(l.locals.len() as u32);
+            let decl = l.sh.types.subst(*ty, &l.subst);
+            let ir = l.sh.ir_ty(decl).expect("locals never have type None");
+            l.locals.push(ir);
+            l.local_ids.insert(lname.clone(), lid);
+            l.local_decl.insert(lname.clone(), decl);
         }
         l.stmts(&f.body);
-        let ret = ir_ty(sig.ret);
+        let ret = l.sh.ir_ty(l.ret);
         let blocks = l
             .blocks
             .into_iter()
@@ -130,13 +216,46 @@ impl<'a> FnLower<'a> {
             })
             .collect();
         Function {
-            name: f.name.name.clone(),
+            name,
             param_count: sig.params.len() as u32,
             locals: l.locals,
             ret,
             temps: l.temps,
             blocks,
         }
+    }
+
+    /// 式の型（この関数インスタンスの型引数で置き換えた後）。
+    fn ty(&mut self, e: &ast::Expr) -> TTy {
+        let t = self.sh.tc.ty(e);
+        self.sh.types.subst(t, &self.subst)
+    }
+
+    /// 呼び出し先の関数インスタンスと、その引数・戻り値の型。
+    fn callee(&mut self, name: &str, call: &ast::Expr) -> (FuncId, Vec<TTy>, TTy) {
+        let index = self.sh.func_index[name];
+        let sig = &self.sh.tc.sigs[index];
+        let (type_params, params, ret) = (sig.type_params.clone(), sig.params.clone(), sig.ret);
+        let args: Vec<TTy> = if type_params.is_empty() {
+            Vec::new()
+        } else {
+            self.sh.tc.call_type_args[&call.id]
+                .clone()
+                .into_iter()
+                .map(|t| self.sh.types.subst(t, &self.subst))
+                .collect()
+        };
+        let map: Subst = type_params
+            .iter()
+            .copied()
+            .zip(args.iter().copied())
+            .collect();
+        let params = params
+            .iter()
+            .map(|t| self.sh.types.subst(*t, &map))
+            .collect();
+        let ret = self.sh.types.subst(ret, &map);
+        (self.sh.request(index, args), params, ret)
     }
 
     // ---- builder helpers ----
@@ -221,8 +340,9 @@ impl<'a> FnLower<'a> {
             StmtKind::Assign { target, value, .. } => {
                 let v = self.expr(value);
                 let decl = self.local_decl[&target.name];
+                let vt = self.ty(value);
                 let v = self
-                    .coerce(v, self.tc.ty(value), decl)
+                    .coerce(v, vt, decl)
                     .expect("variables never have type None");
                 let dst = self.local_ids[&target.name];
                 self.emit(Inst::Store { dst, src: v });
@@ -233,7 +353,8 @@ impl<'a> FnLower<'a> {
                     if self.ret == TTy::None {
                         None
                     } else {
-                        self.coerce(v, self.tc.ty(e), self.ret)
+                        let (vt, ret) = (self.ty(e), self.ret);
+                        self.coerce(v, vt, ret)
                     }
                 });
                 self.terminate(Terminator::Return(v));
@@ -293,7 +414,7 @@ impl<'a> FnLower<'a> {
     /// `match`: 被検査値を一度だけ評価してローカルに置き、`case` を上から順にタグで判定する。
     /// 型パターンが被検査値の型そのもの（Union でない）なら常に一致する。
     fn match_stmt(&mut self, subject: &ast::Expr, arms: &[ast::MatchArm]) {
-        let st = self.tc.ty(subject);
+        let st = self.ty(subject);
         let v = self.expr(subject);
         let slot = v.map(|t| {
             let ty = self.temps[t.0 as usize];
@@ -354,13 +475,13 @@ impl<'a> FnLower<'a> {
             ExprKind::Int(v) => Some(self.konst(Const::Int(*v), Ty::Int)),
             ExprKind::Bool(v) => Some(self.konst(Const::Bool(*v), Ty::Bool)),
             ExprKind::Str(s) => {
-                let id = StrId(self.strings.len() as u32);
-                self.strings.push(s.clone());
+                let id = StrId(self.sh.strings.len() as u32);
+                self.sh.strings.push(s.clone());
                 Some(self.konst(Const::Str(id), Ty::Str))
             }
             ExprKind::None => None,
             ExprKind::Name(name) => {
-                let narrowed = self.tc.ty(e);
+                let narrowed = self.ty(e);
                 if narrowed == TTy::None {
                     return None; // 絞り込みで None と確定した変数
                 }
@@ -371,7 +492,7 @@ impl<'a> FnLower<'a> {
                 self.coerce(Some(dst), self.local_decl[name], narrowed)
             }
             ExprKind::Is { lhs, negated, .. } => {
-                let lt = self.tc.ty(lhs);
+                let lt = self.ty(lhs);
                 let v = self.expr(lhs);
                 let is_none = match lt {
                     TTy::None => self.konst(Const::Bool(true), Ty::Bool),
@@ -419,16 +540,17 @@ impl<'a> FnLower<'a> {
             ExprKind::Binary { op, lhs, rhs } => Some(self.binary(*op, lhs, rhs)),
             ExprKind::Field { base, name } => {
                 let v = self.expr(base).expect("records have values");
-                let TTy::Record(r) = self.tc.ty(base) else {
+                let TTy::Record(r) = self.ty(base) else {
                     panic!("field access on a non-record passed type checking")
                 };
                 let (index, ft) = self
-                    .tc
+                    .sh
                     .types
                     .record_def(r)
                     .field(&name.name)
                     .expect("fields exist after type checking");
-                let dst = self.temp(ir_ty(ft).expect("record fields are never None"));
+                let fty = self.sh.ir_ty(ft).expect("record fields are never None");
+                let dst = self.temp(fty);
                 self.emit(Inst::Field {
                     dst,
                     src: v,
@@ -437,7 +559,7 @@ impl<'a> FnLower<'a> {
                 Some(dst)
             }
             ExprKind::Call { callee, kwargs, .. } if self.is_record_constructor(&callee.name) => {
-                let TTy::Record(r) = self.tc.ty(e) else {
+                let TTy::Record(r) = self.ty(e) else {
                     panic!("record construction without a record type")
                 };
                 Some(self.construct(r, kwargs))
@@ -445,34 +567,33 @@ impl<'a> FnLower<'a> {
             ExprKind::Call { callee, args, .. } => {
                 if callee.name == "print" {
                     let v = self.expr(&args[0]).expect("print arguments have values");
-                    self.print(v, self.tc.ty(&args[0]));
+                    let t = self.ty(&args[0]);
+                    self.print(v, t);
                     return None;
                 }
-                let params: Vec<TTy> = match callee.name.as_str() {
-                    "exit" => vec![TTy::Int],
-                    name => self.tc.sigs[self.func_ids[name].0 as usize].params.clone(),
+                let (target, params, ret) = match callee.name.as_str() {
+                    "exit" => (Callee::Builtin(Builtin::Exit), vec![TTy::Int], TTy::None),
+                    name => {
+                        let (id, params, ret) = self.callee(name, e);
+                        (Callee::Func(id), params, ret)
+                    }
                 };
                 let mut evaluated = Vec::new();
                 for (a, pt) in args.iter().zip(params) {
                     let v = self.expr(a);
-                    let v = self.coerce(v, self.tc.ty(a), pt);
+                    let at = self.ty(a);
+                    let v = self.coerce(v, at, pt);
                     evaluated.push((v.expect("arguments have values"), self.cur));
                 }
                 let arg_vals: Vec<TempId> = evaluated
                     .into_iter()
                     .map(|(t, b)| self.materialize(t, b))
                     .collect();
-                let (callee, ret) = match callee.name.as_str() {
-                    "exit" => (Callee::Builtin(Builtin::Exit), None),
-                    name => {
-                        let id = self.func_ids[name];
-                        (Callee::Func(id), ir_ty(self.tc.sigs[id.0 as usize].ret))
-                    }
-                };
+                let ret = self.sh.ir_ty(ret);
                 let dst = ret.map(|t| self.temp(t));
                 self.emit(Inst::Call {
                     dst,
-                    callee,
+                    callee: target,
                     args: arg_vals,
                 });
                 dst
@@ -483,7 +604,7 @@ impl<'a> FnLower<'a> {
     // ---- unions ----
 
     fn members(&self, u: wys_typeck::UnionId) -> Vec<TTy> {
-        self.tc.types.members(TTy::Union(u))
+        self.sh.types.members(TTy::Union(u))
     }
 
     fn variant(&self, u: wys_typeck::UnionId, m: TTy) -> u32 {
@@ -494,11 +615,12 @@ impl<'a> FnLower<'a> {
     }
 
     fn make_union(&mut self, u: wys_typeck::UnionId, m: TTy, payload: Option<TempId>) -> TempId {
-        let dst = self.temp(Ty::Union(UnionId(u.0)));
+        let dst_iu = self.sh.ir_union(u);
+        let dst = self.temp(Ty::Union(dst_iu));
         let variant = self.variant(u, m);
         self.emit(Inst::MakeUnion {
             dst,
-            union: UnionId(u.0),
+            union: dst_iu,
             variant,
             payload,
         });
@@ -506,7 +628,7 @@ impl<'a> FnLower<'a> {
     }
 
     fn payload(&mut self, v: TempId, u: wys_typeck::UnionId, m: TTy) -> Option<TempId> {
-        let ty = ir_ty(m)?;
+        let ty = self.sh.ir_ty(m)?;
         let dst = self.temp(ty);
         let variant = self.variant(u, m);
         self.emit(Inst::UnionPayload {
@@ -550,7 +672,7 @@ impl<'a> FnLower<'a> {
         }
         members
             .into_iter()
-            .find(|t| self.tc.types.member_fits(m, *t))
+            .find(|t| self.sh.types.member_fits(m, *t))
             .unwrap_or_else(|| panic!("{m:?} does not fit union {tu:?}"))
     }
 
@@ -561,12 +683,13 @@ impl<'a> FnLower<'a> {
         from: wys_typeck::RecordId,
         to: wys_typeck::RecordId,
     ) -> TempId {
-        let src_def = self.tc.types.record_def(from).clone();
-        let dst_fields = self.tc.types.record_def(to).fields.clone();
+        let src_def = self.sh.types.record_def(from).clone();
+        let dst_fields = self.sh.types.record_def(to).fields.clone();
         let mut vals = Vec::new();
         for (name, ft) in &dst_fields {
             let (index, st) = src_def.field(name).expect("width subtyping checked");
-            let dst = self.temp(ir_ty(st).expect("record fields are never None"));
+            let fty = self.sh.ir_ty(st).expect("record fields are never None");
+            let dst = self.temp(fty);
             self.emit(Inst::Field {
                 dst,
                 src: v,
@@ -574,10 +697,11 @@ impl<'a> FnLower<'a> {
             });
             vals.push(self.coerce(Some(dst), st, *ft).expect("fields have values"));
         }
-        let dst = self.temp(Ty::Record(RecordId(to.0)));
+        let dst_ir = self.sh.ir_record(to);
+        let dst = self.temp(Ty::Record(dst_ir));
         self.emit(Inst::MakeRecord {
             dst,
-            record: RecordId(to.0),
+            record: dst_ir,
             fields: vals,
         });
         dst
@@ -585,12 +709,12 @@ impl<'a> FnLower<'a> {
 
     /// 関数でも組み込み関数でもない名前の呼び出しは、`type` で定義したレコードの作成。
     fn is_record_constructor(&self, name: &str) -> bool {
-        !self.func_ids.contains_key(name) && name != "print" && name != "exit"
+        !self.sh.func_index.contains_key(name) && name != "print" && name != "exit"
     }
 
     /// `Point(x=..., y=...)`: キーワード引数をソースの順に評価してから、フィールドの順に並べる。
     fn construct(&mut self, r: wys_typeck::RecordId, kwargs: &[(ast::Ident, ast::Expr)]) -> TempId {
-        let fields = self.tc.types.record_def(r).fields.clone();
+        let fields = self.sh.types.record_def(r).fields.clone();
         let mut evaluated: Vec<(String, TempId, usize)> = Vec::new();
         for (k, value) in kwargs {
             let (_, ft) = fields
@@ -598,9 +722,8 @@ impl<'a> FnLower<'a> {
                 .find(|(n, _)| *n == k.name)
                 .expect("fields exist after type checking");
             let v = self.expr(value);
-            let v = self
-                .coerce(v, self.tc.ty(value), *ft)
-                .expect("fields have values");
+            let vt = self.ty(value);
+            let v = self.coerce(v, vt, *ft).expect("fields have values");
             evaluated.push((k.name.clone(), v, self.cur));
         }
         let mut vals = Vec::new();
@@ -612,10 +735,11 @@ impl<'a> FnLower<'a> {
                 .expect("every field is given");
             vals.push(self.materialize(t, b));
         }
-        let dst = self.temp(Ty::Record(RecordId(r.0)));
+        let dst_ir = self.sh.ir_record(r);
+        let dst = self.temp(Ty::Record(dst_ir));
         self.emit(Inst::MakeRecord {
             dst,
-            record: RecordId(r.0),
+            record: dst_ir,
             fields: vals,
         });
         dst
@@ -638,14 +762,16 @@ impl<'a> FnLower<'a> {
                 target
                     .iter()
                     .find(|t| **t == m)
-                    .or_else(|| target.iter().find(|t| self.tc.types.member_fits(m, **t)))
+                    .or_else(|| target.iter().find(|t| self.sh.types.member_fits(m, **t)))
                     .map(|t| (m, *t))
             })
             .collect();
         let common: Vec<TTy> = pairs.iter().map(|(m, _)| *m).collect();
-        let src = self.hidden_local(Ty::Union(UnionId(fu.0)));
+        let src_iu = self.sh.ir_union(fu);
+        let src = self.hidden_local(Ty::Union(src_iu));
         self.emit(Inst::Store { dst: src, src: v });
-        let out = self.hidden_local(Ty::Union(UnionId(tu.0)));
+        let out_iu = self.sh.ir_union(tu);
+        let out = self.hidden_local(Ty::Union(out_iu));
         self.for_each_variant(src, fu, &common, |l, val, m| {
             let tm = pairs
                 .iter()
@@ -657,7 +783,8 @@ impl<'a> FnLower<'a> {
             let u = l.make_union(tu, tm, p);
             l.emit(Inst::Store { dst: out, src: u });
         });
-        let dst = self.temp(Ty::Union(UnionId(tu.0)));
+        let dst_iu = self.sh.ir_union(tu);
+        let dst = self.temp(Ty::Union(dst_iu));
         self.emit(Inst::Load { dst, src: out });
         dst
     }
@@ -719,7 +846,8 @@ impl<'a> FnLower<'a> {
         }
         match ty {
             TTy::Union(u) => {
-                let src = self.hidden_local(Ty::Union(UnionId(u.0)));
+                let src_iu = self.sh.ir_union(u);
+                let src = self.hidden_local(Ty::Union(src_iu));
                 self.emit(Inst::Store { dst: src, src: v });
                 let members = self.members(u);
                 self.for_each_variant(src, u, &members, |l, val, m| {
