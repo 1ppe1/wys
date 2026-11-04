@@ -3,7 +3,7 @@
 コンパイラが出す診断のコード。`check --format json` の `code` フィールドに入る（[diagnostics-schema.json](diagnostics-schema.json)）。
 
 - 一度割り当てたコードの意味は変えない。使わなくなったら「廃止」と書いて残す（要件IDと同じ運用）。
-- 範囲: `E00xx` 字句解析、`E01xx` 構文解析、`E02xx` 型検査、`E03xx` 絞り込み・`match`、`E04xx` Generics、`E05xx` レコード、`E06xx` `Unknown`、`E07xx` モジュール（ADR-0010）、`E09xx` コレクション（`list` / `for` / 添字）、`E08xx` テスト（`wys test`）、`W03xx` 警告（M2 計画、`docs/plans/m2.md`）。
+- 範囲: `E00xx` 字句解析、`E01xx` 構文解析、`E02xx` 型検査、`E03xx` 絞り込み・`match`、`E04xx` Generics、`E05xx` レコード、`E06xx` `Unknown`、`E07xx` モジュール（ADR-0010）、`E09xx` コレクション（`list` / `for` / 添字）、`E10xx` `Result` と `?`（ADR-0013）、`E08xx` テスト（`wys test`）、`W03xx` 警告（M2 計画、`docs/plans/m2.md`）。
 - メッセージは英語。コードと範囲で機械的に判別できるようにする。
 
 | コード | 段階 | 意味 |
@@ -66,6 +66,11 @@
 | E0903 | コレクション | `for` で反復できない値（`list[T]` か `range(...)` だけ） |
 | E0904 | コレクション | `list` 以外に添字を付けている |
 | E0905 | コレクション | その型にないメソッド（M3 では `list` の `append` だけ） |
+| E1001 | Result | `Ok` / `Err` の、もう一方の型が期待型から決まらない（`r: Result[int, str] = Ok(1)` のように注釈する。ADR-0013） |
+| E1002 | Result | `Result` の型引数の制約違反（エラー型が `None` や `Unknown`、1つの Union に `Result` が2つ） |
+| E1003 | Result | `case Ok(x):` / `case Err(e):` を、型がちょうど `Result` ではない被検査値に使っている（先に `case Result():` や `is None` で絞り込む） |
+| E1004 | Result | 束縛の個数や対象が正しくない（`Ok()`、`int(n)`。束縛を書けるのは `Ok` / `Err` だけ） |
+| E1005 | Result | 束縛変数の名前が、既存の変数や引数と同じ |
 | W0301 | match（警告） | それより前の `case` ですでに網羅されているため、到達しない `case`。警告だけならビルドできる |
 
 欠番（未割り当て）: E0212、E0506、E0507。廃止: E0405（`list` はまだ使えない。M3 T4a で `list` に対応したため廃止）。一度割り当てたコードは再利用しない。

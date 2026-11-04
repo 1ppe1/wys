@@ -1,0 +1,26 @@
+# Result | None は型パターン case Result(): で絞り込み、その後で Ok / Err を束縛する
+# expect-stdout: none
+# expect-stdout: 4
+# expect-stdout: err x
+def find(n: int) -> Result[int, str] | None:
+    if n == 0:
+        return None
+    if n > 0:
+        return Ok(n * 2)
+    return Err("x")
+
+def show(r: Result[int, str] | None) -> None:
+    match r:
+        case Result():
+            match r:
+                case Ok(v):
+                    print(v)
+                case Err(e):
+                    print("err " + e)
+        case None:
+            print("none")
+
+def main() -> None:
+    show(find(0))
+    show(find(2))
+    show(find(-1))

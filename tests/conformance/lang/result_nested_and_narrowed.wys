@@ -1,0 +1,21 @@
+# 入れ子の Result と、代入で Result に絞り込まれた Result | None（case None: は到達しない警告）
+# expect-warning: W0301 11:14
+# expect-stdout: result
+# expect-stdout: 3
+def main() -> None:
+    q: Result[Result[int, str], str] = Ok(Ok(3))
+    t: Result[int, str] | None = Ok(2)
+    match t:
+        case Result():
+            print("result")
+        case None:
+            print("none")
+    match q:
+        case Ok(inner):
+            match inner:
+                case Ok(v):
+                    print(v)
+                case Err(_):
+                    pass
+        case Err(_):
+            pass

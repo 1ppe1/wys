@@ -21,6 +21,8 @@ struct Shared<'t> {
     records: Vec<Vec<(String, Ty)>>,
     list_ids: HashMap<wys_typeck::ListId, ListId>,
     lists: Vec<Ty>,
+    /// `Result[T, E]` → 構成要素が2つの Union（0 = `Ok`、1 = `Err`。ADR-0013）
+    result_ids: HashMap<wys_typeck::ResultId, UnionId>,
     strings: Vec<String>,
     func_index: HashMap<String, usize>,
     /// (関数の番号, 型引数) → IR の関数。Generic でない関数は型引数が空。
@@ -46,6 +48,7 @@ impl Shared<'_> {
             TTy::Union(u) => Some(Ty::Union(self.ir_union(u))),
             TTy::Record(r) => Some(Ty::Record(self.ir_record(r))),
             TTy::List(lst) => Some(Ty::List(self.ir_list(lst))),
+            TTy::Result(r) => Some(Ty::Union(self.ir_result(r))),
             TTy::Param(_) => {
                 panic!("type parameter reached code generation; monomorphization missed it")
             }
@@ -83,6 +86,11 @@ impl Shared<'_> {
                 let e = self.norm(e);
                 self.types.list(e)
             }
+            TTy::Result(r) if self.has_unknown(t) => {
+                let (ok, err) = self.types.result_args(r);
+                let (ok, err) = (self.norm(ok), self.norm(err));
+                self.types.result(ok, err)
+            }
             TTy::Record(r) => {
                 let def = self.types.record_def(r).clone();
                 if !def.fields.iter().any(|(_, ft)| self.has_unknown(*ft)) {
@@ -116,6 +124,18 @@ impl Shared<'_> {
         let id = UnionId(self.unions.len() as u32);
         self.unions.push(members);
         self.union_ids.insert(u, id);
+        id
+    }
+
+    fn ir_result(&mut self, r: wys_typeck::ResultId) -> UnionId {
+        if let Some(&id) = self.result_ids.get(&r) {
+            return id;
+        }
+        let (ok, err) = self.types.result_args(r);
+        let members = vec![self.ir_ty(ok), self.ir_ty(err)];
+        let id = UnionId(self.unions.len() as u32);
+        self.unions.push(members);
+        self.result_ids.insert(r, id);
         id
     }
 
@@ -224,6 +244,7 @@ pub fn lower_with(
         record_ids: HashMap::new(),
         records: Vec::new(),
         list_ids: HashMap::new(),
+        result_ids: HashMap::new(),
         lists: Vec::new(),
         strings: Vec::new(),
         func_index: module
@@ -671,6 +692,12 @@ impl<'s, 't> FnLower<'s, 't> {
             l
         });
         let join = self.new_block();
+        if let (TTy::Result(r), Some(slot)) = (st, slot) {
+            self.result_arms(r, slot, arms, join);
+            self.terminate(Terminator::Unreachable);
+            self.switch_to(join);
+            return;
+        }
         for arm in arms {
             let pattern_ty = match &arm.pattern.kind {
                 PatternKind::Wildcard => None,
@@ -679,8 +706,19 @@ impl<'s, 't> FnLower<'s, 't> {
                     "int" => TTy::Int,
                     "bool" => TTy::Bool,
                     "str" => TTy::Str,
+                    "Result" => match st {
+                        TTy::Union(u) => self
+                            .members(u)
+                            .into_iter()
+                            .find(|m| matches!(m, TTy::Result(_)))
+                            .expect("type checking found a Result member"),
+                        other => other,
+                    },
                     other => panic!("unknown pattern type `{other}` passed type checking"),
                 }),
+                PatternKind::Bind(..) => {
+                    panic!("binding pattern on a non-Result passed type checking")
+                }
             };
             let next = self.new_block();
             // 一致しない `case`（絞り込みで被検査値の型から外れた型。型検査は W0301 を出す）は生成しない
@@ -722,6 +760,100 @@ impl<'s, 't> FnLower<'s, 't> {
         // 型検査で網羅性を確認済みなので、ここには到達しない
         self.terminate(Terminator::Unreachable);
         self.switch_to(join);
+    }
+
+    /// `Result` に対する `case`: タグで判定し、束縛変数は `case` の本体だけで使えるローカルにする（ADR-0013）。
+    /// 中身は借用で取り出し、束縛のスロットに格納する（ARC パスが retain し、スロットが +1 で所有する）。
+    fn result_arms(
+        &mut self,
+        r: wys_typeck::ResultId,
+        slot: LocalId,
+        arms: &[ast::MatchArm],
+        join: BlockId,
+    ) {
+        let (ok, err) = self.sh.types.result_args(r);
+        let mut remaining = [true, true];
+        for arm in arms {
+            let (pieces, binding): (Vec<u32>, Option<&ast::Ident>) = match &arm.pattern.kind {
+                PatternKind::Bind(name, b) => (vec![u32::from(name == "Err")], b.as_ref()),
+                PatternKind::Wildcard => (vec![0, 1], None),
+                PatternKind::Type(n) if n == "Result" => (vec![0, 1], None),
+                // 絞り込みで外れた構成要素の case（W0301）は一致しない
+                _ => continue,
+            };
+            let pieces: Vec<u32> = pieces
+                .into_iter()
+                .filter(|&p| remaining[p as usize])
+                .collect();
+            if pieces.is_empty() {
+                continue; // 到達しない case（W0301）
+            }
+            for &p in &pieces {
+                remaining[p as usize] = false;
+            }
+            let next = self.new_block();
+            let union_ty = self.locals[slot.0 as usize];
+            if let [variant] = pieces.as_slice() {
+                let val = self.temp(union_ty);
+                self.emit(Inst::Load {
+                    dst: val,
+                    src: slot,
+                });
+                let c = self.temp(Ty::Bool);
+                self.emit(Inst::UnionIs {
+                    dst: c,
+                    src: val,
+                    variant: *variant,
+                });
+                let body = self.new_block();
+                self.terminate(Terminator::Branch {
+                    cond: c,
+                    then_block: body,
+                    else_block: next,
+                });
+                self.switch_to(body);
+            }
+            let mut saved = None;
+            if let (Some(ident), [variant]) = (binding, pieces.as_slice()) {
+                let bty = if *variant == 0 { ok } else { err };
+                if let Some(ir) = self.sh.ir_ty(bty) {
+                    let val = self.temp(union_ty);
+                    self.emit(Inst::Load {
+                        dst: val,
+                        src: slot,
+                    });
+                    let p = self.temp(ir);
+                    self.emit(Inst::UnionPayload {
+                        dst: p,
+                        src: val,
+                        variant: *variant,
+                    });
+                    let local = self.hidden_local(ir);
+                    self.emit(Inst::Store { dst: local, src: p });
+                    let name = ident.name.clone();
+                    saved = Some((
+                        name.clone(),
+                        self.local_ids.insert(name.clone(), local),
+                        self.local_decl.insert(name, bty),
+                    ));
+                }
+            }
+            self.stmts(&arm.body);
+            if let Some((name, id, decl)) = saved {
+                match id {
+                    Some(id) => self.local_ids.insert(name.clone(), id),
+                    None => self.local_ids.remove(&name),
+                };
+                match decl {
+                    Some(d) => self.local_decl.insert(name, d),
+                    None => self.local_decl.remove(&name),
+                };
+            }
+            if self.blocks[self.cur].term.is_none() {
+                self.terminate(Terminator::Jump(join));
+            }
+            self.switch_to(next);
+        }
     }
 
     // ---- expressions ----
@@ -909,6 +1041,26 @@ impl<'s, 't> FnLower<'s, 't> {
                     "arg" => self.lower_arg(&args[0], e),
                     _ => self.lower_parse_scalar(&args[0], e),
                 })
+            }
+            ExprKind::Call { callee, args, .. } if matches!(callee.name.as_str(), "Ok" | "Err") => {
+                let TTy::Result(r) = self.ty(e) else {
+                    panic!("`{}` was not typed as a Result", callee.name)
+                };
+                let (ok, err) = self.sh.types.result_args(r);
+                let variant = u32::from(callee.name == "Err");
+                let want = if variant == 0 { ok } else { err };
+                let at = self.ty(&args[0]);
+                let v = self.expr(&args[0]);
+                let payload = self.coerce(v, at, want);
+                let union = self.sh.ir_result(r);
+                let dst = self.temp(Ty::Union(union));
+                self.emit(Inst::MakeUnion {
+                    dst,
+                    union,
+                    variant,
+                    payload,
+                });
+                Some(dst)
             }
             ExprKind::Call { callee, args, .. } if callee.name == "assert" => {
                 let c = self.expr(&args[0]).expect("conditions are bool");
@@ -1365,6 +1517,8 @@ impl<'s, 't> FnLower<'s, 't> {
                     | "arg"
                     | "parse_scalar"
                     | "assert"
+                    | "Ok"
+                    | "Err"
                     | "len"
                     | "range"
             )

@@ -1,0 +1,22 @@
+# 束縛変数のスコープは case の本体だけ。別の case では同じ名前を別の型で使える
+# expect-stdout: 3
+# expect-stdout: bad
+# expect-stdout: 7
+def parse(s: str) -> Result[int, str]:
+    if s == "three":
+        return Ok(3)
+    return Err("bad")
+
+def main() -> None:
+    for s in ["three", "x"]:
+        match parse(s):
+            case Ok(v):
+                print(v)
+            case Err(v):
+                print(v)
+    r: Result[int, int] = Err(7)
+    match r:
+        case Ok(n):
+            print(n)
+        case Err(n):
+            print(n)

@@ -1,5 +1,5 @@
 (* wys 文法 v0.3-draft — M3 作業中（v0.2 = M2 完了時点（v0.1 = M1 サブセット。実装: crates/wys_lexer, crates/wys_parser, crates/wys_resolve）
- * v0.3 の変更: for / in、リストのリテラル、添字、添字への代入（M3 T4a）
+ * v0.3 の変更: for / in、リストのリテラル、添字、添字への代入（M3 T4a）、束縛パターン Ok(x) / Err(e)（M3 T5a、ADR-0013）
  * v0.2 の変更: Union 型（A | B）、is / is not（T1a）、match / case（T2）、type 定義・レコード・キーワード引数・フィールド参照（T3）、Generics（T4）、モジュール（T6）
  *
  * 表記: ISO EBNF 風。{ x } は 0 回以上、[ x ] は省略可、| は選択。
@@ -34,7 +34,9 @@ if_stmt     = "if" expr ":" block { "elif" expr ":" block } [ "else" ":" block ]
 while_stmt  = "while" expr ":" block ;
 match_stmt  = "match" expr ":" NEWLINE INDENT case_clause { case_clause } DEDENT ;
 case_clause = "case" pattern ":" block ;
-pattern     = IDENT "(" ")"                             (* 型パターン: int() / bool() / str() *)
+pattern     = IDENT "(" ")"                             (* 型パターン: int() / bool() / str() / Result() *)
+            | IDENT "(" ( IDENT | "_" ) ")"             (* 束縛パターン: Ok(x) / Err(e) / Ok(_)（ADR-0013）。
+                                                           束縛変数のスコープは case の本体だけ *)
             | "None"
             | "_" ;                                     (* ワイルドカード *)
 

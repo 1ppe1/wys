@@ -1,0 +1,6 @@
+# expect-error: E1002 2:24
+def f() -> Result[int, None]:
+    return Ok(1)
+
+def main() -> None:
+    f()

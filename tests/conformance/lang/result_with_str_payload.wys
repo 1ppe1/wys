@@ -1,0 +1,31 @@
+# 参照型を中身に持つ Result。束縛した値をリストに保存しても、終了時の生存オブジェクトは 0
+# expect-stdout: oops?
+# expect-stdout: 2
+# expect-stdout: ab!
+# expect-stdout: cd!
+# expect-stdout: oops?
+# expect-stdout: 2
+def make(s: str) -> Result[str, str]:
+    if s == "bad":
+        return Err("oops" + "?")
+    return Ok(s + "!")
+
+def main() -> None:
+    kept: list[str] = []
+    for s in ["ab", "bad", "cd"]:
+        r = make(s)
+        match r:
+            case Ok(v):
+                kept.append(v)
+            case Err(e):
+                print(e)
+    print(len(kept))
+    for k in kept:
+        print(k)
+    match make("bad"):
+        case Ok(v):
+            print(v)
+        case Err(e):
+            print(e)
+    ys: list[Result[list[int], str]] = [Ok([1, 2]), Err("e" + "x")]
+    print(len(ys))

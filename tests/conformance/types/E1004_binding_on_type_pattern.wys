@@ -1,0 +1,10 @@
+# expect-error: E1004 4:14
+def f(v: int | None) -> None:
+    match v:
+        case int(n):
+            print(n)
+        case None:
+            pass
+
+def main() -> None:
+    f(1)
