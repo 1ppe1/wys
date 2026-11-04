@@ -8,6 +8,7 @@
 //! # expect-stdout: 55               期待する標準出力の1行。複数行は繰り返して書く
 //! # expect-exit: 101                期待する終了コード（省略時は 0）
 //! # expect-stderr-contains: overflow 標準エラーに含まれるべき文字列
+//! # expect-args: 42 true hello      実行時にプログラムに渡すコマンドライン引数（空白区切り）
 //! ```
 //!
 //! 診断（エラーと警告）は、ファイルに書いた順で過不足なく一致しなければならない。
@@ -24,6 +25,7 @@ pub struct Expectations {
     pub stdout: Option<String>,
     pub exit: i32,
     pub stderr_contains: Vec<String>,
+    pub args: Vec<String>,
 }
 
 pub fn parse_expectations(src: &str) -> Result<Expectations, String> {
@@ -65,6 +67,7 @@ pub fn parse_expectations(src: &str) -> Result<Expectations, String> {
                     .map_err(|_| format!("line {}: bad exit code", i + 1))?;
             }
             "stderr-contains" => e.stderr_contains.push(value.to_string()),
+            "args" => e.args.extend(value.split_whitespace().map(str::to_string)),
             other => return Err(format!("line {}: unknown expectation `{other}`", i + 1)),
         }
     }
@@ -139,6 +142,7 @@ pub fn run_case(
     let exe = scratch.join(stem);
     wys_driver::link_program(program, &exe, opts).map_err(|e| format!("build failed: {e:?}"))?;
     let out = Command::new(&exe)
+        .args(&exp.args)
         .output()
         .map_err(|e| format!("cannot run: {e}"))?;
     let code = out.status.code().unwrap_or(-1);

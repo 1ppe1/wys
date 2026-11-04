@@ -1,0 +1,5 @@
+# AC-003: Unknown の値は検証するまで具体型として使えない
+# expect-error: E0601 5:11
+def main() -> None:
+    v = parse_scalar("41")
+    print(v + 1)

@@ -37,7 +37,7 @@ CI（`.github/workflows/ci.yml`、macOS arm64）は `scripts/ci.sh`（fmt / clip
 | AC-002（`None` の可能性がある値の未検証利用を拒否） | **合格（M2 T1a / T1b）**。拒否: `types/E0301_*`。検査後の値が正しく動くこと: `lang/optional_*`、`lang/union_*` |
 | LANG-004（`match` と網羅性検査、Generics） | **合格（M2 T2 / T4）**。`lang/match_*`、`lang/generic_*`、`types/E030x_*`・`W0301_*`・`E040x_*`、e2e の `warnings_are_reported_but_do_not_fail` |
 | LANG-003 / LANG-005（レコード型、構造的な幅部分型） | **合格（M2 T3）**。`lang/record_*`、`types/E05xx_*`・`E0304_*` |
-| AC-003（`Unknown` の検証） | M2 T5 |
+| AC-003（`Unknown` の検証） | **合格（M2 T5）**。拒否: `types/E0601_*`・`E0602_*`。検証後の利用: `lang/unknown_from_args.wys`（コマンドライン引数を `# expect-args:` で渡す） |
 | Linux x86_64 での CI | **M2 T0 で追加済み** |
 | メモリ安全性の境界テスト（NFR-001）、AddressSanitizer での実行 | M3（ADR-0005） |
 | コンパイル時間・バイナリサイズの継続計測 | M3 |
