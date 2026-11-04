@@ -832,6 +832,25 @@ impl Parser<'_> {
     fn postfix(&mut self) -> PResult<Expr> {
         let mut e = self.primary()?;
         loop {
+            if self.at(&TokenKind::Question) {
+                self.bump();
+                let start = e.span.start;
+                e = self.mk(ExprKind::Try(Box::new(e)), start);
+                // `?.` / `?[` は書けない（ADR-0006: `?.` を導入しない）。括弧で囲む
+                if matches!(self.peek(), TokenKind::Dot | TokenKind::LBracket) {
+                    let found = self.peek().describe();
+                    self.diags.push(
+                        Diagnostic::error(
+                            "E0101",
+                            format!("expected the end of the expression after `?`, found {found}"),
+                            self.span(),
+                        )
+                        .with_hint("wrap the propagated value in parentheses, e.g. `(f()?)[0]`"),
+                    );
+                    return Err(Reported);
+                }
+                continue;
+            }
             if self.eat(&TokenKind::LBracket) {
                 let index = self.expr()?;
                 self.expect(&TokenKind::RBracket, "`]`")?;

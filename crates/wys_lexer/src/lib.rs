@@ -59,6 +59,8 @@ pub enum TokenKind {
     LBracket,
     RBracket,
     Dot,
+    /// `?`（`Result` の伝搬、ADR-0013）
+    Question,
     /// コメント（`lex_with_trivia` のときだけ）。`level` は行頭のコメントのインデントの深さ、行末のコメントなら `None`。
     Comment {
         text: String,
@@ -126,6 +128,7 @@ impl TokenKind {
             LBracket => "`[`",
             RBracket => "`]`",
             Dot => "`.`",
+            Question => "`?`",
             Comment { .. } => "comment",
             BlankLine => "blank line",
             Newline => "end of line",
@@ -502,6 +505,7 @@ impl Lexer<'_> {
             (b'{', _) => (LBrace, 1),
             (b'}', _) => (RBrace, 1),
             (b'.', _) => (Dot, 1),
+            (b'?', _) => (Question, 1),
             (b'[', _) => (LBracket, 1),
             (b']', _) => (RBracket, 1),
             _ => {

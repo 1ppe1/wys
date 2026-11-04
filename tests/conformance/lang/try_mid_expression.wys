@@ -1,0 +1,32 @@
+# 式の途中の `?`（二項演算・呼び出しの引数・リスト・or の右辺）。`?` の後でブロックが変わっても値が正しく使える
+# expect-stdout: xyzn 16
+# expect-stdout: neg!
+def f(n: int) -> Result[int, str]:
+    if n < 0:
+        return Err("neg" + "!")
+    return Ok(n)
+
+def add3(a: int, b: int, c: int) -> int:
+    return a + b + c
+
+def mix(n: int) -> Result[str, str]:
+    a = 10 + f(n)?
+    s = "x" + "y"
+    t = s + "z" + str_of(f(n)?)
+    xs = [a, f(n)?, f(1)? * 2]
+    b = add3(a, f(n)?, len(xs))
+    ok = n > 100 or f(n)? > 3
+    if ok:
+        return Ok(t + " " + "16")
+    return Ok(t)
+
+def str_of(n: int) -> str:
+    return "n"
+
+def main() -> None:
+    for n in [5, -1]:
+        match mix(n):
+            case Ok(v):
+                print(v)
+            case Err(e):
+                print(e)

@@ -415,3 +415,30 @@ fn result_values_run_and_missing_types_are_hinted() {
             .contains("Result[int, str]")
     );
 }
+
+#[test]
+fn try_propagates_and_reports_uncovered_errors() {
+    let ok = scratch(
+        "try_ok",
+        "def parse(s: str) -> Result[int, str]:\n    if s == \"1\":\n        return Ok(1)\n    return Err(\"bad \" + s)\n\ndef twice(s: str) -> Result[int, str]:\n    return Ok(parse(s)? * 2)\n\ndef main() -> None:\n    for s in [\"1\", \"x\"]:\n        match twice(s):\n            case Ok(v):\n                print(v)\n            case Err(e):\n                print(e)\n",
+    );
+    let run = cli(&["run", ok.to_str().unwrap()]);
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "2\nbad x\n");
+
+    let bad = scratch(
+        "try_bad",
+        "def f() -> Result[int, str]:\n    return Ok(1)\n\ndef g() -> Result[int, int]:\n    return Ok(f()?)\n\ndef main() -> None:\n    g()\n",
+    );
+    let check = cli(&["check", "--format", "json", bad.to_str().unwrap()]);
+    assert_eq!(check.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
+    let d = &v["diagnostics"][0];
+    assert_eq!(d["code"], "E1012");
+    assert!(
+        d["hints"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("int | str")
+    );
+}

@@ -1,0 +1,29 @@
+# ループの中の `?`。参照型の中身を持つ Result を途中で返しても、終了時の生存オブジェクトは 0
+# expect-stdout: 2
+# expect-stdout: aa
+# expect-stdout: bb
+# expect-stdout: empty!
+def check(s: str) -> Result[str, str]:
+    if len(s) == 0:
+        return Err("empty" + "!")
+    return Ok(s + s)
+
+def double_all(xs: list[str]) -> Result[list[str], str]:
+    out: list[str] = []
+    for x in xs:
+        out.append(check(x)?)
+    return Ok(out)
+
+def main() -> None:
+    match double_all(["a", "b"]):
+        case Ok(v):
+            print(len(v))
+            for s in v:
+                print(s)
+        case Err(e):
+            print(e)
+    match double_all(["a", "", "c"]):
+        case Ok(v):
+            print(len(v))
+        case Err(e):
+            print(e)
