@@ -1,4 +1,4 @@
-# 共通IR 設計メモ（M2 T1b 時点）
+# 共通IR 設計メモ（M2 完了時点）
 
 実装: `crates/wys_ir`。AST からの変換は `crates/wys_lower`、LLVM IR への変換は `crates/wys_backend`。
 
@@ -57,6 +57,23 @@ bb0:
   return
 }
 ```
+
+## レコード（M2 T3、ADR-0007 / ADR-0009）
+
+- `Program.records` にフィールド（名前と型、名前順）を登録する。値型で、受け渡しはコピー。
+- 命令: `make_record rN(t...)`（フィールドの順に値を並べて作る）、`field t, i`（i 番目のフィールド）。
+- 幅部分型の変換は、変換先のフィールドを `field` で取り出して `make_record` で作り直す。
+- LLVM では `%record.N = type { ... }`。Union の中身の大きさは、レコードのフィールドの語数の和で見積もる。
+
+## `Unknown`（M2 T5、ADR-0011）
+
+- IR には `Unknown` 型はない。lowering が `int | bool | str | None` の Union に置き換える。
+- 外部入力は組み込み関数（`arg_count`、`arg_exists`、`arg_str`、`scalar_kind`、`scalar_int`、`scalar_bool`）を lowering が組み合わせて作る。ランタイムとの境界はスカラーとポインタだけ。
+
+## `wys test`（M2 T7）
+
+- テストのときは、`main` の代わりに `__wys_tests` をエントリにする。これは `test_index`（環境変数 `WYS_TEST_INDEX`）の番号のテスト関数を1つだけ呼ぶ。
+- `assert` は分岐と `assert_fail`（場所の文字列を渡す、戻らない）になる。
 
 ## Generics（M2 T4）
 

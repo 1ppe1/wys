@@ -1,4 +1,4 @@
-# テスト計画（v0.1: M1 時点）
+# テスト計画（v0.2: M2 完了時点）
 
 要件定義書「13. 次の設計成果物」の 5（MVP テスト計画）の初版。受け入れ基準（AC）と要件を、どのテストで確かめているかを対応づける。
 
@@ -7,12 +7,13 @@
 | 種類 | 置き場所 | 実行 | 内容 |
 |---|---|---|---|
 | 単体テスト | 各クレートの `#[cfg(test)]` | `cargo test` | 字句・構文・型検査・IR 検証器・ランタイム関数 |
+| PoC5 のケース検証 | `scripts/poc5/cases/` | `scripts/poc5/verify.sh`（CI） | 壊れた版は失敗し、正解の修正例は合格する |
 | Conformance テスト | `tests/conformance/{lang,syntax,types,diagnostics}/*.wys`、`tests/conformance/modules/*/main.wys` | `cargo test -p wys_testharness` | 言語仕様の適合性。期待値は `.wys` の先頭コメントで宣言する |
 | 診断スナップショット | `crates/wys_testharness/tests/snapshots/` | 同上（insta） | 診断 JSON の形を固定する |
 | e2e テスト | `crates/wys_cli/tests/e2e.rs` | `cargo test -p wys_cli` | CLI の挙動（終了コード、出力形式、ビルドした実行ファイル） |
 | ベンチ計測 | `benches/measure.sh` | 手動（M3 で CI 化を検討） | コンパイル時間、バイナリサイズ、起動時間。倍率は書かない |
 
-CI（`.github/workflows/ci.yml`、macOS arm64）は `scripts/ci.sh`（fmt / clippy / test）を実行する。
+CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は `scripts/ci.sh`（fmt / clippy / test、`examples/` の `wys fmt --check`、PoC5 のケース検証）を実行する。
 
 ## 2. M1 の受け入れ基準と確認方法
 

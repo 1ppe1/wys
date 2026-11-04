@@ -1,0 +1,11 @@
+# 多相再帰: 呼び出しのたびに型引数が大きくなる。単相化が終わらないので E0404（以前は診断なしで固まっていた）
+# expect-error: E0404 8:12
+type Pair[A, B] = {first: A, second: B}
+
+def f[T](x: T, n: int) -> int:
+    if n == 0:
+        return 0
+    return f(Pair(first=x, second=x), n - 1)
+
+def main() -> None:
+    print(f(1, 3))

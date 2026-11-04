@@ -55,6 +55,12 @@ pub struct RecordDef {
     /// Generic な `type` の型引数（表示用。`Pair[int, str]`）。
     pub args: Vec<Ty>,
     pub fields: Vec<(String, Ty)>,
+    /// 型の入れ子の深さ（登録時に計算する。同じ型のフィールドを持つ入れ子で、再帰的にたどると指数的になるため）
+    pub depth: usize,
+    /// フィールドに型パラメータを含むか（登録時に計算する）
+    pub has_param: bool,
+    /// フィールドに `Unknown` を含むか（登録時に計算する）
+    pub has_unknown: bool,
 }
 
 impl RecordDef {
@@ -218,10 +224,20 @@ impl Types {
             return Ty::Record(id);
         }
         let id = RecordId(self.records.len() as u32);
+        let depth = 1 + fields
+            .iter()
+            .map(|(_, t)| self.depth(*t))
+            .max()
+            .unwrap_or(0);
+        let has_param = fields.iter().any(|(_, t)| self.contains_param(*t));
+        let has_unknown = fields.iter().any(|(_, t)| self.contains_unknown(*t));
         self.records.push(RecordDef {
             name,
             args,
             fields: fields.clone(),
+            depth,
+            has_param,
+            has_unknown,
         });
         self.record_index.insert(fields, id);
         Ty::Record(id)
@@ -261,15 +277,40 @@ impl Types {
         }
     }
 
+    /// 型パラメータを含むか。レコードは登録時に計算した値を使うので、入れ子が深くても定数時間。
     pub fn contains_param(&self, t: Ty) -> bool {
         match t {
             Ty::Param(_) => true,
+            // Union の構成要素は Union を含まない（平坦化済み）
             Ty::Union(_) => self.members(t).iter().any(|m| self.contains_param(*m)),
-            Ty::Record(r) => self.records[r.0 as usize]
-                .fields
-                .iter()
-                .any(|(_, ft)| self.contains_param(*ft)),
+            Ty::Record(r) => self.records[r.0 as usize].has_param,
             _ => false,
+        }
+    }
+
+    /// `Unknown` を含むか。レコードは登録時に計算した値を使う。
+    pub fn contains_unknown(&self, t: Ty) -> bool {
+        match t {
+            Ty::Unknown => true,
+            Ty::Union(_) => self.members(t).iter().any(|m| self.contains_unknown(*m)),
+            Ty::Record(r) => self.records[r.0 as usize].has_unknown,
+            _ => false,
+        }
+    }
+
+    /// 型の入れ子の深さ（基本型は 0）。レコードは登録時に計算した値を使う。
+    pub fn depth(&self, t: Ty) -> usize {
+        match t {
+            Ty::Union(_) => {
+                1 + self
+                    .members(t)
+                    .iter()
+                    .map(|m| self.depth(*m))
+                    .max()
+                    .unwrap_or(0)
+            }
+            Ty::Record(r) => self.records[r.0 as usize].depth,
+            _ => 0,
         }
     }
 

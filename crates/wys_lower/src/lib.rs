@@ -26,7 +26,12 @@ struct Shared<'t> {
     queue: VecDeque<(usize, Vec<TTy>, FuncId)>,
     /// ソース上の位置を「ファイル:行:列」にする（`assert` の失敗メッセージ用）
     locate: &'t dyn Fn(u32) -> String,
+    /// 単相化を打ち切った理由（多相再帰など）。あれば IR を作らずに診断を返す
+    error: Option<wys_diagnostics::Diagnostic>,
 }
+
+/// 型引数の入れ子の深さの上限。多相再帰（`f[T]` が `f[Pair[T, T]]` を呼ぶなど）で、具体化が終わらないのを防ぐ。
+const MAX_INSTANCE_TYPE_DEPTH: usize = 32;
 
 impl Shared<'_> {
     /// 型検査の型を IR の型にする。Union とレコードは、使われたものだけを IR に登録する。
@@ -87,17 +92,7 @@ impl Shared<'_> {
     }
 
     fn has_unknown(&self, t: TTy) -> bool {
-        match t {
-            TTy::Unknown => true,
-            TTy::Union(_) => self.types.members(t).iter().any(|m| self.has_unknown(*m)),
-            TTy::Record(r) => self
-                .types
-                .record_def(r)
-                .fields
-                .iter()
-                .any(|(_, ft)| self.has_unknown(*ft)),
-            _ => false,
-        }
+        self.types.contains_unknown(t)
     }
 
     fn ir_union(&mut self, u: wys_typeck::UnionId) -> UnionId {
@@ -135,10 +130,32 @@ impl Shared<'_> {
     }
 
     /// 関数のインスタンス（Generic でなければ型引数は空）を求め、まだなければ生成待ちに積む。
-    fn request(&mut self, index: usize, args: Vec<TTy>) -> FuncId {
+    fn request(&mut self, index: usize, args: Vec<TTy>, at: wys_span::Span) -> FuncId {
         let key = (index, args);
         if let Some(&id) = self.instances.get(&key) {
             return id;
+        }
+        if self.error.is_some() {
+            return FuncId(0);
+        }
+        if key
+            .1
+            .iter()
+            .any(|t| self.types.depth(*t) > MAX_INSTANCE_TYPE_DEPTH)
+        {
+            let name = &self.tc.sigs[index].name;
+            self.error = Some(
+                wys_diagnostics::Diagnostic::error(
+                    "E0404",
+                    format!("generic function `{name}` is instantiated with ever larger types (polymorphic recursion)"),
+                    at,
+                )
+                .with_cause(format!(
+                    "its type arguments become nested more than {MAX_INSTANCE_TYPE_DEPTH} levels deep, so instantiation would never end"
+                ))
+                .with_hint("call the function recursively with the same type arguments, or make it non-generic"),
+            );
+            return FuncId(0);
         }
         let id = FuncId(self.instances.len() as u32);
         self.instances.insert(key.clone(), id);
@@ -156,6 +173,13 @@ pub struct LowerOptions<'a> {
 
 /// AST と型検査の結果から IR を作る。Generic 関数は、使われた型引数ごとに単相化する（ADR-0006）。
 pub fn lower(module: &ast::Module, tc: &TypeckResult) -> Program {
+    try_lower(module, tc).expect("lowering failed; use lower_with to get the diagnostic")
+}
+
+fn try_lower(
+    module: &ast::Module,
+    tc: &TypeckResult,
+) -> Result<Program, Box<wys_diagnostics::Diagnostic>> {
     lower_with(
         module,
         tc,
@@ -166,7 +190,12 @@ pub fn lower(module: &ast::Module, tc: &TypeckResult) -> Program {
     )
 }
 
-pub fn lower_with(module: &ast::Module, tc: &TypeckResult, opts: &LowerOptions<'_>) -> Program {
+/// IR を作る。単相化を打ち切った場合（多相再帰、E0404）は診断を返す。
+pub fn lower_with(
+    module: &ast::Module,
+    tc: &TypeckResult,
+    opts: &LowerOptions<'_>,
+) -> Result<Program, Box<wys_diagnostics::Diagnostic>> {
     let mut sh = Shared {
         tc,
         types: tc.types.clone(),
@@ -184,20 +213,27 @@ pub fn lower_with(module: &ast::Module, tc: &TypeckResult, opts: &LowerOptions<'
         instances: HashMap::new(),
         queue: VecDeque::new(),
         locate: opts.locate,
+        error: None,
     };
     // Generic でない関数を先に登録する（関数番号はソースの順になる）
     for (i, sig) in tc.sigs.iter().enumerate() {
         if sig.type_params.is_empty() {
-            sh.request(i, Vec::new());
+            sh.request(i, Vec::new(), wys_span::Span::new(0, 0));
         }
     }
     let mut funcs: Vec<Option<Function>> = Vec::new();
     while let Some((i, args, id)) = sh.queue.pop_front() {
+        if sh.error.is_some() {
+            break;
+        }
         let f = FnLower::run(&module.funcs[i], i, args, id, &mut sh);
         if funcs.len() <= id.0 as usize {
             funcs.resize(id.0 as usize + 1, None);
         }
         funcs[id.0 as usize] = Some(f);
+    }
+    if let Some(d) = sh.error {
+        return Err(Box::new(d));
     }
     let mut funcs: Vec<Function> = funcs
         .into_iter()
@@ -214,13 +250,13 @@ pub fn lower_with(module: &ast::Module, tc: &TypeckResult, opts: &LowerOptions<'
         funcs.push(test_dispatcher(&ids));
         FuncId(funcs.len() as u32 - 1)
     };
-    Program {
+    Ok(Program {
         strings: sh.strings,
         unions: sh.unions,
         records: sh.records,
         funcs,
         entry,
-    }
+    })
 }
 
 /// `wys test` のエントリ: 環境変数 `WYS_TEST_INDEX` の番号のテスト関数を1つだけ呼ぶ。
@@ -420,7 +456,7 @@ impl<'s, 't> FnLower<'s, 't> {
             .collect();
         let ret = self.sh.types.subst(ret, &map);
         let ret = self.sh.norm(ret);
-        (self.sh.request(index, args), params, ret)
+        (self.sh.request(index, args, call.span), params, ret)
     }
 
     // ---- builder helpers ----
