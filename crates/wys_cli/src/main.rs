@@ -14,6 +14,7 @@ usage:
   wys check [--format text|json] <file>   check a file and report diagnostics
   wys build <file> [-o <output>]          build a native executable
   wys run <file> [-- <args>...]           build and run (arguments after -- go to the program)
+  wys test <file>                         run the functions named test_* (no main needed)
   wys dump-ir <file>                      print the wys IR
   wys dump-llvm <file>                    print the generated LLVM IR
 ";
@@ -86,6 +87,26 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
                 ExitCode::SUCCESS
             })
         }
+        "test" => {
+            let src = file.ok_or("missing source file")?;
+            let text = std::fs::read_to_string(&src)
+                .map_err(|e| format!("cannot read {}: {e}", src.display()))?;
+            let (fe, tests) = wys_driver::frontend_tests(&src.display().to_string(), &text);
+            if tests.is_empty() && !fe.has_errors() {
+                println!("no tests found (define functions named `test_*`)");
+                return Ok(ExitCode::SUCCESS);
+            }
+            let Some(p) = buildable(&fe, format)? else {
+                return Ok(ExitCode::from(1));
+            };
+            let exe = std::env::temp_dir().join(format!("wys-test-{}", std::process::id()));
+            if let Err(e) = wys_driver::link_program(p, &exe, &opts) {
+                return build_error(e, format);
+            }
+            let result = run_tests(&exe, &tests);
+            let _ = std::fs::remove_file(&exe);
+            result
+        }
         "dump-ir" | "dump-llvm" => {
             let fe = load(file.as_deref())?;
             let Some(p) = buildable(&fe, format)? else {
@@ -130,6 +151,39 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
         }
         other => Err(format!("unknown command `{other}`\n{USAGE}")),
     }
+}
+
+/// テストを1件ずつ別のプロセスで実行する（1件の失敗で、ほかのテストが止まらないように）。
+fn run_tests(exe: &Path, tests: &[String]) -> Result<ExitCode, String> {
+    let mut failed = Vec::new();
+    for (i, name) in tests.iter().enumerate() {
+        let out = std::process::Command::new(exe)
+            .env("WYS_TEST_INDEX", i.to_string())
+            .output()
+            .map_err(|e| format!("cannot run the tests: {e}"))?;
+        if out.status.success() {
+            println!("test {name} ... ok");
+        } else {
+            println!("test {name} ... FAILED");
+            failed.push((name, out));
+        }
+    }
+    for (name, out) in &failed {
+        println!("\n---- {name} ----");
+        print!("{}", String::from_utf8_lossy(&out.stdout));
+        print!("{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let passed = tests.len() - failed.len();
+    let verdict = if failed.is_empty() { "ok" } else { "FAILED" };
+    println!(
+        "\ntest result: {verdict}. {passed} passed; {} failed",
+        failed.len()
+    );
+    Ok(if failed.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 fn default_output(src: &Path) -> PathBuf {

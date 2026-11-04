@@ -1,0 +1,7 @@
+# expect-mode: test
+# expect-error: E0801 3:5
+def test_needs_arg(n: int) -> None:
+    pass
+
+def test_ok() -> None:
+    assert(True)

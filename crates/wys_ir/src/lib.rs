@@ -156,6 +156,10 @@ pub enum Builtin {
     ScalarKind,
     ScalarInt,
     ScalarBool,
+    /// `wys test` で実行するテストの番号
+    TestIndex,
+    /// `assert` の失敗（引数は場所の文字列）。戻らない。
+    AssertFail,
 }
 
 impl Builtin {
@@ -171,14 +175,22 @@ impl Builtin {
             Builtin::ScalarKind => "scalar_kind",
             Builtin::ScalarInt => "scalar_int",
             Builtin::ScalarBool => "scalar_bool",
+            Builtin::TestIndex => "test_index",
+            Builtin::AssertFail => "assert_fail",
         }
     }
 
     /// 戻り値の型（なければ `None`）。
     pub fn ret(self) -> Option<Ty> {
         match self {
-            Builtin::PrintInt | Builtin::PrintBool | Builtin::PrintStr | Builtin::Exit => None,
-            Builtin::ArgCount | Builtin::ScalarKind | Builtin::ScalarInt => Some(Ty::Int),
+            Builtin::PrintInt
+            | Builtin::PrintBool
+            | Builtin::PrintStr
+            | Builtin::Exit
+            | Builtin::AssertFail => None,
+            Builtin::ArgCount | Builtin::ScalarKind | Builtin::ScalarInt | Builtin::TestIndex => {
+                Some(Ty::Int)
+            }
             Builtin::ArgExists | Builtin::ScalarBool => Some(Ty::Bool),
             Builtin::ArgStr => Some(Ty::Str),
         }
@@ -189,7 +201,8 @@ impl Builtin {
             Builtin::PrintInt | Builtin::Exit => &[Ty::Int],
             Builtin::PrintBool => &[Ty::Bool],
             Builtin::PrintStr => &[Ty::Str],
-            Builtin::ArgCount => &[],
+            Builtin::ArgCount | Builtin::TestIndex => &[],
+            Builtin::AssertFail => &[Ty::Str],
             Builtin::ArgExists | Builtin::ArgStr => &[Ty::Int],
             Builtin::ScalarKind | Builtin::ScalarInt | Builtin::ScalarBool => &[Ty::Str],
         }

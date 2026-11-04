@@ -89,6 +89,8 @@ declare i64 @wys_arg_len(i64)
 declare i64 @wys_scalar_kind(ptr, i64)
 declare i64 @wys_scalar_int(ptr, i64)
 declare zeroext i1 @wys_scalar_bool(ptr, i64)
+declare i64 @wys_test_index()
+declare void @wys_assert_fail(ptr, i64) noreturn
 declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
@@ -378,6 +380,15 @@ fn emit_function(out: &mut String, p: &Program, f: &Function) {
                     }
                 }
                 Inst::Call { dst, callee, args } => match callee {
+                    Callee::Builtin(Builtin::AssertFail) => {
+                        let a = t(args[0]);
+                        let k = fresh;
+                        fresh += 1;
+                        let _ = writeln!(
+                            out,
+                            "  %s{k}.p = extractvalue {STR_TY} {a}, 0\n  %s{k}.n = extractvalue {STR_TY} {a}, 1\n  call void @wys_assert_fail(ptr %s{k}.p, i64 %s{k}.n)"
+                        );
+                    }
                     Callee::Builtin(Builtin::PrintStr) => {
                         let a = t(args[0]);
                         let k = fresh;
@@ -393,12 +404,16 @@ fn emit_function(out: &mut String, p: &Program, f: &Function) {
                         | Builtin::ArgStr
                         | Builtin::ScalarKind
                         | Builtin::ScalarInt
-                        | Builtin::ScalarBool),
+                        | Builtin::ScalarBool
+                        | Builtin::TestIndex),
                     ) => {
                         let d = t(dst.expect("input builtins return a value"));
                         match b {
                             Builtin::ArgCount => {
                                 let _ = writeln!(out, "  {d} = call i64 @wys_arg_count()");
+                            }
+                            Builtin::TestIndex => {
+                                let _ = writeln!(out, "  {d} = call i64 @wys_test_index()");
                             }
                             Builtin::ArgExists => {
                                 let _ = writeln!(
