@@ -8,7 +8,7 @@ Pythonの簡潔さ、TypeScriptの型表現力、Nim/Codon/Mojoのネイティ�
 
 ## 試し方
 
-macOS arm64 で、Rust（`rust-toolchain.toml` で固定）と clang が必要。
+macOS arm64 または Linux x86_64 で、Rust（`rust-toolchain.toml` で固定）と clang が必要（CI は両方で実行）。
 
 ```sh
 cargo build

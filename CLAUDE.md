@@ -4,7 +4,7 @@
 
 ## プロジェクトの現状
 
-- AIネイティブ次世代プログラミング言語。**Phase 0**（PoC1 で最小言語 → Native 実行まで動作）。進捗は `docs/roadmap.md`。
+- AIネイティブ次世代プログラミング言語。**M2 完了**（型の拡張・モジュール・`test` / `fmt`）。進捗は `docs/roadmap.md`、M2 の詳細は `docs/plans/m2.md`。
 - 正となる文書は `docs/ai_native_language_requirements.md`（要件定義書）。迷ったらここに戻る。
 - 言語名・拡張子は未定。文書中では「本言語」と呼ぶ。勝手に名前を付けない。
 - 内部コードネームは `wys`（ユーザーが決定）。Rust クレートは `crates/wys_*`。これは正式名称ではない。

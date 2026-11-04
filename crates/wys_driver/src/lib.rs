@@ -140,7 +140,7 @@ fn run_frontend(
         let p = file.position(b);
         format!("{}:{}:{}", file.file_name(b), p.line, p.column)
     };
-    let program = wys_lower::lower_with(
+    let lowered = wys_lower::lower_with(
         &module,
         &tc,
         &wys_lower::LowerOptions {
@@ -148,6 +148,13 @@ fn run_frontend(
             locate: &locate,
         },
     );
+    let program = match lowered {
+        Ok(p) => p,
+        Err(d) => {
+            diagnostics.push(*d);
+            return failed(file, diagnostics);
+        }
+    };
     if let Err(e) = wys_ir::verify(&program) {
         panic!("internal compiler error: IR verification failed: {e}\n{program}");
     }

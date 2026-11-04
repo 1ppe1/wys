@@ -1,0 +1,13 @@
+# モジュールをまたぐ Generic な型と関数（pub type Pair[A, B]、pub def、m.Pair[int, str]）
+# expect-stdout: x
+# expect-stdout: 2
+# expect-stdout: 7
+import pairs
+from pairs import swap, first_or
+
+def main() -> None:
+    p: pairs.Pair[int, str] = pairs.Pair(first=1, second="x")
+    q = swap(p)
+    print(q.first)
+    print(q.second + 1)
+    print(first_or(None, 7))

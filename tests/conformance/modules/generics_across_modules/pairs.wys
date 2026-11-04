@@ -1,0 +1,9 @@
+pub type Pair[A, B] = {first: A, second: B}
+
+pub def swap[A, B](p: Pair[A, B]) -> Pair[B, A]:
+    return Pair(first=p.second, second=p.first)
+
+pub def first_or[T](x: T | None, default: T) -> T:
+    if x is None:
+        return default
+    return x

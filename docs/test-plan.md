@@ -13,7 +13,7 @@
 | e2e テスト | `crates/wys_cli/tests/e2e.rs` | `cargo test -p wys_cli` | CLI の挙動（終了コード、出力形式、ビルドした実行ファイル） |
 | ベンチ計測 | `benches/measure.sh` | 手動（M3 で CI 化を検討） | コンパイル時間、バイナリサイズ、起動時間。倍率は書かない |
 
-CI（`.github/workflows/ci.yml`、macOS arm64）は `scripts/ci.sh`（fmt / clippy / test）を実行する。
+CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は `scripts/ci.sh`（fmt / clippy / test、`examples/` の `wys fmt --check`、PoC5 のケース検証）を実行する。
 
 ## 2. M1 の受け入れ基準と確認方法
 

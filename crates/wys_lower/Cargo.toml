@@ -14,6 +14,8 @@ workspace = true
 wys_ast = { path = "../wys_ast" }
 wys_typeck = { path = "../wys_typeck" }
 wys_ir = { path = "../wys_ir" }
+wys_diagnostics = { path = "../wys_diagnostics" }
+wys_span = { path = "../wys_span" }
 
 [dev-dependencies]
 wys_parser = { path = "../wys_parser" }

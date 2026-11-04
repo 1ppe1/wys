@@ -986,8 +986,10 @@ name = "wys_lower"
 version = "0.0.0"
 dependencies = [
  "wys_ast",
+ "wys_diagnostics",
  "wys_ir",
  "wys_parser",
+ "wys_span",
  "wys_typeck",
 ]
 
