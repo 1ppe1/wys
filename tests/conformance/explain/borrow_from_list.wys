@@ -1,0 +1,8 @@
+# `wys explain` のスナップショット: リストの要素の借用（borrow_from_mutable_place）と、スロットの所有
+# expect-stdout: a
+def first(xs: list[str]) -> str:
+    return xs[0]
+
+def main() -> None:
+    names = ["a", "b"]
+    print(first(names))

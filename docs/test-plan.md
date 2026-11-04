@@ -12,6 +12,7 @@
 | Conformance テスト | `tests/conformance/{lang,syntax,types,diagnostics}/*.wys`、`tests/conformance/modules/*/main.wys` | `cargo test -p wys_testharness` | 言語仕様の適合性。期待値は `.wys` の先頭コメントで宣言する |
 | 診断スナップショット | `crates/wys_testharness/tests/snapshots/` | 同上（insta） | 診断 JSON の形を固定する |
 | e2e テスト | `crates/wys_cli/tests/e2e.rs` | `cargo test -p wys_cli` | CLI の挙動（終了コード、出力形式、ビルドした実行ファイル） |
+| explain のスナップショットとスキーマ検証（M3 T8、ADR-0017） | `tests/conformance/explain/*.wys`、`crates/wys_testharness/tests/snapshots/conformance__explain_*.snap` | `cargo test -p wys_testharness`（`explain_json_snapshots`、`all_explain_reports_match_schema`） | `explain/` のケースは通常の実行ケースとしても動き、`wys explain` の JSON を insta で固定する。エラーのない全ケースの JSON を `docs/spec/explain-schema.json` で検証する |
 | ベンチ計測（M3 T7） | `benches/measure.sh`、`benches/programs/*.wys` | 手動（結果は `benches/results/bench-YYYYMMDD.tsv`、git 管理外）。CI はベンチ用プログラムの `fmt --check` と `check` だけ | コンパイル時間、バイナリサイズ、実行時間、最大常駐メモリ、retain / release の回数（`WYS_RC_STATS=1` でビルドした計測用の実行ファイル）。絶対値と計測環境だけを記録し、倍率は書かない。計数の仕組みは e2e の `rc_stats_count_reference_count_operations` |
 
 CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は `scripts/ci.sh`（fmt / clippy / test、`examples/` の `wys fmt --check`、PoC5 のケース検証）を実行する。
@@ -50,6 +51,7 @@ CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は 
 | パニックの仕様と `panic(msg)`（M3 T5c、NFR-007、ADR-0013） | `lang/panic_builtin.wys`（stdout を書き出してから stderr に `runtime error: … at 場所`、終了コード 101）、`lang/panic_noreturn.wys`（戻らない文）、e2e の `panic_flushes_stdout_and_exits_with_101`。ASan モードでは LeakSanitizer を無効にする（リークの判定は生存オブジェクト数 102） |
 | `dict[K, V]`（M3 T6a、ADR-0015） | `lang/dict_*`（リテラル、`in`、`.get`、キーの種類、1000 個の伸長と挿入順、参照型の値、借用の安全条件）、`for_dict_update_value`、`runtime_key_not_found`・`runtime_dict_changed_during_iteration`、`types/E0906`〜`E0909`・`E0201_dict_key_mismatch`、ランタイムの単体テスト `dicts_keep_insertion_order_and_grow`、e2e の `dict_counts_words_in_insertion_order`。3つのモードで生存オブジェクト 0 |
 | `d.pop(k)`（M3 T6b、ADR-0015） | `lang/dict_pop`（削除後の再挿入は末尾）・`dict_pop_churn`（2000 回の追加と削除、伸長での詰め直し、`str` のキーと値）・`runtime_pop_missing_key`・`runtime_pop_during_iteration`、ランタイムの単体テスト。3つのモードで生存オブジェクト 0 |
+| DX-004 の初期版 `wys explain`（M3 T8、ADR-0017） | `wys_ir` の ARC パスの単体テスト（理由）、`wys_backend` の `arc_reasons_do_not_change_the_generated_code`、`wys_explain` の単体テスト（絞り込み、ローカル変数の名前、Generic のインスタンス、エラーコードの表）、`explain/` のスナップショット、全ケースのスキーマ検証、e2e の `explain_*`。Effect は T9 以降。初版の制限: `main` のないテスト用のファイルは説明できない（E0210 の診断を返す） |
 | LANG-001（モジュール） | **合格（M2 T6）**。`tests/conformance/modules/<ケース名>/main.wys`（import するファイルを同じディレクトリに置く）。名前解決の単体テストは `wys_resolve` |
 | AC-003（`Unknown` の検証） | **合格（M2 T5）**。拒否: `types/E0601_*`・`E0602_*`。検証後の利用: `lang/unknown_from_args.wys`（コマンドライン引数を `# expect-args:` で渡す） |
 | Linux x86_64 での CI | **M2 T0 で追加済み** |

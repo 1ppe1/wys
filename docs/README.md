@@ -9,6 +9,7 @@
 | [plans/m2.md](plans/m2.md) | 完了 | M2 のタスク分解（T0〜T10）、暫定値表現、新しい ADR と診断コードの帯 |
 | [roadmap.md](roadmap.md) | 承認済み計画 | Phase 0〜3 のマイルストーン、決定順、直近タスク |
 | [spec/diagnostics-schema.json](spec/diagnostics-schema.json) | v0（草案） | 構造化診断JSONのスキーマ（DX-002, AC-005）。実装は `crates/wys_diagnostics` で、テストでスキーマ検証する |
+| [spec/explain-schema.json](spec/explain-schema.json) | v0（草案） | `wys explain` の説明レポートのスキーマ（DX-004、ADR-0017）。実装は `crates/wys_explain` で、全 Conformance ケースの出力をスキーマ検証する |
 | [spec/grammar.ebnf](spec/grammar.ebnf) | v0.1 | 文法（PoC1 / M1 サブセット）とレイアウト規則 |
 | [spec/error-codes.md](spec/error-codes.md) | PoC1 | 診断のエラーコード一覧と実行時エラー |
 | [design/ir.md](design/ir.md) | 草案 | 共通IRの構造・値のルール・テキスト形式 |

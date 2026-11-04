@@ -20,6 +20,8 @@ pub struct Frontend {
     /// 型検査は通ったが、このコンパイラのコード生成がまだ対応していない機能を使っている場合の説明。
     /// `check` はこのプログラムを受け付ける。`build` / `run` はこのメッセージで止まる。
     pub unsupported: Option<String>,
+    /// 型検査の結果（`wys explain` 用）。`program` と同じく、エラーがないときだけ `Some`。
+    pub typeck: Option<wys_typeck::TypeckResult>,
 }
 
 impl Frontend {
@@ -82,6 +84,7 @@ fn run_frontend(
                 diagnostics,
                 program: None,
                 unsupported: None,
+                typeck: None,
             },
             Vec::new(),
         )
@@ -132,6 +135,7 @@ fn run_frontend(
                 diagnostics,
                 program: None,
                 unsupported: None,
+                typeck: None,
             },
             names,
         );
@@ -167,6 +171,7 @@ fn run_frontend(
             diagnostics,
             program: Some(program),
             unsupported: None,
+            typeck: Some(tc),
         },
         names,
     )

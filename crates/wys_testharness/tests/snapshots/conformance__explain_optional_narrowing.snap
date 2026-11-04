@@ -1,0 +1,176 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: json
+---
+{
+  "schema_version": "0",
+  "kind": "file",
+  "file": "tests/conformance/explain/optional_narrowing.wys",
+  "functions": [
+    {
+      "name": "add",
+      "span": {
+        "file": "tests/conformance/explain/optional_narrowing.wys",
+        "start": {
+          "line": 3,
+          "column": 5,
+          "byte": 113
+        },
+        "end": {
+          "line": 3,
+          "column": 8,
+          "byte": 116
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [
+          {
+            "name": "x",
+            "type": "int | None"
+          },
+          {
+            "name": "y",
+            "type": "int"
+          }
+        ],
+        "return": "int"
+      },
+      "locals": [
+        {
+          "name": "x",
+          "type": "int | None",
+          "kind": "param",
+          "span": {
+            "file": "tests/conformance/explain/optional_narrowing.wys",
+            "start": {
+              "line": 3,
+              "column": 9,
+              "byte": 117
+            },
+            "end": {
+              "line": 3,
+              "column": 10,
+              "byte": 118
+            }
+          }
+        },
+        {
+          "name": "y",
+          "type": "int",
+          "kind": "param",
+          "span": {
+            "file": "tests/conformance/explain/optional_narrowing.wys",
+            "start": {
+              "line": 3,
+              "column": 24,
+              "byte": 132
+            },
+            "end": {
+              "line": 3,
+              "column": 25,
+              "byte": 133
+            }
+          }
+        }
+      ],
+      "narrowing": [
+        {
+          "variable": "x",
+          "span": {
+            "file": "tests/conformance/explain/optional_narrowing.wys",
+            "start": {
+              "line": 5,
+              "column": 16,
+              "byte": 185
+            },
+            "end": {
+              "line": 5,
+              "column": 17,
+              "byte": 186
+            }
+          },
+          "declared": "int | None",
+          "narrowed": "int"
+        }
+      ],
+      "arc": [
+        {
+          "instance": "add",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ]
+    },
+    {
+      "name": "main",
+      "span": {
+        "file": "tests/conformance/explain/optional_narrowing.wys",
+        "start": {
+          "line": 8,
+          "column": 5,
+          "byte": 209
+        },
+        "end": {
+          "line": 8,
+          "column": 9,
+          "byte": 213
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [],
+        "return": "None"
+      },
+      "locals": [
+        {
+          "name": "z",
+          "type": "int | None",
+          "kind": "local",
+          "span": {
+            "file": "tests/conformance/explain/optional_narrowing.wys",
+            "start": {
+              "line": 9,
+              "column": 5,
+              "byte": 229
+            },
+            "end": {
+              "line": 9,
+              "column": 6,
+              "byte": 230
+            }
+          }
+        }
+      ],
+      "narrowing": [
+        {
+          "variable": "z",
+          "span": {
+            "file": "tests/conformance/explain/optional_narrowing.wys",
+            "start": {
+              "line": 10,
+              "column": 15,
+              "byte": 261
+            },
+            "end": {
+              "line": 10,
+              "column": 16,
+              "byte": 262
+            }
+          },
+          "declared": "int | None",
+          "narrowed": "int"
+        }
+      ],
+      "arc": [
+        {
+          "instance": "main",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ]
+    }
+  ]
+}

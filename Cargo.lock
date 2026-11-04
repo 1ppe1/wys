@@ -934,6 +934,7 @@ dependencies = [
  "serde_json",
  "wys_backend",
  "wys_driver",
+ "wys_explain",
  "wys_fmt",
 ]
 
@@ -957,6 +958,19 @@ dependencies = [
  "wys_lower",
  "wys_parser",
  "wys_resolve",
+ "wys_span",
+ "wys_typeck",
+]
+
+[[package]]
+name = "wys_explain"
+version = "0.0.0"
+dependencies = [
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "wys_driver",
+ "wys_ir",
  "wys_span",
  "wys_typeck",
 ]
@@ -1029,6 +1043,7 @@ dependencies = [
  "jsonschema",
  "serde_json",
  "wys_driver",
+ "wys_explain",
 ]
 
 [[package]]

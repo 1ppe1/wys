@@ -1,0 +1,143 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: json
+---
+{
+  "schema_version": "0",
+  "kind": "file",
+  "file": "tests/conformance/explain/generic_instances.wys",
+  "functions": [
+    {
+      "name": "same",
+      "span": {
+        "file": "tests/conformance/explain/generic_instances.wys",
+        "start": {
+          "line": 4,
+          "column": 5,
+          "byte": 170
+        },
+        "end": {
+          "line": 4,
+          "column": 9,
+          "byte": 174
+        }
+      },
+      "signature": {
+        "type_params": [
+          "T"
+        ],
+        "params": [
+          {
+            "name": "x",
+            "type": "T"
+          }
+        ],
+        "return": "T"
+      },
+      "locals": [
+        {
+          "name": "x",
+          "type": "T",
+          "kind": "param",
+          "span": {
+            "file": "tests/conformance/explain/generic_instances.wys",
+            "start": {
+              "line": 4,
+              "column": 13,
+              "byte": 178
+            },
+            "end": {
+              "line": 4,
+              "column": 14,
+              "byte": 179
+            }
+          }
+        }
+      ],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "same__1",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        },
+        {
+          "instance": "same__2",
+          "retains": 2,
+          "releases": 1,
+          "ops": [
+            {
+              "op": "retain",
+              "reason": "param_slot_entry",
+              "block": 0,
+              "index": 1,
+              "temp": 1,
+              "local": "x",
+              "message": "parameters are passed borrowed (+0); the callee's slot takes its own reference on entry"
+            },
+            {
+              "op": "retain",
+              "reason": "consume_borrowed",
+              "site": "return",
+              "block": 0,
+              "index": 3,
+              "temp": 0,
+              "local": "x",
+              "message": "a borrowed value is consumed by `return`, which needs an owned (+1) reference"
+            },
+            {
+              "op": "release",
+              "reason": "slot_at_function_exit",
+              "block": 0,
+              "index": 5,
+              "temp": 2,
+              "local": "x",
+              "message": "leaving the function gives up the reference held by a local slot"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "main",
+      "span": {
+        "file": "tests/conformance/explain/generic_instances.wys",
+        "start": {
+          "line": 7,
+          "column": 5,
+          "byte": 208
+        },
+        "end": {
+          "line": 7,
+          "column": 9,
+          "byte": 212
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [],
+        "return": "None"
+      },
+      "locals": [],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "main",
+          "retains": 0,
+          "releases": 1,
+          "ops": [
+            {
+              "op": "release",
+              "reason": "unconsumed_owned_at_block_end",
+              "block": 0,
+              "index": 6,
+              "temp": 3,
+              "message": "an owned (+1) value was not consumed in this block; together with its retain this is a candidate for the Move optimization"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

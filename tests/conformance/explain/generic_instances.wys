@@ -1,0 +1,9 @@
+# `wys explain` のスナップショット: Generic 関数は、使われた型引数ごとに IR のインスタンスが1つ
+# expect-stdout: 1
+# expect-stdout: s
+def same[T](x: T) -> T:
+    return x
+
+def main() -> None:
+    print(same(1))
+    print(same("s"))

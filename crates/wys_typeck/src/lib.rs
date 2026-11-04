@@ -497,10 +497,24 @@ pub struct FuncSig {
     pub span: Span,
 }
 
+/// 変数の参照で、その地点の型が宣言型と異なる（絞り込まれている）こと。
+#[derive(Debug, Clone)]
+pub struct Narrowing {
+    pub name: String,
+    /// 参照の位置。
+    pub span: Span,
+    pub declared: Ty,
+    pub narrowed: Ty,
+}
+
 #[derive(Debug, Clone)]
 pub struct FuncInfo {
     /// 関数内のローカル変数（先頭は引数）。名前と宣言された型。
     pub locals: Vec<(String, Ty)>,
+    /// `locals` と同じ順の、各ローカル変数を宣言した位置（`wys explain` 用）。
+    pub local_spans: Vec<Span>,
+    /// 変数の参照のうち、型が宣言型から絞り込まれていたもの（位置の順。`wys explain` 用）。
+    pub narrowings: Vec<Narrowing>,
 }
 
 #[derive(Debug, Clone)]
@@ -1103,6 +1117,9 @@ struct FnCk<'a> {
     ret: Ty,
     vars: HashMap<String, Var>,
     locals: Vec<(String, Ty)>,
+    local_spans: Vec<Span>,
+    /// 式ごとの絞り込み（ループで同じ式を検査し直したら上書きする）。
+    narrowings: HashMap<ExprId, Narrowing>,
 }
 
 impl<'a> FnCk<'a> {
@@ -1113,6 +1130,8 @@ impl<'a> FnCk<'a> {
             ret: sig.ret,
             vars: HashMap::new(),
             locals: Vec::new(),
+            local_spans: Vec::new(),
+            narrowings: HashMap::new(),
         };
         ck.cx.push_type_scope(&f.type_params, &sig.type_params);
         let mut env = Env::new();
@@ -1152,12 +1171,19 @@ impl<'a> FnCk<'a> {
                 .with_hint("add a `return` at the end of the function"),
             );
         }
-        FuncInfo { locals: ck.locals }
+        let mut narrowings: Vec<Narrowing> = ck.narrowings.into_values().collect();
+        narrowings.sort_by_key(|n| (n.span.start, n.span.end));
+        FuncInfo {
+            locals: ck.locals,
+            local_spans: ck.local_spans,
+            narrowings,
+        }
     }
 
     fn declare(&mut self, name: &str, ty: Ty, decl: Span) {
         self.vars.insert(name.to_string(), Var { ty, decl });
         self.locals.push((name.to_string(), ty));
+        self.local_spans.push(decl);
     }
 
     /// 複数の経路の環境を合流させる: 代入済みの変数は共通部分、型は和集合。
@@ -2595,6 +2621,20 @@ impl<'a> FnCk<'a> {
             ExprKind::None => Ty::None,
             ExprKind::Name(name) => {
                 if let Some(&t) = env.get(name) {
+                    match self.vars.get(name) {
+                        Some(v) if v.ty != t && t != Ty::Error && v.ty != Ty::Error => {
+                            let n = Narrowing {
+                                name: name.clone(),
+                                span: e.span,
+                                declared: v.ty,
+                                narrowed: t,
+                            };
+                            self.narrowings.insert(e.id, n);
+                        }
+                        _ => {
+                            self.narrowings.remove(&e.id);
+                        }
+                    }
                     t
                 } else if let Some(var) = self.vars.get(name) {
                     let (ty, decl) = (var.ty, var.decl);

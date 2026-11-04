@@ -1,0 +1,188 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: json
+---
+{
+  "schema_version": "0",
+  "kind": "file",
+  "file": "tests/conformance/explain/borrow_from_list.wys",
+  "functions": [
+    {
+      "name": "first",
+      "span": {
+        "file": "tests/conformance/explain/borrow_from_list.wys",
+        "start": {
+          "line": 3,
+          "column": 5,
+          "byte": 154
+        },
+        "end": {
+          "line": 3,
+          "column": 10,
+          "byte": 159
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [
+          {
+            "name": "xs",
+            "type": "list[str]"
+          }
+        ],
+        "return": "str"
+      },
+      "locals": [
+        {
+          "name": "xs",
+          "type": "list[str]",
+          "kind": "param",
+          "span": {
+            "file": "tests/conformance/explain/borrow_from_list.wys",
+            "start": {
+              "line": 3,
+              "column": 11,
+              "byte": 160
+            },
+            "end": {
+              "line": 3,
+              "column": 13,
+              "byte": 162
+            }
+          }
+        }
+      ],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "first",
+          "retains": 2,
+          "releases": 1,
+          "ops": [
+            {
+              "op": "retain",
+              "reason": "param_slot_entry",
+              "block": 0,
+              "index": 1,
+              "temp": 3,
+              "local": "xs",
+              "message": "parameters are passed borrowed (+0); the callee's slot takes its own reference on entry"
+            },
+            {
+              "op": "retain",
+              "reason": "borrow_from_mutable_place",
+              "block": 0,
+              "index": 5,
+              "temp": 2,
+              "message": "a value read from a mutable place (list element, dict value or key) is held while it is used (borrow safety, memory-model 2.2)"
+            },
+            {
+              "op": "release",
+              "reason": "slot_at_function_exit",
+              "block": 0,
+              "index": 7,
+              "temp": 4,
+              "local": "xs",
+              "message": "leaving the function gives up the reference held by a local slot"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "main",
+      "span": {
+        "file": "tests/conformance/explain/borrow_from_list.wys",
+        "start": {
+          "line": 6,
+          "column": 5,
+          "byte": 205
+        },
+        "end": {
+          "line": 6,
+          "column": 9,
+          "byte": 209
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [],
+        "return": "None"
+      },
+      "locals": [
+        {
+          "name": "names",
+          "type": "list[str]",
+          "kind": "local",
+          "span": {
+            "file": "tests/conformance/explain/borrow_from_list.wys",
+            "start": {
+              "line": 7,
+              "column": 5,
+              "byte": 225
+            },
+            "end": {
+              "line": 7,
+              "column": 10,
+              "byte": 230
+            }
+          }
+        }
+      ],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "main",
+          "retains": 2,
+          "releases": 3,
+          "ops": [
+            {
+              "op": "retain",
+              "reason": "consume_borrowed",
+              "site": "list_new",
+              "block": 0,
+              "index": 2,
+              "temp": 0,
+              "message": "a borrowed value is consumed by `list_new`, which needs an owned (+1) reference"
+            },
+            {
+              "op": "retain",
+              "reason": "consume_borrowed",
+              "site": "list_new",
+              "block": 0,
+              "index": 3,
+              "temp": 1,
+              "message": "a borrowed value is consumed by `list_new`, which needs an owned (+1) reference"
+            },
+            {
+              "op": "release",
+              "reason": "store_overwrites_slot",
+              "block": 0,
+              "index": 6,
+              "temp": 5,
+              "local": "names",
+              "message": "storing to a local gives up the reference held by its old value"
+            },
+            {
+              "op": "release",
+              "reason": "unconsumed_owned_at_block_end",
+              "block": 0,
+              "index": 11,
+              "temp": 4,
+              "message": "an owned (+1) value was not consumed in this block; together with its retain this is a candidate for the Move optimization"
+            },
+            {
+              "op": "release",
+              "reason": "slot_at_function_exit",
+              "block": 0,
+              "index": 13,
+              "temp": 6,
+              "local": "names",
+              "message": "leaving the function gives up the reference held by a local slot"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

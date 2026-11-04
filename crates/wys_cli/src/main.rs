@@ -18,6 +18,8 @@ usage:
   wys fmt [--check] <file>                format a file in place (--check: only report)
   wys dump-ir <file>                      print the wys IR
   wys dump-llvm <file>                    print the generated LLVM IR
+  wys explain <file | CODE>               explain a program (types, narrowing, ARC operations) or
+                                          an error code such as E0201, as JSON
 ";
 
 fn main() -> ExitCode {
@@ -42,7 +44,7 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
         eprint!("{USAGE}");
         return Ok(ExitCode::from(2));
     };
-    let mut format = Format::Text;
+    let mut format_arg: Option<Format> = None;
     let mut check_only = false;
     let mut release = false;
     let mut output: Option<PathBuf> = None;
@@ -56,11 +58,11 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
                 break;
             }
             "--format" => {
-                format = match it.next().map(String::as_str) {
+                format_arg = Some(match it.next().map(String::as_str) {
                     Some("json") => Format::Json,
                     Some("text") => Format::Text,
                     other => return Err(format!("unknown format {other:?}; use `text` or `json`")),
-                }
+                })
             }
             "-o" => output = Some(PathBuf::from(it.next().ok_or("`-o` needs a path")?)),
             "--check" => check_only = true,
@@ -77,6 +79,7 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
             }
         }
     }
+    let format = format_arg.unwrap_or(Format::Text);
     let opts = BuildOptions {
         opt_level: release.then_some(2),
         ..BuildOptions::default()
@@ -84,6 +87,37 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
     match cmd.as_str() {
         "-h" | "--help" | "help" => {
             print!("{USAGE}");
+            Ok(ExitCode::SUCCESS)
+        }
+        "explain" => {
+            // explain は機械向けの報告なので json が既定（ADR-0017）。text 形式はまだない
+            if format_arg == Some(Format::Text) {
+                return Err("`wys explain` supports only `--format json` for now".into());
+            }
+            let target = file.ok_or("missing source file or error code")?;
+            let arg = target.to_string_lossy();
+            if wys_explain::looks_like_code(&arg) && !target.exists() {
+                let entry = wys_explain::explain_code(&arg).ok_or_else(|| {
+                    format!("unknown error code `{arg}`; see docs/spec/error-codes.md")
+                })?;
+                println!("{}", wys_explain::code_json(&entry));
+                return Ok(ExitCode::SUCCESS);
+            }
+            let fe = load(Some(&target))?;
+            if let Some(msg) = &fe.unsupported {
+                return Err(msg.clone());
+            }
+            if fe.has_errors() {
+                // `check --format json` と同じ診断を出す
+                report(&fe, Format::Json);
+                return Ok(ExitCode::from(1));
+            }
+            let warnings = fe.warnings();
+            if !warnings.is_empty() {
+                eprint!("{}", wys_driver::to_text(&fe.file, &warnings));
+            }
+            let json = wys_explain::explain_file(&fe).ok_or("internal error: no analysis")?;
+            println!("{json}");
             Ok(ExitCode::SUCCESS)
         }
         "check" => {
