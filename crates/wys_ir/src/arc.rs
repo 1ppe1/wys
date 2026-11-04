@@ -152,7 +152,8 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                     if let Some(d) = dst {
                         let o = match callee {
                             Callee::Func(_) => Own::Owned,
-                            // 組み込み関数が返す文字列は不死（コマンドライン引数）
+                            Callee::Builtin(b) if b.returns_owned() => Own::Owned,
+                            // ほかの組み込み関数が返す文字列は不死（コマンドライン引数）
                             Callee::Builtin(_) => Own::Borrowed,
                         };
                         own.insert(*d, (o, false));
@@ -238,9 +239,13 @@ pub fn verify(p: &Program) -> Result<(), String> {
                     }
                     Inst::Call {
                         dst: Some(d),
-                        callee: Callee::Func(_),
+                        callee,
                         ..
-                    } => add(*d, 1, &mut bal),
+                    } if matches!(callee, Callee::Func(_))
+                        || matches!(callee, Callee::Builtin(b) if b.returns_owned()) =>
+                    {
+                        add(*d, 1, &mut bal)
+                    }
                     Inst::MakeUnion { dst, payload, .. } => {
                         if let Some(pl) = payload {
                             add(*pl, -1, &mut bal);

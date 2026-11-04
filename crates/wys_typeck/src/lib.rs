@@ -382,6 +382,7 @@ const BUILTINS: &[&str] = &[
     "arg",
     "parse_scalar",
     "assert",
+    "len",
 ];
 
 pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
@@ -1582,6 +1583,8 @@ impl<'a> FnCk<'a> {
         let rule = move |ts: &[Ty]| -> Option<Ty> {
             let (l, r) = (ts[0], ts[1]);
             match op {
+                // 文字列の連結（M3 T2b）
+                BinOp::Add if l == Ty::Str && r == Ty::Str => Some(Ty::Str),
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::FloorDiv | BinOp::Mod => {
                     (l == Ty::Int && r == Ty::Int).then_some(Ty::Int)
                 }
@@ -1589,7 +1592,7 @@ impl<'a> FnCk<'a> {
                     (l == Ty::Int && r == Ty::Int).then_some(Ty::Bool)
                 }
                 BinOp::Eq | BinOp::Ne => {
-                    (l == r && matches!(l, Ty::Int | Ty::Bool)).then_some(Ty::Bool)
+                    (l == r && matches!(l, Ty::Int | Ty::Bool | Ty::Str)).then_some(Ty::Bool)
                 }
                 BinOp::And | BinOp::Or => (l == Ty::Bool && r == Ty::Bool).then_some(Ty::Bool),
                 BinOp::Div => None,
@@ -1884,10 +1887,11 @@ impl<'a> FnCk<'a> {
                 }
                 return Ty::None;
             }
-            "arg_count" | "arg" | "parse_scalar" => {
-                // 外部入力の入口（ADR-0011）
+            "arg_count" | "arg" | "parse_scalar" | "len" => {
+                // 外部入力の入口（ADR-0011）と、文字列の長さ（M3 T2b）
                 let (params, ret): (&[Ty], Ty) = match callee.name.as_str() {
                     "arg_count" => (&[], Ty::Int),
+                    "len" => (&[Ty::Str], Ty::Int),
                     "arg" => (&[Ty::Int], self.cx.types.union([Ty::Str, Ty::None])),
                     _ => (&[Ty::Str], Ty::Unknown),
                 };

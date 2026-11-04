@@ -81,6 +81,9 @@ declare void @wys_print_str(ptr)
 declare void @wys_retain(ptr)
 declare void @wys_release(ptr)
 declare void @wys_runtime_finish()
+declare ptr @wys_str_concat(ptr, ptr)
+declare zeroext i1 @wys_str_eq(ptr, ptr)
+declare i64 @wys_str_len(ptr)
 declare void @wys_exit(i64) noreturn
 declare void @wys_panic_overflow() noreturn
 declare i64 @wys_floordiv(i64, i64)
@@ -472,6 +475,19 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                     }
                 }
                 Inst::Call { dst, callee, args } => match callee {
+                    Callee::Builtin(
+                        b @ (Builtin::StrConcat | Builtin::StrEq | Builtin::StrLen),
+                    ) => {
+                        let d = t(dst.expect("string builtins return a value"));
+                        let a: Vec<String> =
+                            args.iter().map(|x| format!("ptr {}", t(*x))).collect();
+                        let (ret, sym) = match b {
+                            Builtin::StrConcat => ("ptr", "@wys_str_concat"),
+                            Builtin::StrEq => ("zeroext i1", "@wys_str_eq"),
+                            _ => ("i64", "@wys_str_len"),
+                        };
+                        let _ = writeln!(out, "  {d} = call {ret} {sym}({})", a.join(", "));
+                    }
                     Callee::Builtin(Builtin::AssertFail) => {
                         let _ = writeln!(out, "  call void @wys_assert_fail(ptr {})", t(args[0]));
                     }

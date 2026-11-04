@@ -1,0 +1,15 @@
+# 文字列の連結（新しいオブジェクトを作る）。終了時に解放漏れがあれば終了コード 102 で失敗する
+# expect-stdout: hello, wys
+# expect-stdout: abc
+# expect-stdout: Ada Lovelace
+type Person = {first: str, last: str}
+
+def full(p: Person) -> str:
+    return p.first + " " + p.last
+
+def main() -> None:
+    greeting = "hello"
+    greeting = greeting + ", " + "wys"
+    print(greeting)
+    print("a" + ("b" + "c"))
+    print(full(Person(first="Ada", last="Love" + "lace")))

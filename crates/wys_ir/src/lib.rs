@@ -162,6 +162,12 @@ pub enum Builtin {
     TestIndex,
     /// `assert` の失敗（引数は場所の文字列）。戻らない。
     AssertFail,
+    /// 文字列の連結。新しいオブジェクトを +1 所有で返す（M3 T2b）
+    StrConcat,
+    /// 文字列の中身の比較
+    StrEq,
+    /// 文字列の長さ（文字数 = Unicode のコードポイント数）
+    StrLen,
 }
 
 impl Builtin {
@@ -179,7 +185,15 @@ impl Builtin {
             Builtin::ScalarBool => "scalar_bool",
             Builtin::TestIndex => "test_index",
             Builtin::AssertFail => "assert_fail",
+            Builtin::StrConcat => "str_concat",
+            Builtin::StrEq => "str_eq",
+            Builtin::StrLen => "str_len",
         }
+    }
+
+    /// 戻り値を +1 所有で返すか（新しく作ったオブジェクト）。そうでなければ借用（不死の文字列など）。
+    pub fn returns_owned(self) -> bool {
+        matches!(self, Builtin::StrConcat)
     }
 
     /// 戻り値の型（なければ `None`）。
@@ -193,8 +207,9 @@ impl Builtin {
             Builtin::ArgCount | Builtin::ScalarKind | Builtin::ScalarInt | Builtin::TestIndex => {
                 Some(Ty::Int)
             }
-            Builtin::ArgExists | Builtin::ScalarBool => Some(Ty::Bool),
-            Builtin::ArgStr => Some(Ty::Str),
+            Builtin::ArgExists | Builtin::ScalarBool | Builtin::StrEq => Some(Ty::Bool),
+            Builtin::ArgStr | Builtin::StrConcat => Some(Ty::Str),
+            Builtin::StrLen => Some(Ty::Int),
         }
     }
 
@@ -204,7 +219,8 @@ impl Builtin {
             Builtin::PrintBool => &[Ty::Bool],
             Builtin::PrintStr => &[Ty::Str],
             Builtin::ArgCount | Builtin::TestIndex => &[],
-            Builtin::AssertFail => &[Ty::Str],
+            Builtin::AssertFail | Builtin::StrLen => &[Ty::Str],
+            Builtin::StrConcat | Builtin::StrEq => &[Ty::Str, Ty::Str],
             Builtin::ArgExists | Builtin::ArgStr => &[Ty::Int],
             Builtin::ScalarKind | Builtin::ScalarInt | Builtin::ScalarBool => &[Ty::Str],
         }

@@ -765,6 +765,10 @@ impl<'s, 't> FnLower<'s, 't> {
                 };
                 Some(self.construct(r, kwargs))
             }
+            ExprKind::Call { callee, args, .. } if callee.name == "len" => {
+                let s = self.expr(&args[0]).expect("len takes a str");
+                Some(self.builtin(Builtin::StrLen, vec![s]))
+            }
             ExprKind::Call { callee, args, .. }
                 if matches!(callee.name.as_str(), "arg_count" | "arg" | "parse_scalar") =>
             {
@@ -1084,7 +1088,7 @@ impl<'s, 't> FnLower<'s, 't> {
         !self.sh.func_index.contains_key(name)
             && !matches!(
                 name,
-                "print" | "exit" | "arg_count" | "arg" | "parse_scalar" | "assert"
+                "print" | "exit" | "arg_count" | "arg" | "parse_scalar" | "assert" | "len"
             )
     }
 
@@ -1254,6 +1258,21 @@ impl<'s, 't> FnLower<'s, 't> {
         let l_block = self.cur;
         let r = self.expr(rhs).expect("operands have values");
         let l = self.materialize(l, l_block);
+        if self.ty(lhs) == TTy::Str {
+            // 文字列の連結と比較はランタイムの関数（M3 T2b）
+            let b = match op {
+                A::Add => Builtin::StrConcat,
+                A::Eq | A::Ne => Builtin::StrEq,
+                _ => unreachable!("only +, == and != are allowed on str"),
+            };
+            let d = self.builtin(b, vec![l, r]);
+            if op == A::Ne {
+                let n = self.temp(Ty::Bool);
+                self.emit(Inst::Not { dst: n, src: d });
+                return n;
+            }
+            return d;
+        }
         let (iop, ty) = match op {
             A::Add => (BinOp::Add, Ty::Int),
             A::Sub => (BinOp::Sub, Ty::Int),

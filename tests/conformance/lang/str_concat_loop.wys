@@ -1,0 +1,14 @@
+# ループの中で文字列を組み立てる（古い値の解放）。長さは文字数（コードポイント）で数える
+# expect-stdout: 100
+# expect-stdout: 3
+def repeat(s: str, n: int) -> str:
+    out = ""
+    i = 0
+    while i < n:
+        out = out + s
+        i = i + 1
+    return out
+
+def main() -> None:
+    print(len(repeat("ab", 50)))
+    print(len("あいう"))
