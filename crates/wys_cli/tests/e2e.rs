@@ -391,3 +391,27 @@ fn arc_checks_detect_injected_errors() {
         "doubling a release was never reported by AddressSanitizer"
     );
 }
+
+#[test]
+fn result_values_run_and_missing_types_are_hinted() {
+    let ok = scratch(
+        "result_ok",
+        "def half(n: int) -> Result[int, str]:\n    if n % 2 == 1:\n        return Err(\"odd\")\n    return Ok(n // 2)\n\ndef main() -> None:\n    for n in [4, 3]:\n        match half(n):\n            case Ok(v):\n                print(v)\n            case Err(e):\n                print(e)\n",
+    );
+    let run = cli(&["run", ok.to_str().unwrap()]);
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "2\nodd\n");
+
+    let bad = scratch("result_bad", "def main() -> None:\n    r = Ok(1)\n");
+    let check = cli(&["check", "--format", "json", bad.to_str().unwrap()]);
+    assert_eq!(check.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
+    let d = &v["diagnostics"][0];
+    assert_eq!(d["code"], "E1001");
+    assert!(
+        d["hints"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Result[int, str]")
+    );
+}

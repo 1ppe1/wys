@@ -27,6 +27,7 @@
 - 命令: `make_union uN.k(t)`（構成要素 k の値を作る）、`union_is t, k`（タグが k か）、`union_payload t, k`（中身を取り出す。タグが k の値にだけ使う）。
 - 型が変わる地点（代入、引数、戻り値、絞り込まれた変数の読み出し）で、lowering が変換を挿入する。基本型 → Union は `make_union`、Union → 基本型は `union_payload`、Union → Union はタグで分岐して詰め直す。
 - LLVM では `%union.N = type { i8, [W x i64] }`（W は最大の中身の語数。`str` は2語）。命令が使う作業領域は関数の入口で `alloca` する。
+- `Result[T, E]`（M3 T5a、ADR-0013）は、構成要素が2つの Union として表す（構成要素 0 が `Ok`、1 が `Err`。`T` と `E` が同じ型でも別の構成要素）。`Result` は Union の構成要素になれるので、Union の構成要素に別の Union が入ることがある。検証器は、構成要素の Union が自分より前に登録されていること（循環しないこと）を確かめる。
 - ランタイム（C ABI）には Union を渡さない。`print` は Union のタグで分岐して、構成要素ごとの組み込み関数を呼ぶ。
 
 ## 意味論

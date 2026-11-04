@@ -1,0 +1,36 @@
+# Result を返す関数と、case Ok(x): / case Err(e): による束縛（ADR-0013）
+# expect-stdout: 5
+# expect-stdout: error: division by zero
+# expect-stdout: done
+# expect-stdout: failed
+def divide(a: int, b: int) -> Result[int, str]:
+    if b == 0:
+        return Err("division by zero")
+    return Ok(a // b)
+
+def touch(ok: bool) -> Result[None, str]:
+    if ok:
+        return Ok(None)
+    return Err("failed")
+
+def show(r: Result[int, str]) -> None:
+    match r:
+        case Ok(v):
+            print(v)
+        case Err(e):
+            print("error: " + e)
+
+def main() -> None:
+    show(divide(10, 2))
+    show(divide(1, 0))
+    match touch(True):
+        case Ok(_):
+            print("done")
+        case Err(e):
+            print(e)
+    t: Result[None, str] = touch(False)
+    match t:
+        case Ok(_):
+            print("ok")
+        case Err(e):
+            print(e)

@@ -1,0 +1,8 @@
+# expect-error: E0303 3:11
+def f(r: Result[int, str]) -> None:
+    match r:
+        case Ok(v):
+            print(v)
+
+def main() -> None:
+    f(Ok(1))

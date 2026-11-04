@@ -1,0 +1,11 @@
+# expect-error: E1005 5:17
+def f(r: Result[int, str]) -> None:
+    v = 1
+    match r:
+        case Ok(v):
+            print(v)
+        case Err(e):
+            print(e)
+
+def main() -> None:
+    f(Ok(1))

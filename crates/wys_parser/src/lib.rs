@@ -638,13 +638,25 @@ impl Parser<'_> {
                     &TokenKind::LParen,
                     "`(` (type patterns are written like `int()`)",
                 )?;
+                // `Ok(x)` / `Ok(_)`: 束縛パターン（ADR-0013）
+                let bind = match self.peek().clone() {
+                    TokenKind::Ident(b) => {
+                        let span = self.span();
+                        self.bump();
+                        Some((b != "_").then_some(Ident { name: b, span }))
+                    }
+                    _ => None,
+                };
                 self.expect(&TokenKind::RParen, "`)`")?;
-                PatternKind::Type(name)
+                match bind {
+                    Some(b) => PatternKind::Bind(name, b),
+                    None => PatternKind::Type(name),
+                }
             }
             _ => {
-                return Err(
-                    self.error_here("a pattern (`int()`, `bool()`, `str()`, `None` or `_`)")
-                );
+                return Err(self.error_here(
+                    "a pattern (`int()`, `bool()`, `str()`, `Ok(x)`, `Err(e)`, `None` or `_`)",
+                ));
             }
         };
         Ok(Pattern {

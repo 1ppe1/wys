@@ -76,7 +76,7 @@ pub struct StrId(pub u32);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
     pub strings: Vec<String>,
-    /// Union 型の構成要素。`Ty::Union(UnionId(i))` は `unions[i]` を指す。構成要素は Union を含まない。
+    /// Union 型の構成要素。`Ty::Union(UnionId(i))` は `unions[i]` を指す。構成要素の Union（`Result` の表現）は `i` より前に登録したもの。
     pub unions: Vec<Vec<Member>>,
     /// レコード型のフィールド（名前と型、この順で配置する）。`Ty::Record(RecordId(i))` は `records[i]` を指す。
     pub records: Vec<Vec<(String, Ty)>>,
@@ -362,9 +362,15 @@ pub fn verify(p: &Program) -> Result<(), String> {
         return Err("entry function must take no parameters and return nothing".into());
     }
     for (i, members) in p.unions.iter().enumerate() {
-        if members.len() < 2 || members.iter().any(|m| matches!(m, Some(Ty::Union(_)))) {
+        // 構成要素の Union は、自分より前に登録したものだけ（`Result` は Union の構成要素になれる。ADR-0013）。
+        // 循環した入れ子を防ぐ
+        if members.len() < 2
+            || members
+                .iter()
+                .any(|m| matches!(m, Some(Ty::Union(u)) if u.0 as usize >= i))
+        {
             return Err(format!(
-                "union u{i} must have at least two non-union members"
+                "union u{i} must have at least two members, and nested unions must be registered before it"
             ));
         }
     }

@@ -28,6 +28,8 @@ pub enum Ty {
     Param(ParamId),
     /// `list[T]`（ヒープ上の可変なリスト、参照を共有する。M3 T4a、ADR-0012）
     List(ListId),
+    /// `Result[T, E]`（組み込みの名目的な Generic 型。構築子は `Ok` / `Err`。ADR-0013）
+    Result(ResultId),
     /// 未検証の外部値（ADR-0011）。`int` / `bool` / `str` / `None` のどれかだが、開いた型として扱い、
     /// `match` で確かめるまで具体的な型として使えない。
     Unknown,
@@ -48,6 +50,9 @@ pub struct ParamId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ListId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ResultId(pub u32);
 
 /// 型パラメータから具体的な型への対応。
 pub type Subst = HashMap<ParamId, Ty>;
@@ -88,6 +93,9 @@ pub struct Types {
     /// `list[T]` の要素の型（`ListId` の順）
     lists: Vec<Ty>,
     list_index: HashMap<Ty, ListId>,
+    /// `Result[T, E]` の型引数（`ResultId` の順）
+    results: Vec<(Ty, Ty)>,
+    result_index: HashMap<(Ty, Ty), ResultId>,
 }
 
 impl Types {
@@ -136,7 +144,7 @@ impl Types {
     }
 
     fn name_within(&self, t: Ty, depth: usize) -> String {
-        if depth == 0 && matches!(t, Ty::Union(_) | Ty::Record(_)) {
+        if depth == 0 && matches!(t, Ty::Union(_) | Ty::Record(_) | Ty::Result(_)) {
             return "…".into();
         }
         let name = |t: Ty| self.name_within(t, depth.saturating_sub(1));
@@ -149,6 +157,10 @@ impl Types {
             Ty::Param(p) => self.params[p.0 as usize].clone(),
             Ty::Unknown => "Unknown".into(),
             Ty::List(l) => format!("list[{}]", name(self.lists[l.0 as usize])),
+            Ty::Result(r) => {
+                let (ok, err) = self.results[r.0 as usize];
+                format!("Result[{}, {}]", name(ok), name(err))
+            }
             Ty::Record(r) => {
                 let def = &self.records[r.0 as usize];
                 match &def.name {
@@ -278,6 +290,14 @@ impl Types {
                 let e = self.subst(e, map);
                 self.list(e)
             }
+            Ty::Result(r) => {
+                if !self.contains_param(t) {
+                    return t;
+                }
+                let (ok, err) = self.results[r.0 as usize];
+                let (ok, err) = (self.subst(ok, map), self.subst(err, map));
+                self.result(ok, err)
+            }
             Ty::Union(_) => {
                 let ms: Vec<Ty> = self
                     .members(t)
@@ -311,6 +331,10 @@ impl Types {
             Ty::Union(_) => self.members(t).iter().any(|m| self.contains_param(*m)),
             Ty::Record(r) => self.records[r.0 as usize].has_param,
             Ty::List(l) => self.contains_param(self.lists[l.0 as usize]),
+            Ty::Result(r) => {
+                let (ok, err) = self.results[r.0 as usize];
+                self.contains_param(ok) || self.contains_param(err)
+            }
             _ => false,
         }
     }
@@ -322,6 +346,10 @@ impl Types {
             Ty::Union(_) => self.members(t).iter().any(|m| self.contains_unknown(*m)),
             Ty::Record(r) => self.records[r.0 as usize].has_unknown,
             Ty::List(l) => self.contains_unknown(self.lists[l.0 as usize]),
+            Ty::Result(r) => {
+                let (ok, err) = self.results[r.0 as usize];
+                self.contains_unknown(ok) || self.contains_unknown(err)
+            }
             _ => false,
         }
     }
@@ -345,6 +373,25 @@ impl Types {
         self.lists[l.0 as usize]
     }
 
+    /// `Result[ok, err]` の型を作る（同じ型引数なら同じ ID）。
+    pub fn result(&mut self, ok: Ty, err: Ty) -> Ty {
+        if ok == Ty::Error || err == Ty::Error {
+            return Ty::Error;
+        }
+        if let Some(&id) = self.result_index.get(&(ok, err)) {
+            return Ty::Result(id);
+        }
+        let id = ResultId(self.results.len() as u32);
+        self.results.push((ok, err));
+        self.result_index.insert((ok, err), id);
+        Ty::Result(id)
+    }
+
+    /// `Result[T, E]` の型引数 `(T, E)`。
+    pub fn result_args(&self, r: ResultId) -> (Ty, Ty) {
+        self.results[r.0 as usize]
+    }
+
     /// 型の入れ子の深さ（基本型は 0）。レコードは登録時に計算した値を使う。
     pub fn depth(&self, t: Ty) -> usize {
         match t {
@@ -358,6 +405,10 @@ impl Types {
             }
             Ty::Record(r) => self.records[r.0 as usize].depth,
             Ty::List(l) => 1 + self.depth(self.lists[l.0 as usize]),
+            Ty::Result(r) => {
+                let (ok, err) = self.results[r.0 as usize];
+                1 + self.depth(ok).max(self.depth(err))
+            }
             _ => 0,
         }
     }
@@ -423,6 +474,8 @@ const BUILTINS: &[&str] = &[
     "assert",
     "len",
     "range",
+    "Ok",
+    "Err",
 ];
 
 pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
@@ -520,7 +573,10 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
 fn declare_types(cx: &mut Ctx, module: &Module) {
     for (i, t) in module.types.iter().enumerate() {
         let name = &t.name.name;
-        if matches!(name.as_str(), "int" | "bool" | "str" | "None") {
+        if matches!(
+            name.as_str(),
+            "int" | "bool" | "str" | "None" | "Result" | "list"
+        ) {
             cx.diags.push(Diagnostic::error(
                 "E0209",
                 format!("`{name}` is a built-in type and cannot be redefined"),
@@ -626,6 +682,46 @@ impl Ctx {
                 let elem = self.resolve(&args[0]);
                 self.types.list(elem)
             }
+            TypeExprKind::Apply(name, args) if name == "Result" => {
+                if args.len() != 2 {
+                    self.diags.push(Diagnostic::error(
+                        "E0402",
+                        format!(
+                            "`Result` takes 2 type arguments but {} were given",
+                            args.len()
+                        ),
+                        t.span,
+                    ));
+                    return Ty::Error;
+                }
+                let ok = self.resolve(&args[0]);
+                let err = self.resolve(&args[1]);
+                if matches!(err, Ty::None | Ty::Unknown) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            "E1002",
+                            format!("the error type of `Result` cannot be `{}`", self.name(err)),
+                            args[1].span,
+                        )
+                        .with_cause(
+                            "an error must carry a value that says what went wrong (ADR-0013)",
+                        )
+                        .with_hint(
+                            "use a concrete type such as `str`, or `T | None` instead of `Result`",
+                        ),
+                    );
+                    return Ty::Error;
+                }
+                self.types.result(ok, err)
+            }
+            TypeExprKind::Name(name) if name == "Result" => {
+                self.diags.push(Diagnostic::error(
+                    "E0402",
+                    "`Result` needs its type arguments, e.g. `Result[int, str]`",
+                    t.span,
+                ));
+                Ty::Error
+            }
             TypeExprKind::Name(name) if name == "list" => {
                 self.diags.push(Diagnostic::error(
                     "E0402",
@@ -711,6 +807,20 @@ impl Ctx {
                     .iter()
                     .filter(|m| matches!(m, Ty::Record(_)))
                     .count();
+                let results = self
+                    .types
+                    .members(u)
+                    .iter()
+                    .filter(|m| matches!(m, Ty::Result(_)))
+                    .count();
+                if results > 1 {
+                    self.diags.push(
+                        Diagnostic::error("E1002", "a union can contain at most one `Result` type", t.span)
+                            .with_cause("`case Result():` must tell the members apart (ADR-0013)")
+                            .with_hint("combine the error types into one `Result`, e.g. `Result[int, str | int]`"),
+                    );
+                    return Ty::Error;
+                }
                 if records > 1 {
                     self.diags.push(
                         Diagnostic::error("E0508", "a union can contain at most one record type", t.span)
@@ -1152,6 +1262,13 @@ impl<'a> FnCk<'a> {
     /// 必ず `return` するなら true。
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], env: &mut Env) -> bool {
         let st = self.expr(subject, env);
+        if let Ty::Result(r) = st {
+            let declared = match &subject.kind {
+                ExprKind::Name(n) => self.vars.get(n).map(|v| v.ty),
+                _ => None,
+            };
+            return self.result_match(subject, r, declared, arms, env);
+        }
         let subject_var = match &subject.kind {
             ExprKind::Name(n) if self.vars.contains_key(n) => Some(n.clone()),
             _ => None,
@@ -1170,10 +1287,60 @@ impl<'a> FnCk<'a> {
         let mut live = Vec::new();
         for arm in arms {
             let mut pattern_failed = false;
+            let mut error_binding: Option<String> = None;
             let covered: Vec<Ty> = match &arm.pattern.kind {
                 PatternKind::Wildcard => remaining.clone(),
+                PatternKind::Bind(name, b) => {
+                    // 誤りを報告し、束縛変数は `Error` 型として置く（後続の診断を連鎖させない）
+                    pattern_failed = true;
+                    if let Some(b) = b
+                        && !self.vars.contains_key(&b.name)
+                    {
+                        error_binding = Some(b.name.clone());
+                    }
+                    if st != Ty::Error {
+                        self.bad_binding(name, st, arm.pattern.span);
+                    }
+                    // `int(n)` は型パターン `int()` として網羅性に数える
+                    match (&members, is_result_ctor(name)) {
+                        (Some(ms), false) => {
+                            let pt = self
+                                .pattern_type(&PatternKind::Type(name.clone()), arm.pattern.span);
+                            if ms.contains(&pt) && remaining.contains(&pt) {
+                                vec![pt]
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                        _ => Vec::new(),
+                    }
+                }
                 kind => {
-                    let pt = self.pattern_type(kind, arm.pattern.span);
+                    let pt = match kind {
+                        // `case Result():` は被検査値の Union の中の `Result` に一致する（ADR-0013）
+                        PatternKind::Type(n) if n == "Result" => {
+                            match members.as_ref().and_then(|ms| {
+                                ms.iter().find(|m| matches!(m, Ty::Result(_))).copied()
+                            }) {
+                                Some(r) => r,
+                                None => {
+                                    if st != Ty::Error {
+                                        let msg = format!(
+                                            "this pattern can never match: no `Result` is part of `{}`",
+                                            self.cx.name(st)
+                                        );
+                                        self.cx.diags.push(Diagnostic::error(
+                                            "E0305",
+                                            msg,
+                                            arm.pattern.span,
+                                        ));
+                                    }
+                                    Ty::Error
+                                }
+                            }
+                        }
+                        _ => self.pattern_type(kind, arm.pattern.span),
+                    };
                     pattern_failed = pt == Ty::Error;
                     let on_param = members
                         .as_ref()
@@ -1241,7 +1408,22 @@ impl<'a> FnCk<'a> {
                 let narrowed = self.cx.types.union(covered.iter().copied());
                 b.insert(n.clone(), narrowed);
             }
-            if !self.block(&arm.body, &mut b) {
+            if let Some(n) = &error_binding {
+                self.vars.insert(
+                    n.clone(),
+                    Var {
+                        ty: Ty::Error,
+                        decl: arm.pattern.span,
+                    },
+                );
+                b.insert(n.clone(), Ty::Error);
+            }
+            let returns = self.block(&arm.body, &mut b);
+            if let Some(n) = &error_binding {
+                self.vars.remove(n);
+                b.remove(n);
+            }
+            if !returns {
                 live.push(b);
             }
         }
@@ -1284,10 +1466,213 @@ impl<'a> FnCk<'a> {
         false
     }
 
+    /// `Result` ではない被検査値に束縛パターンを書いた（E1003）、または `Ok` / `Err` 以外に束縛を書いた（E1004）。
+    fn bad_binding(&mut self, name: &str, st: Ty, span: Span) {
+        if is_result_ctor(name) {
+            let msg = format!(
+                "`case {name}(...)` needs a value of type `Result`, but this value has type `{}`",
+                self.cx.name(st)
+            );
+            let d = Diagnostic::error("E1003", msg, span)
+                .with_cause("`Ok` / `Err` patterns can only match a value whose type is exactly `Result` (ADR-0013)");
+            let d = if self
+                .cx
+                .types
+                .members(st)
+                .iter()
+                .any(|m| matches!(m, Ty::Result(_)))
+            {
+                d.with_hint("narrow it first with `case Result():` (or `is None`), then match `Ok` / `Err` inside")
+            } else {
+                d
+            };
+            self.cx.diags.push(d);
+        } else {
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E1004",
+                    format!("`case {name}(...)` cannot bind a value"),
+                    span,
+                )
+                .with_cause("only `Ok(x)` and `Err(e)` bind values (ADR-0013); type patterns narrow the matched variable instead")
+                .with_hint(format!("write `case {name}():` and use the matched variable")),
+            );
+        }
+    }
+
+    /// `Result` に対する `match`: `Ok` と `Err` の2つで網羅性を数え、束縛変数は `case` の本体だけで使える（ADR-0013）。
+    /// `declared` は被検査値が変数のときの宣言された型（絞り込みで外れた構成要素の `case` は W0301 にする）。
+    fn result_match(
+        &mut self,
+        subject: &Expr,
+        r: ResultId,
+        declared: Option<Ty>,
+        arms: &[MatchArm],
+        env: &mut Env,
+    ) -> bool {
+        let (ok_ty, err_ty) = self.cx.types.result_args(r);
+        let st = Ty::Result(r);
+        // [Ok, Err] がまだ一致していないか
+        let mut remaining = [true, true];
+        let mut live = Vec::new();
+        for arm in arms {
+            let span = arm.pattern.span;
+            let mut failed = false;
+            let mut binding: Option<(&Ident, Ty)> = None;
+            let covered: Vec<usize> = match &arm.pattern.kind {
+                PatternKind::Wildcard => vec![0, 1],
+                PatternKind::Type(n) if n == "Result" => vec![0, 1],
+                PatternKind::Bind(name, b) if is_result_ctor(name) => {
+                    let piece = usize::from(name == "Err");
+                    let ty = if piece == 0 { ok_ty } else { err_ty };
+                    binding = b.as_ref().map(|b| (b, ty));
+                    vec![piece]
+                }
+                PatternKind::Bind(name, _) => {
+                    self.bad_binding(name, st, span);
+                    failed = true;
+                    Vec::new()
+                }
+                PatternKind::Type(n) if is_result_ctor(n) => {
+                    self.cx.diags.push(
+                        Diagnostic::error("E1004", format!("`case {n}()` needs one binding"), span)
+                            .with_hint(format!(
+                                "write `case {n}(x):`, or `case {n}(_):` to ignore the value"
+                            )),
+                    );
+                    failed = true;
+                    Vec::new()
+                }
+                PatternKind::Type(_) | PatternKind::None
+                    if declared.is_some_and(|d| {
+                        let pt = match &arm.pattern.kind {
+                            PatternKind::Type(n) => match n.as_str() {
+                                "int" => Ty::Int,
+                                "bool" => Ty::Bool,
+                                "str" => Ty::Str,
+                                _ => Ty::Error,
+                            },
+                            _ => Ty::None,
+                        };
+                        self.cx.types.members(d).contains(&pt)
+                    }) =>
+                {
+                    // 宣言された型には含まれるが、絞り込みで外れた構成要素: 到達しない case（W0301）
+                    Vec::new()
+                }
+                PatternKind::Type(_) | PatternKind::None => {
+                    let what = match &arm.pattern.kind {
+                        PatternKind::Type(n) => format!("{n}()"),
+                        _ => "None".into(),
+                    };
+                    let msg = format!(
+                        "this pattern can never match: `{what}` is not a case of `{}`",
+                        self.cx.name(st)
+                    );
+                    self.cx.diags.push(
+                        Diagnostic::error("E0305", msg, span)
+                            .with_hint("match a `Result` with `case Ok(x):` and `case Err(e):`"),
+                    );
+                    failed = true;
+                    Vec::new()
+                }
+            };
+            let covered: Vec<usize> = covered.into_iter().filter(|&i| remaining[i]).collect();
+            if covered.is_empty() && !failed {
+                self.cx.diags.push(
+                    Diagnostic::warning(
+                        "W0301",
+                        "this `case` is unreachable: earlier cases already cover it",
+                        span,
+                    )
+                    .with_hint("remove this `case` or move it before the case that covers it"),
+                );
+            }
+            for &i in &covered {
+                remaining[i] = false;
+            }
+            let mut b = env.clone();
+            let mut bound = None;
+            if let Some((ident, ty)) = binding {
+                if let Some(var) = self.vars.get(&ident.name) {
+                    let decl = var.decl;
+                    self.cx.diags.push(
+                        Diagnostic::error(
+                            "E1005",
+                            format!(
+                                "the binding `{}` has the same name as an existing variable",
+                                ident.name
+                            ),
+                            ident.span,
+                        )
+                        .with_cause(
+                            "a binding is a new variable that exists only in its `case` (ADR-0013)",
+                        )
+                        .with_hint("choose another name for the binding")
+                        .with_related(
+                            RelatedKind::Variable,
+                            &ident.name,
+                            Some(decl),
+                        ),
+                    );
+                } else {
+                    self.vars.insert(
+                        ident.name.clone(),
+                        Var {
+                            ty,
+                            decl: ident.span,
+                        },
+                    );
+                    b.insert(ident.name.clone(), ty);
+                    bound = Some(ident.name.clone());
+                }
+            }
+            let returns = self.block(&arm.body, &mut b);
+            if let Some(n) = bound {
+                self.vars.remove(&n);
+                b.remove(&n);
+            }
+            if !returns {
+                live.push(b);
+            }
+        }
+        if remaining.iter().any(|&m| m) {
+            let names: Vec<&str> = ["Ok", "Err"]
+                .iter()
+                .zip(remaining)
+                .filter(|(_, m)| *m)
+                .map(|(n, _)| *n)
+                .collect();
+            let hints: Vec<&str> = ["`case Ok(x):`", "`case Err(e):`"]
+                .iter()
+                .zip(remaining)
+                .filter(|(_, m)| *m)
+                .map(|(n, _)| *n)
+                .collect();
+            let msg = format!(
+                "non-exhaustive `match`: `{}` {} not covered",
+                names.join("`, `"),
+                if names.len() == 1 { "is" } else { "are" }
+            );
+            self.cx.diags.push(
+                Diagnostic::error("E0303", msg, subject.span)
+                    .with_cause(format!("the value has type `{}`", self.cx.name(st)))
+                    .with_hint(format!("add {}", hints.join(", ")))
+                    .with_hint("or add `case _:` to handle every remaining value"),
+            );
+            live.push(env.clone());
+        }
+        if live.is_empty() {
+            return true;
+        }
+        *env = self.join(live);
+        false
+    }
+
     fn pattern_type(&mut self, kind: &PatternKind, span: Span) -> Ty {
         match kind {
             PatternKind::None => Ty::None,
-            PatternKind::Wildcard => Ty::Error,
+            PatternKind::Wildcard | PatternKind::Bind(..) => Ty::Error,
             PatternKind::Type(name) if self.cx.aliases.contains_key(name) => {
                 match self.cx.resolve_alias(name) {
                     t @ (Ty::Int | Ty::Bool | Ty::Str | Ty::Error) => t,
@@ -1335,7 +1720,90 @@ impl<'a> FnCk<'a> {
                 let t = self.list_literal(items, env, hint, e.span);
                 self.record(e, t)
             }
+            ExprKind::Call {
+                callee,
+                args,
+                kwargs,
+            } if is_result_ctor(&callee.name) && kwargs.is_empty() => {
+                let t = self.result_ctor(callee, args, hint, e.span, env);
+                self.record(e, t)
+            }
             _ => self.expr(e, env),
+        }
+    }
+
+    /// `Ok(v)` / `Err(e)`: もう一方の型引数は手掛かり（期待型）から決める（ADR-0013）。
+    /// 手掛かりが `Result` か、`Result` を1つだけ含む Union（`Result[int, str] | None`）でなければ E1001。
+    fn result_ctor(
+        &mut self,
+        callee: &Ident,
+        args: &[Expr],
+        hint: Option<Ty>,
+        span: Span,
+        env: &Env,
+    ) -> Ty {
+        let target = hint.and_then(|h| {
+            let rs: Vec<Ty> = self
+                .cx
+                .types
+                .members(h)
+                .into_iter()
+                .filter(|m| matches!(m, Ty::Result(_)))
+                .collect();
+            (rs.len() == 1).then(|| rs[0])
+        });
+        let is_ok = callee.name == "Ok";
+        let payload = target.map(|r| {
+            let Ty::Result(id) = r else {
+                unreachable!("filtered above")
+            };
+            let (ok, err) = self.cx.types.result_args(id);
+            if is_ok { ok } else { err }
+        });
+        if args.len() != 1 {
+            for a in args {
+                self.expr(a, env);
+            }
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E0205",
+                    format!(
+                        "`{}` takes 1 argument but {} were given",
+                        callee.name,
+                        args.len()
+                    ),
+                    span,
+                )
+                .with_hint(format!("write `{}(value)`", callee.name)),
+            );
+            return target.unwrap_or(Ty::Error);
+        }
+        let at = self.expr_hint(&args[0], env, payload);
+        if hint == Some(Ty::Error) {
+            return Ty::Error;
+        }
+        match (target, payload) {
+            (Some(r), Some(p)) => {
+                let ctx = format!("the value of `{}` for `{}`", callee.name, self.cx.name(r));
+                self.cx.require(at, p, args[0].span, &ctx, None);
+                r
+            }
+            _ => {
+                let other = if is_ok { "error" } else { "success" };
+                self.cx.diags.push(
+                    Diagnostic::error(
+                        "E1001",
+                        format!(
+                            "cannot infer the {other} type of `{}(...)`",
+                            callee.name
+                        ),
+                        span,
+                    )
+                    .with_cause("`Ok` / `Err` take the other type argument from the expected type (ADR-0013)")
+                    .with_hint("annotate the variable, e.g. `r: Result[int, str] = Ok(1)`, or return it from a function declared to return a `Result`"),
+                );
+                Ty::Error
+            }
         }
     }
 
@@ -1611,7 +2079,7 @@ impl<'a> FnCk<'a> {
     fn ret_stmt(&mut self, span: Span, value: Option<&Expr>, env: &Env) {
         match (self.ret, value) {
             (Ty::Error, Some(e)) => {
-                self.expr(e, env);
+                self.expr_hint(e, env, Some(Ty::Error));
             }
             (Ty::Error, None) | (Ty::None, None) => {}
             (Ty::None, Some(e)) => {
@@ -1853,6 +2321,13 @@ impl<'a> FnCk<'a> {
             {
                 let (recv, method) = callee.name.rsplit_once('.').expect("checked above");
                 self.method_call(recv, method, callee.span, args, e.span, env)
+            }
+            ExprKind::Call {
+                callee,
+                args,
+                kwargs,
+            } if is_result_ctor(&callee.name) && kwargs.is_empty() => {
+                self.result_ctor(callee, args, None, e.span, env)
             }
             ExprKind::Call {
                 callee,
@@ -2215,6 +2690,14 @@ impl<'a> FnCk<'a> {
                     self.unify(pe, ae, own, map);
                 }
             }
+            Ty::Result(pr) => {
+                if let Ty::Result(ar) = actual {
+                    let (po, pe) = self.cx.types.result_args(pr);
+                    let (ao, ae) = self.cx.types.result_args(ar);
+                    self.unify(po, ao, own, map);
+                    self.unify(pe, ae, own, map);
+                }
+            }
             Ty::Record(r) => {
                 if let Ty::Record(a) = actual {
                     let fields = self.cx.types.record_def(r).fields.clone();
@@ -2423,9 +2906,14 @@ impl<'a> FnCk<'a> {
     }
 }
 
+fn is_result_ctor(name: &str) -> bool {
+    matches!(name, "Ok" | "Err")
+}
+
 /// 足りない構成要素に対応する `case` の書き方。
 fn case_text(t: Ty) -> String {
     match t {
+        Ty::Result(_) => "`case Result():`".into(),
         Ty::Int => "`case int():`".into(),
         Ty::Bool => "`case bool():`".into(),
         Ty::Str => "`case str():`".into(),

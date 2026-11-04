@@ -1,0 +1,18 @@
+# 型パラメータを含む Result[T, E] に対する case Ok(x):（タグを検査するので E0401 にならない）
+# expect-stdout: 1
+# expect-stdout: hi
+# expect-stdout: 0
+def or_default[T, E](r: Result[T, E], d: T) -> T:
+    match r:
+        case Ok(v):
+            return v
+        case Err(_):
+            return d
+
+def main() -> None:
+    a: Result[int, str] = Ok(1)
+    print(or_default(a, 0))
+    b: Result[str, int] = Ok("hi")
+    print(or_default(b, "no"))
+    c: Result[int, str] = Err("e")
+    print(or_default(c, 0))

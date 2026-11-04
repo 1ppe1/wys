@@ -160,6 +160,9 @@ pub enum PatternKind {
     None,
     /// `_`: 何にでも一致する。
     Wildcard,
+    /// `Ok(x)` / `Err(e)` / `Ok(_)`: 構築子に一致し、中身を束縛する（ADR-0013）。`None` は `_`（束縛しない）。
+    /// 束縛変数のスコープは `case` の本体だけ。
+    Bind(String, Option<Ident>),
 }
 
 #[derive(Debug, Clone)]
