@@ -4,7 +4,7 @@
 Pythonの簡潔さ、TypeScriptの型表現力、Nim/Codon/Mojoのネイティブ性能を参考に、
 **型安全・ネイティブ実行・AIエージェントの安全な実行**を一つの言語体験として提供することを目指す。
 
-> **現在のステータス:** Phase 0 完了（最小言語 → Native 実行ファイルまで動作、主要な設計判断 ADR-0002〜0008 が決定済み）。次は M1。内部コードネームは `wys`（正式名称ではない）。
+> **現在のステータス:** M2 完了（型の拡張・モジュール・`test` / `fmt`）。次は M3（メモリ管理と標準ライブラリ）。内部コードネームは `wys`（正式名称ではない）。
 
 ## 試し方
 
@@ -18,7 +18,13 @@ target/debug/wys test examples/math_test.wys   # test_* 関数を実行（main �
 target/debug/wys fmt examples/fib.wys          # 整形（--check で確認だけ）
 ```
 
-現在の言語機能は PoC1 の最小サブセット（`int` / `bool` / `str` 定数、関数、`if` / `while`、`print`、`exit`）。
+現在の言語機能（M2 時点）:
+
+- 型: `int` / `bool` / `str`（定数と引数）、`None`、Union（`int | None`）、レコード（`type P = {x: int}`、構造的・不変）、Generics（`def f[T]`、`type Pair[A, B]`）、`Unknown`（外部入力）
+- 文: 関数、`if` / `elif` / `else`、`while`、`match` / `case`（網羅性検査）、`assert`
+- モジュール: `import` / `from ... import`、`pub`
+- ツール: `check`（JSON 診断）、`build`、`run`、`test`、`fmt`、`dump-ir` / `dump-llvm`
+- まだないもの: `list` / `dict`、文字列の連結、`for`、クラス（M3 以降）
 
 ## ドキュメント
 
