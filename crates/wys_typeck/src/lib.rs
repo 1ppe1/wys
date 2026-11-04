@@ -5,6 +5,8 @@
 //! - 代入されていない可能性のある変数の使用を拒否する（確定代入解析）。
 //! - 値を返す関数は、すべての経路で `return` しなければならない。
 
+pub mod experimental;
+
 use std::collections::{HashMap, HashSet};
 use wys_ast::*;
 use wys_diagnostics::{Diagnostic, RelatedKind};

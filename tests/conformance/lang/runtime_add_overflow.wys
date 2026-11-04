@@ -1,0 +1,7 @@
+# expect-stdout: 9223372036854775807
+# expect-exit: 101
+# expect-stderr-contains: integer overflow
+def main() -> None:
+    x = 9223372036854775807
+    print(x)
+    print(x + 1)

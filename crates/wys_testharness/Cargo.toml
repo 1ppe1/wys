@@ -9,3 +9,9 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+wys_driver = { path = "../wys_driver" }
+
+[dev-dependencies]
+insta = "1"

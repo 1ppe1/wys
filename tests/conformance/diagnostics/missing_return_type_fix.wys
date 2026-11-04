@@ -1,0 +1,7 @@
+# 機械的に適用できる修正（replacement）付きの診断
+# expect-error: E0104 3:5
+def f():
+    pass
+
+def main() -> None:
+    f()

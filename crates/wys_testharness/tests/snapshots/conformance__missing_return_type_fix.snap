@@ -1,0 +1,49 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: "wys_driver::to_json(&fe.file, &fe.diagnostics)"
+---
+{
+  "schema_version": "0",
+  "diagnostics": [
+    {
+      "code": "E0104",
+      "severity": "error",
+      "message": "function `f` needs a return type annotation",
+      "span": {
+        "file": "tests/conformance/diagnostics/missing_return_type_fix.wys",
+        "start": {
+          "line": 3,
+          "column": 5,
+          "byte": 98
+        },
+        "end": {
+          "line": 3,
+          "column": 6,
+          "byte": 99
+        }
+      },
+      "hints": [
+        {
+          "message": "add `-> None` if the function returns nothing",
+          "replacement": {
+            "span": {
+              "file": "tests/conformance/diagnostics/missing_return_type_fix.wys",
+              "start": {
+                "line": 3,
+                "column": 8,
+                "byte": 101
+              },
+              "end": {
+                "line": 3,
+                "column": 8,
+                "byte": 101
+              }
+            },
+            "text": " -> None"
+          }
+        }
+      ],
+      "related": []
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+# AC-004
+# expect-stdout: Hello, world!
+def main() -> None:
+    print("Hello, world!")

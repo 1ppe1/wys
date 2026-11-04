@@ -1,0 +1,3 @@
+# expect-error: E0005 3:9
+def main() -> None:
+    x = 99999999999999999999

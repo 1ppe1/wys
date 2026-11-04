@@ -1,0 +1,109 @@
+//! `tests/conformance/` 以下の全ケースを実行する。
+//!
+//! - すべてのケースを実行してから、失敗をまとめて報告する。
+//! - `diagnostics/` 以下のケースは、診断 JSON を insta のスナップショットとしても固定する。
+//! - `docs/spec/error-codes.md` のすべてのエラーコードに、少なくとも1つのケースがあることを確かめる。
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use wys_driver::BuildOptions;
+use wys_testharness::{collect_cases, parse_expectations, run_case};
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap()
+}
+
+fn runtime_lib() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    // target/<profile>/deps/conformance-xxxx
+    let profile_dir = exe.parent().unwrap().parent().unwrap().to_path_buf();
+    let mut cmd = Command::new(env!("CARGO"));
+    cmd.args(["build", "-q", "-p", "wys_runtime"]);
+    if profile_dir.ends_with("release") {
+        cmd.arg("--release");
+    }
+    assert!(
+        cmd.status().unwrap().success(),
+        "failed to build wys_runtime"
+    );
+    profile_dir.join("libwys_runtime.a")
+}
+
+fn rel(root: &Path, p: &Path) -> String {
+    p.strip_prefix(root).unwrap().display().to_string()
+}
+
+#[test]
+fn conformance_suite() {
+    let root = repo_root();
+    let cases = collect_cases(&root.join("tests/conformance"));
+    assert!(!cases.is_empty(), "no conformance cases found");
+    let opts = BuildOptions {
+        runtime_lib: Some(runtime_lib()),
+        cc: None,
+    };
+    let scratch = std::env::temp_dir().join(format!("wys-conformance-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
+
+    let mut failures = Vec::new();
+    for case in &cases {
+        let name = rel(&root, case);
+        if let Err(e) = run_case(case, &name, &opts, &scratch) {
+            failures.push(format!("--- {name}\n{e}"));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        failures.is_empty(),
+        "{} of {} conformance cases failed:\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn diagnostics_json_snapshots() {
+    let root = repo_root();
+    for case in collect_cases(&root.join("tests/conformance/diagnostics")) {
+        let name = rel(&root, &case);
+        let src = std::fs::read_to_string(&case).unwrap();
+        let fe = wys_driver::frontend(&name, &src);
+        let snap_name = case.file_stem().unwrap().to_str().unwrap().to_string();
+        insta::assert_snapshot!(snap_name, wys_driver::to_json(&fe.file, &fe.diagnostics));
+    }
+}
+
+#[test]
+fn every_error_code_has_a_case() {
+    let root = repo_root();
+    let doc = std::fs::read_to_string(root.join("docs/spec/error-codes.md")).unwrap();
+    let documented: Vec<String> = doc
+        .lines()
+        .filter_map(|l| l.strip_prefix("| E"))
+        .filter_map(|l| l.split_whitespace().next())
+        .map(|n| format!("E{n}"))
+        .collect();
+    assert!(
+        documented.len() > 10,
+        "failed to read error codes from the doc"
+    );
+    let mut covered = std::collections::HashSet::new();
+    for case in collect_cases(&root.join("tests/conformance")) {
+        let src = std::fs::read_to_string(&case).unwrap();
+        for (code, _, _) in parse_expectations(&src).unwrap().errors {
+            covered.insert(code);
+        }
+    }
+    let missing: Vec<_> = documented
+        .iter()
+        .filter(|c| !covered.contains(*c))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "error codes without a conformance case: {missing:?}"
+    );
+}

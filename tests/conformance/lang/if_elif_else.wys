@@ -1,0 +1,19 @@
+# expect-stdout: negative
+# expect-stdout: zero
+# expect-stdout: small
+# expect-stdout: large
+def classify(n: int) -> str:
+    if n < 0:
+        return "negative"
+    elif n == 0:
+        return "zero"
+    elif n < 10:
+        return "small"
+    else:
+        return "large"
+
+def main() -> None:
+    print(classify(-3))
+    print(classify(0))
+    print(classify(5))
+    print(classify(100))

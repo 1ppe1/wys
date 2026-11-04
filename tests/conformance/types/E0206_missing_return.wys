@@ -1,0 +1,9 @@
+# expect-error: E0206 2:5
+def sign(n: int) -> int:
+    if n > 0:
+        return 1
+    elif n < 0:
+        return -1
+
+def main() -> None:
+    pass

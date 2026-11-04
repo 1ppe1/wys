@@ -1,0 +1,48 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: "wys_driver::to_json(&fe.file, &fe.diagnostics)"
+---
+{
+  "schema_version": "0",
+  "diagnostics": [
+    {
+      "code": "E0201",
+      "severity": "error",
+      "message": "mismatched types: expected `int`, found `str`",
+      "span": {
+        "file": "tests/conformance/diagnostics/argument_mismatch.wys",
+        "start": {
+          "line": 6,
+          "column": 18,
+          "byte": 109
+        },
+        "end": {
+          "line": 6,
+          "column": 23,
+          "byte": 114
+        }
+      },
+      "cause": "argument of function `double`",
+      "hints": [],
+      "related": [
+        {
+          "kind": "function",
+          "name": "double",
+          "span": {
+            "file": "tests/conformance/diagnostics/argument_mismatch.wys",
+            "start": {
+              "line": 2,
+              "column": 5,
+              "byte": 31
+            },
+            "end": {
+              "line": 2,
+              "column": 11,
+              "byte": 37
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

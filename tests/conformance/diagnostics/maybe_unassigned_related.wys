@@ -1,0 +1,7 @@
+# expect-error: E0204 7:11
+def main() -> None:
+    c = False
+    while c:
+        total = 1
+        c = False
+    print(total)

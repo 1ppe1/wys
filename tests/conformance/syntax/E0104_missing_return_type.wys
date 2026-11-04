@@ -1,0 +1,6 @@
+# expect-error: E0104 2:5
+def f():
+    pass
+
+def main() -> None:
+    pass

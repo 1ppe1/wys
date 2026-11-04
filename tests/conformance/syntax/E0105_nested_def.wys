@@ -1,0 +1,4 @@
+# expect-error: E0105 3:5
+def main() -> None:
+    def g() -> None:
+        pass

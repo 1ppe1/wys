@@ -1,0 +1,6 @@
+# expect-error: E0214 2:15
+def f(a: int, a: int) -> None:
+    pass
+
+def main() -> None:
+    pass

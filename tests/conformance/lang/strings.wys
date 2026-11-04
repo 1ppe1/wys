@@ -1,0 +1,10 @@
+# expect-stdout: こんにちは
+# expect-stdout: tab:	"quoted" 'single'
+# expect-stdout:
+def greeting() -> str:
+    return "こんにちは"
+
+def main() -> None:
+    print(greeting())
+    print("tab:\t\"quoted\" 'single'")
+    print('')

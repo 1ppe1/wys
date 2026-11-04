@@ -1,0 +1,48 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: "wys_driver::to_json(&fe.file, &fe.diagnostics)"
+---
+{
+  "schema_version": "0",
+  "diagnostics": [
+    {
+      "code": "E0204",
+      "severity": "error",
+      "message": "variable `total` may be used before it is assigned",
+      "span": {
+        "file": "tests/conformance/diagnostics/maybe_unassigned_related.wys",
+        "start": {
+          "line": 7,
+          "column": 11,
+          "byte": 120
+        },
+        "end": {
+          "line": 7,
+          "column": 16,
+          "byte": 125
+        }
+      },
+      "cause": "it is not assigned on every path that reaches this use",
+      "hints": [],
+      "related": [
+        {
+          "kind": "variable",
+          "name": "total",
+          "span": {
+            "file": "tests/conformance/diagnostics/maybe_unassigned_related.wys",
+            "start": {
+              "line": 5,
+              "column": 9,
+              "byte": 82
+            },
+            "end": {
+              "line": 5,
+              "column": 14,
+              "byte": 87
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

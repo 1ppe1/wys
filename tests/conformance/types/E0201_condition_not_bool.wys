@@ -1,0 +1,6 @@
+# 暗黙の bool 変換はしない
+# expect-error: E0201 5:8
+def main() -> None:
+    n = 1
+    if n:
+        pass
