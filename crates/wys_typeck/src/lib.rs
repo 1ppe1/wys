@@ -1099,7 +1099,7 @@ impl Ctx {
                 let span = self.type_defs[idx].name.span;
                 self.diags.push(
                     Diagnostic::error("E0504", format!("type `{name}` refers to itself"), span)
-                        .with_cause("recursive types are not supported yet (ADR-0009)"),
+                        .with_cause("recursive types, including recursion through `list`, are not supported in M3 (ADR-0009, ADR-0016)"),
                 );
                 self.aliases
                     .insert(name.to_string(), (idx, AliasState::Done(Ty::Error)));
@@ -1271,6 +1271,8 @@ struct FnCk<'a> {
     effect_sites: Vec<EffectSite>,
     /// E1102 の診断の位置（`cx.diags` の添字）と、関数全体で足りない Effect（修正案を1つにまとめるため）。
     missing_effects: (Vec<usize>, EffectSet),
+    /// フィールド参照の式ごとの、レコード定義上のフィールドの型（絞り込む前の型。ADR-0016）。
+    field_decl: HashMap<ExprId, Ty>,
 }
 
 impl<'a> FnCk<'a> {
@@ -1292,6 +1294,7 @@ impl<'a> FnCk<'a> {
             }),
             effect_sites: Vec::new(),
             missing_effects: (Vec::new(), EffectSet::default()),
+            field_decl: HashMap::new(),
         };
         ck.cx.push_type_scope(&f.type_params, &sig.type_params);
         let mut env = Env::new();
@@ -1495,10 +1498,13 @@ impl<'a> FnCk<'a> {
                 // while と同じく、本体で代入される変数（ループ変数を含む）の絞り込みを解除する
                 let mut assigned = HashSet::new();
                 assigned_vars(body, &mut assigned);
+                // ループ変数自身も毎回代入される: 入口とループの後では宣言された型に戻し、経路の絞り込みを捨てる
+                assigned.insert(var.name.clone());
                 for name in assigned {
                     if let (Some(slot), Some(v)) = (env.get_mut(&name), self.vars.get(&name)) {
                         *slot = v.ty;
                     }
+                    Self::forget_paths(env, &name);
                 }
                 let mut b = env.clone();
                 b.insert(var.name.clone(), declared);
@@ -1547,6 +1553,7 @@ impl<'a> FnCk<'a> {
                     if let (Some(slot), Some(var)) = (env.get_mut(&name), self.vars.get(&name)) {
                         *slot = var.ty;
                     }
+                    Self::forget_paths(env, &name);
                 }
                 let (t, t_env, f_env) = self.cond(cond, env);
                 self.require_condition(t, cond.span);
@@ -1563,17 +1570,12 @@ impl<'a> FnCk<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], env: &mut Env) -> bool {
         let st = self.expr(subject, env);
         if let Ty::Result(r) = st {
-            let declared = match &subject.kind {
-                ExprKind::Name(n) => self.vars.get(n).map(|v| v.ty),
-                _ => None,
-            };
+            let declared = self.path(subject).map(|(_, d)| d);
             return self.result_match(subject, r, declared, arms, env);
         }
-        let subject_var = match &subject.kind {
-            ExprKind::Name(n) if self.vars.contains_key(n) => Some(n.clone()),
-            _ => None,
-        };
-        let subject_declared = subject_var.as_ref().map(|n| self.vars[n].ty);
+        let subject_path = self.path(subject);
+        let subject_declared = subject_path.as_ref().map(|(_, d)| *d);
+        let subject_var = subject_path.map(|(k, _)| k);
         // Unknown は int / bool / str / None に加えて「将来増える種類」を持つ開いた型。
         // 最後の Unknown は `case _:` だけが網羅できる（ADR-0011）。
         let members = (st != Ty::Error).then(|| {
@@ -1717,11 +1719,13 @@ impl<'a> FnCk<'a> {
                     },
                 );
                 b.insert(n.clone(), Ty::Error);
+                Self::forget_paths(&mut b, n);
             }
             let returns = self.block(&arm.body, &mut b);
             if let Some(n) = &error_binding {
                 self.vars.remove(n);
                 b.remove(n);
+                Self::forget_paths(&mut b, n);
             }
             if !returns {
                 live.push(b);
@@ -1924,6 +1928,8 @@ impl<'a> FnCk<'a> {
                         },
                     );
                     b.insert(ident.name.clone(), ty);
+                    // 束縛は新しい値: 同じ名前の以前の経路の絞り込みを引き継がない（ADR-0016 論点 4）
+                    Self::forget_paths(&mut b, &ident.name);
                     bound = Some(ident.name.clone());
                 }
             }
@@ -1931,6 +1937,8 @@ impl<'a> FnCk<'a> {
             if let Some(n) = bound {
                 self.vars.remove(&n);
                 b.remove(&n);
+                // 束縛のスコープ（case の本体）で付いた経路を、match の後に漏らさない
+                Self::forget_paths(&mut b, &n);
             }
             if !returns {
                 live.push(b);
@@ -2606,6 +2614,7 @@ impl<'a> FnCk<'a> {
             declared
         };
         env.insert(target.name.clone(), narrowed);
+        Self::forget_paths(env, &target.name);
     }
 
     fn ret_stmt(&mut self, span: Span, value: Option<&Expr>, env: &Env) {
@@ -2691,10 +2700,7 @@ impl<'a> FnCk<'a> {
                     .with_hint("inspect it with `match`: `case int():`, `case str():`, ..., `case _:`"));
                 } else if lt != Ty::Error {
                     // ローカル変数なら、宣言された型も見る（代入で絞り込まれていても、宣言が None を含めば検査は正当）
-                    let var_decl = match &lhs.kind {
-                        ExprKind::Name(n) => self.vars.get(n).map(|v| (n.clone(), v.ty)),
-                        _ => None,
-                    };
+                    let var_decl = self.path(lhs);
                     let declared_has_none = var_decl
                         .as_ref()
                         .is_some_and(|(_, d)| self.cx.types.contains_none(*d));
@@ -2920,7 +2926,7 @@ impl<'a> FnCk<'a> {
                     self.call(callee, args, e.span, e.id, env)
                 }
             }
-            ExprKind::Field { base, name } => self.field(base, name, env),
+            ExprKind::Field { base, name } => self.field(e, base, name, env),
             ExprKind::Try(inner) => self.try_expr(inner, e.span, env),
             ExprKind::Is { .. } => unreachable!("handled by cond"),
         }
@@ -3166,7 +3172,35 @@ impl<'a> FnCk<'a> {
     }
 
     /// `p.x`: レコードのフィールド参照。
-    fn field(&mut self, base: &Expr, name: &Ident, env: &Env) -> Ty {
+    /// 絞り込みの対象になる経路（ADR-0016 論点 1）: ローカル変数か引数を根とし、フィールド参照だけを連ねたもの。
+    /// 環境のキーは `p` / `p.x` / `a.b.c`（識別子に `.` は使えないので、変数と衝突しない）。
+    fn path_key(&self, e: &Expr) -> Option<String> {
+        match &e.kind {
+            ExprKind::Name(n) if self.vars.contains_key(n) => Some(n.clone()),
+            ExprKind::Field { base, name } => {
+                self.path_key(base).map(|b| format!("{b}.{}", name.name))
+            }
+            _ => None,
+        }
+    }
+
+    /// 経路と、その宣言された型（変数なら宣言型、フィールドならレコード定義上の型）。式は検査済みであること。
+    fn path(&self, e: &Expr) -> Option<(String, Ty)> {
+        let key = self.path_key(e)?;
+        let declared = match &e.kind {
+            ExprKind::Name(n) => self.vars.get(n)?.ty,
+            _ => *self.field_decl.get(&e.id)?,
+        };
+        Some((key, declared))
+    }
+
+    /// 経路 `root` に代入したので、`root.` で始まる経路の絞り込みを捨てる（ADR-0016 論点 4）。
+    fn forget_paths(env: &mut Env, root: &str) {
+        let prefix = format!("{root}.");
+        env.retain(|k, _| !k.starts_with(&prefix));
+    }
+
+    fn field(&mut self, e: &Expr, base: &Expr, name: &Ident, env: &Env) -> Ty {
         let bt = self.expr(base, env);
         match bt {
             Ty::Error => Ty::Error,
@@ -3177,7 +3211,31 @@ impl<'a> FnCk<'a> {
                 Ty::Error
             }
             Ty::Record(id) => match self.cx.types.record_def(id).field(&name.name) {
-                Some((_, t)) => t,
+                Some((_, t)) => {
+                    self.field_decl.insert(e.id, t);
+                    // 不変レコードのフィールドは、根が再代入されない限り絞り込みを保てる（ADR-0016）
+                    let Some(key) = self.path_key(e) else {
+                        return t;
+                    };
+                    match env.get(&key) {
+                        Some(&n) if n != t && n != Ty::Error && t != Ty::Error => {
+                            self.narrowings.insert(
+                                e.id,
+                                Narrowing {
+                                    name: key,
+                                    span: e.span,
+                                    declared: t,
+                                    narrowed: n,
+                                },
+                            );
+                            n
+                        }
+                        _ => {
+                            self.narrowings.remove(&e.id);
+                            t
+                        }
+                    }
+                }
                 None => {
                     let msg = format!("`{}` has no field `{}`", self.cx.name(bt), name.name);
                     self.cx

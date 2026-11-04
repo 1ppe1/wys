@@ -1,0 +1,167 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: json
+---
+{
+  "schema_version": "0",
+  "kind": "file",
+  "file": "tests/conformance/explain/field_narrowing.wys",
+  "functions": [
+    {
+      "name": "inc",
+      "span": {
+        "file": "tests/conformance/explain/field_narrowing.wys",
+        "start": {
+          "line": 5,
+          "column": 5,
+          "byte": 148
+        },
+        "end": {
+          "line": 5,
+          "column": 8,
+          "byte": 151
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [
+          {
+            "name": "p",
+            "type": "P"
+          }
+        ],
+        "return": "int"
+      },
+      "locals": [
+        {
+          "name": "p",
+          "type": "P",
+          "kind": "param",
+          "span": {
+            "file": "tests/conformance/explain/field_narrowing.wys",
+            "start": {
+              "line": 5,
+              "column": 9,
+              "byte": 152
+            },
+            "end": {
+              "line": 5,
+              "column": 10,
+              "byte": 153
+            }
+          }
+        }
+      ],
+      "narrowing": [
+        {
+          "variable": "p.x",
+          "span": {
+            "file": "tests/conformance/explain/field_narrowing.wys",
+            "start": {
+              "line": 7,
+              "column": 16,
+              "byte": 205
+            },
+            "end": {
+              "line": 7,
+              "column": 19,
+              "byte": 208
+            }
+          },
+          "declared": "int | None",
+          "narrowed": "int"
+        }
+      ],
+      "arc": [
+        {
+          "instance": "inc",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ],
+      "effects": {
+        "declared": null,
+        "required": [],
+        "sites": []
+      }
+    },
+    {
+      "name": "main",
+      "span": {
+        "file": "tests/conformance/explain/field_narrowing.wys",
+        "start": {
+          "line": 10,
+          "column": 5,
+          "byte": 231
+        },
+        "end": {
+          "line": 10,
+          "column": 9,
+          "byte": 235
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [],
+        "return": "None"
+      },
+      "locals": [],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "main",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ],
+      "effects": {
+        "declared": null,
+        "required": [
+          "io"
+        ],
+        "sites": [
+          {
+            "callee": "print",
+            "span": {
+              "file": "tests/conformance/explain/field_narrowing.wys",
+              "start": {
+                "line": 11,
+                "column": 5,
+                "byte": 251
+              },
+              "end": {
+                "line": 11,
+                "column": 10,
+                "byte": 256
+              }
+            },
+            "effects": [
+              "io"
+            ],
+            "annotated": true
+          },
+          {
+            "callee": "inc",
+            "span": {
+              "file": "tests/conformance/explain/field_narrowing.wys",
+              "start": {
+                "line": 11,
+                "column": 11,
+                "byte": 257
+              },
+              "end": {
+                "line": 11,
+                "column": 14,
+                "byte": 260
+              }
+            },
+            "effects": [],
+            "annotated": false
+          }
+        ]
+      }
+    }
+  ]
+}

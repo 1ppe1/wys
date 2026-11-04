@@ -1,0 +1,9 @@
+# 根の変数に代入すると、フィールドの絞り込みは捨てる（ADR-0016 論点 4）
+# expect-error: E0301 9:15
+type P = {x: int | None}
+
+def main() -> None:
+    p = P(x=1)
+    if p.x is not None:
+        p = P(x=None)
+        print(p.x + 1)

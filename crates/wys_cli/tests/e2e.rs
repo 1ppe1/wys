@@ -593,3 +593,21 @@ fn effects_are_checked_and_do_not_change_the_program() {
     assert!(v["functions"][1]["effects"]["declared"].is_null());
     assert_eq!(v["functions"][1]["effects"]["sites"][0]["callee"], "log");
 }
+
+#[test]
+fn record_fields_are_narrowed_until_the_root_is_reassigned() {
+    let (code, stdout, stderr) = run(
+        "field_narrowing",
+        "type P = {x: int | None}\n\ndef main() -> None:\n    p = P(x=41)\n    if p.x is not None:\n        print(p.x + 1)\n",
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "42\n");
+    let path = scratch(
+        "field_narrowing_reset",
+        "type P = {x: int | None}\n\ndef main() -> None:\n    p = P(x=1)\n    if p.x is not None:\n        p = P(x=None)\n        print(p.x + 1)\n",
+    );
+    let out = cli(&["check", "--format", "json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["diagnostics"][0]["code"], "E0301");
+}

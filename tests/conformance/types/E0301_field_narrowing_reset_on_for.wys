@@ -1,0 +1,11 @@
+# `for p in ...:` のループ変数への代入で、`p.x` の絞り込みを捨てる（ループの中と後）
+# expect-error: E0301 10:19
+# expect-error: E0301 11:15
+type P = {x: int | None}
+
+def main() -> None:
+    p = P(x=1)
+    if p.x is not None:
+        for p in [P(x=None)]:
+            print(p.x + 1)
+        print(p.x + 1)

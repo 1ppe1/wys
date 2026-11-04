@@ -1,0 +1,47 @@
+# 不変レコードのフィールドの絞り込み（ADR-0016）
+# expect-stdout: 2
+# expect-stdout: 11
+# expect-stdout: 3
+# expect-stdout: 5
+# expect-stdout: none
+# expect-stdout: 7
+# expect-stdout: hello
+type Inner = {v: int | None}
+type Outer = {inner: Inner | None, name: str | None}
+
+def inc(p: Inner) -> int:
+    if p.v is not None:
+        return p.v + 1
+    return 0
+
+def deep(o: Outer) -> int:
+    if o.inner is not None and o.inner.v is not None:
+        return o.inner.v + 10
+    return -1
+
+def via_assert(p: Inner) -> int:
+    assert(p.v is not None)
+    return p.v * 3
+
+def via_match(p: Inner) -> str:
+    match p.v:
+        case int():
+            return "int"
+        case None:
+            return "none"
+
+def main() -> None:
+    print(inc(Inner(v=1)))
+    print(deep(Outer(inner=Inner(v=1), name=None)))
+    print(via_assert(Inner(v=1)))
+    a = Inner(v=5)
+    if a.v is None:
+        print("unexpected")
+    else:
+        print(a.v)
+    print(via_match(Inner(v=None)))
+    o = Outer(inner=None, name="hello")
+    if o.name is not None and o.inner is None:
+        x = 7
+        print(x)
+        print(o.name)

@@ -1071,13 +1071,18 @@ impl<'s, 't> FnLower<'s, 't> {
                     .field(&name.name)
                     .expect("fields exist after type checking");
                 let fty = self.sh.ir_ty(ft).expect("record fields are never None");
+                // 絞り込んだフィールド（ADR-0016）は、変数と同じく絞り込んだ型に変換する
+                let narrowed = self.ty(e);
+                if narrowed == TTy::None {
+                    return None;
+                }
                 let dst = self.temp(fty);
                 self.emit(Inst::Field {
                     dst,
                     src: v,
                     index: index as u32,
                 });
-                Some(dst)
+                self.coerce(Some(dst), ft, narrowed)
             }
             ExprKind::Call { callee, kwargs, .. } if self.is_record_constructor(&callee.name) => {
                 let TTy::Record(r) = self.ty(e) else {

@@ -1,0 +1,8 @@
+# None を含まないフィールドへの `is None`（ADR-0016 論点 6）
+# expect-error: E0302 7:8
+type P = {x: int}
+
+def main() -> None:
+    p = P(x=1)
+    if p.x is None:
+        print(0)
