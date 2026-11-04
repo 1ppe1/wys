@@ -14,6 +14,9 @@ fn ir_ty(t: TTy) -> Option<Ty> {
         TTy::Str => Some(Ty::Str),
         TTy::None => None,
         TTy::Error => panic!("lowering received a type error; run the type checker first"),
+        TTy::Union(_) => {
+            panic!("union types are not lowered yet (M2 T1b); the driver must reject them first")
+        }
     }
 }
 
@@ -272,6 +275,11 @@ impl<'a> FnLower<'a> {
                 })
             }
             ExprKind::Binary { op, lhs, rhs } => Some(self.binary(*op, lhs, rhs)),
+            ExprKind::Is { .. } => {
+                panic!(
+                    "`is` expressions are not lowered yet (M2 T1b); the driver must reject them first"
+                )
+            }
             ExprKind::Call { callee, args } => {
                 let arg_vals: Vec<TempId> = args
                     .iter()

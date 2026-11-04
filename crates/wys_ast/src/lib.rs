@@ -20,11 +20,19 @@ pub struct Ident {
     pub span: Span,
 }
 
-/// 型注釈。M1 では `int` / `bool` / `str` / `None` の名前だけを扱う。
+/// 型注釈。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeExpr {
-    pub name: String,
+    pub kind: TypeExprKind,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeExprKind {
+    /// `int` / `bool` / `str` / `None` などの名前。
+    Name(String),
+    /// `A | B | ...`（2つ以上）。
+    Union(Vec<TypeExpr>),
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +102,12 @@ pub enum ExprKind {
     Call {
         callee: Ident,
         args: Vec<Expr>,
+    },
+    /// `lhs is rhs` / `lhs is not rhs`。型検査で `rhs` は `None` に限る。
+    Is {
+        lhs: Box<Expr>,
+        negated: bool,
+        rhs: Box<Expr>,
     },
 }
 

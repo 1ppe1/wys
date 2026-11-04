@@ -83,6 +83,9 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
         }
         "dump-ir" | "dump-llvm" => {
             let fe = load(file.as_deref())?;
+            if let Some(msg) = &fe.unsupported {
+                return Err(msg.clone());
+            }
             let Some(p) = &fe.program else {
                 report(&fe, format);
                 return Ok(ExitCode::from(1));
@@ -105,6 +108,9 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
         "run" => {
             let src = file.ok_or("missing source file")?;
             let fe = load(Some(&src))?;
+            if let Some(msg) = &fe.unsupported {
+                return Err(msg.clone());
+            }
             let Some(p) = &fe.program else {
                 report(&fe, format);
                 return Ok(ExitCode::from(1));

@@ -1,0 +1,7 @@
+# 演算子のオペランドが None かもしれない
+# expect-error: E0301 4:12
+def next_id(last: int | None) -> int:
+    return last + 1
+
+def main() -> None:
+    print(next_id(1))

@@ -204,20 +204,32 @@ impl Parser<'_> {
     }
 
     fn type_expr(&mut self) -> PResult<TypeExpr> {
-        match self.peek().clone() {
-            TokenKind::Ident(name) => {
-                let span = self.bump().span;
-                Ok(TypeExpr { name, span })
-            }
-            TokenKind::None => {
-                let span = self.bump().span;
-                Ok(TypeExpr {
-                    name: "None".to_string(),
-                    span,
-                })
-            }
-            _ => Err(self.error_here("a type")),
+        let first = self.type_atom()?;
+        if !self.at(&TokenKind::Pipe) {
+            return Ok(first);
         }
+        let start = first.span.start;
+        let mut items = vec![first];
+        while self.eat(&TokenKind::Pipe) {
+            items.push(self.type_atom()?);
+        }
+        Ok(TypeExpr {
+            kind: TypeExprKind::Union(items),
+            span: Span::new(start, self.prev_end()),
+        })
+    }
+
+    fn type_atom(&mut self) -> PResult<TypeExpr> {
+        let name = match self.peek().clone() {
+            TokenKind::Ident(name) => name,
+            TokenKind::None => "None".to_string(),
+            _ => return Err(self.error_here("a type")),
+        };
+        let span = self.bump().span;
+        Ok(TypeExpr {
+            kind: TypeExprKind::Name(name),
+            span,
+        })
     }
 
     fn func_def(&mut self) -> PResult<FuncDef> {
@@ -468,12 +480,36 @@ impl Parser<'_> {
 
     fn comparison(&mut self) -> PResult<Expr> {
         let lhs = self.additive()?;
+        if self.eat(&TokenKind::Is) {
+            let negated = self.eat(&TokenKind::Not);
+            let rhs = self.additive()?;
+            if self.cmp_op().is_some() || self.at(&TokenKind::Is) {
+                self.diags.push(
+                    Diagnostic::error(
+                        "E0102",
+                        "chained comparisons are not supported",
+                        Span::new(lhs.span.start, self.span().end),
+                    )
+                    .with_hint("split it with `and`"),
+                );
+                return Err(Reported);
+            }
+            let start = lhs.span.start;
+            return Ok(self.mk(
+                ExprKind::Is {
+                    lhs: Box::new(lhs),
+                    negated,
+                    rhs: Box::new(rhs),
+                },
+                start,
+            ));
+        }
         let Some(op) = self.cmp_op() else {
             return Ok(lhs);
         };
         self.bump();
         let rhs = self.additive()?;
-        if self.cmp_op().is_some() {
+        if self.cmp_op().is_some() || self.at(&TokenKind::Is) {
             self.diags.push(
                 Diagnostic::error(
                     "E0102",
@@ -637,6 +673,22 @@ mod tests {
         };
         assert_eq!(*op, BinOp::Add);
         assert!(matches!(rhs.kind, ExprKind::Binary { op: BinOp::Mul, .. }));
+    }
+
+    #[test]
+    fn union_types_and_is_none() {
+        let m = ok(
+            "def f(x: int | None) -> str | None:\n    if x is not None:\n        return None\n    return None\n",
+        );
+        let f = &m.funcs[0];
+        assert!(matches!(&f.params[0].ty.kind, TypeExprKind::Union(items) if items.len() == 2));
+        let StmtKind::If { branches, .. } = &f.body[0].kind else {
+            panic!()
+        };
+        assert!(matches!(
+            branches[0].0.kind,
+            ExprKind::Is { negated: true, .. }
+        ));
     }
 
     #[test]

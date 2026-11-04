@@ -22,6 +22,7 @@
 | [0006](0006-union-null-generics-error-syntax.md) | Union / None / Generics / エラー処理の構文 | Accepted | 2026-11-04 |
 | [0007](0007-structural-vs-nominal-typing.md) | 構造的型付けと名目的型付けの境界 | Accepted | 2026-11-04 |
 | [0008](0008-runtime-static-linking.md) | ランタイムは Rust staticlib として静的リンクする | Accepted | 2026-11-04 |
+| [0009](0009-m2-interim-value-representation.md) | M2 の暫定値表現（ヒープを使わない） | Proposed | 2026-11-04 |
 
 ## 未決定事項との対応
 

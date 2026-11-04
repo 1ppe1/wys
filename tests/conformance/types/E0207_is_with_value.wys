@@ -1,0 +1,6 @@
+# expect-error: E0207 3:12
+def f(n: int | None) -> bool:
+    return n is 1
+
+def main() -> None:
+    print(f(1))

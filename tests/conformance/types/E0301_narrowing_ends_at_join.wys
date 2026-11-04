@@ -1,0 +1,9 @@
+# 絞り込みは if の中だけ。合流後は再び int | None
+# expect-error: E0301 6:12
+def f(n: int | None) -> int:
+    if n is not None:
+        print(n)
+    return n
+
+def main() -> None:
+    print(f(1))

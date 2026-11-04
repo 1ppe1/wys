@@ -2,7 +2,10 @@
 //!
 //! - 関数シグネチャは注釈必須、ローカル変数は最初の代入から推論する（LANG-002）。
 //! - 暗黙の型変換はしない。条件式は `bool` でなければならない（LANG-007）。
-//! - 代入されていない可能性のある変数の使用を拒否する（確定代入解析）。
+//! - Union 型（`int | str`、`str | None`）は平坦化・正規化して ID で管理する（ADR-0006）。
+//! - 流れ解析: 各地点で「確実に代入済みの変数」と「絞り込み後の型」を環境（`Env`）として流す。
+//!   `x is None` / `x is not None`（`and` / `or` / `not` の組み合わせを含む）でローカル変数を絞り込む。
+//!   `None` の可能性がある値を、`None` を許さない場所で使うと E0301（AC-002）。
 //! - 値を返す関数は、すべての経路で `return` しなければならない。
 
 pub mod experimental;
@@ -12,25 +15,106 @@ use wys_ast::*;
 use wys_diagnostics::{Diagnostic, RelatedKind};
 use wys_span::Span;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// 型。`Union` は `Types` に登録した構成要素の集合を指す。
+/// 順序（`Ord`）は Union の構成要素の正規順として使う（int, bool, str, None）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Ty {
     Int,
     Bool,
     Str,
     None,
+    Union(UnionId),
     /// エラーから回復するための型。これを含む式では追加の診断を出さない。
     Error,
 }
 
-impl Ty {
-    pub fn name(self) -> &'static str {
-        match self {
-            Ty::Int => "int",
-            Ty::Bool => "bool",
-            Ty::Str => "str",
-            Ty::None => "None",
-            Ty::Error => "<error>",
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct UnionId(pub u32);
+
+/// Union 型の登録表。同じ構成要素の集合には同じ ID を返す。
+#[derive(Debug, Clone, Default)]
+pub struct Types {
+    unions: Vec<Vec<Ty>>,
+    index: HashMap<Vec<Ty>, UnionId>,
+}
+
+impl Types {
+    /// 構成要素から型を作る。Union は平坦化し（`(A | B) | B` = `A | B`）、要素が1つならその型を返す。
+    pub fn union(&mut self, items: impl IntoIterator<Item = Ty>) -> Ty {
+        let mut members = Vec::new();
+        for t in items {
+            match t {
+                Ty::Error => return Ty::Error,
+                Ty::Union(u) => members.extend(self.unions[u.0 as usize].iter().copied()),
+                t => members.push(t),
+            }
         }
+        members.sort();
+        members.dedup();
+        match members.len() {
+            0 => Ty::Error,
+            1 => members[0],
+            _ => {
+                if let Some(&id) = self.index.get(&members) {
+                    return Ty::Union(id);
+                }
+                let id = UnionId(self.unions.len() as u32);
+                self.unions.push(members.clone());
+                self.index.insert(members, id);
+                Ty::Union(id)
+            }
+        }
+    }
+
+    /// 型の構成要素（Union でなければその型だけ）。
+    pub fn members(&self, t: Ty) -> Vec<Ty> {
+        match t {
+            Ty::Union(u) => self.unions[u.0 as usize].clone(),
+            t => vec![t],
+        }
+    }
+
+    pub fn name(&self, t: Ty) -> String {
+        match t {
+            Ty::Int => "int".into(),
+            Ty::Bool => "bool".into(),
+            Ty::Str => "str".into(),
+            Ty::None => "None".into(),
+            Ty::Error => "<error>".into(),
+            Ty::Union(_) => self
+                .members(t)
+                .into_iter()
+                .map(|m| self.name(m))
+                .collect::<Vec<_>>()
+                .join(" | "),
+        }
+    }
+
+    pub fn contains_none(&self, t: Ty) -> bool {
+        self.members(t).contains(&Ty::None)
+    }
+
+    /// `None` を取り除いた型。`None` しか残らない場合は `Error`（到達しない値）。
+    pub fn without_none(&mut self, t: Ty) -> Ty {
+        let rest: Vec<Ty> = self
+            .members(t)
+            .into_iter()
+            .filter(|m| *m != Ty::None)
+            .collect();
+        self.union(rest)
+    }
+
+    /// `actual` の値をすべて `expected` の場所に置けるか。
+    pub fn fits(&self, actual: Ty, expected: Ty) -> bool {
+        if actual == Ty::Error || expected == Ty::Error {
+            return true;
+        }
+        let e = self.members(expected);
+        self.members(actual).iter().all(|a| e.contains(a))
+    }
+
+    pub fn is_union(&self, t: Ty) -> bool {
+        matches!(t, Ty::Union(_))
     }
 }
 
@@ -44,22 +128,36 @@ pub struct FuncSig {
 
 #[derive(Debug, Clone)]
 pub struct FuncInfo {
-    /// 関数内のローカル変数（先頭は引数）。名前と型。
+    /// 関数内のローカル変数（先頭は引数）。名前と宣言された型。
     pub locals: Vec<(String, Ty)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TypeckResult {
-    /// `ExprId` ごとの型。
+    /// `ExprId` ごとの型（絞り込み後の型）。
     pub expr_types: Vec<Ty>,
     /// `module.funcs` と同じ順序。
     pub sigs: Vec<FuncSig>,
     pub funcs: Vec<FuncInfo>,
+    pub types: Types,
 }
 
 impl TypeckResult {
     pub fn ty(&self, e: &Expr) -> Ty {
         self.expr_types[e.id.0 as usize]
+    }
+
+    /// シグネチャかローカル変数に Union 型を含む関数の番号（コード生成が未対応かどうかの判定用）。
+    pub fn first_function_using_unions(&self) -> Option<usize> {
+        (0..self.sigs.len()).find(|&i| {
+            let sig = &self.sigs[i];
+            self.types.is_union(sig.ret)
+                || sig.params.iter().any(|t| self.types.is_union(*t))
+                || self.funcs[i]
+                    .locals
+                    .iter()
+                    .any(|(_, t)| self.types.is_union(*t))
+        })
     }
 }
 
@@ -71,6 +169,7 @@ pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
         expr_types: vec![Ty::Error; module.expr_count as usize],
         sigs: Vec::new(),
         sig_index: HashMap::new(),
+        types: Types::default(),
     };
     for f in &module.funcs {
         let params = f.params.iter().map(|p| cx.resolve(&p.ty)).collect();
@@ -115,6 +214,7 @@ pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
             expr_types: cx.expr_types,
             sigs: cx.sigs,
             funcs,
+            types: cx.types,
         },
         cx.diags,
     )
@@ -154,36 +254,81 @@ struct Ctx {
     expr_types: Vec<Ty>,
     sigs: Vec<FuncSig>,
     sig_index: HashMap<String, usize>,
+    types: Types,
 }
 
 impl Ctx {
     fn resolve(&mut self, t: &TypeExpr) -> Ty {
-        match t.name.as_str() {
-            "int" => Ty::Int,
-            "bool" => Ty::Bool,
-            "str" => Ty::Str,
-            "None" => Ty::None,
-            other => {
-                self.diags.push(
-                    Diagnostic::error("E0203", format!("unknown type `{other}`"), t.span)
-                        .with_hint("supported types are `int`, `bool`, `str` and `None`"),
-                );
-                Ty::Error
+        match &t.kind {
+            TypeExprKind::Name(name) => match name.as_str() {
+                "int" => Ty::Int,
+                "bool" => Ty::Bool,
+                "str" => Ty::Str,
+                "None" => Ty::None,
+                other => {
+                    self.diags.push(
+                        Diagnostic::error("E0203", format!("unknown type `{other}`"), t.span)
+                            .with_hint("supported types are `int`, `bool`, `str`, `None` and unions of them (`A | B`)"),
+                    );
+                    Ty::Error
+                }
+            },
+            TypeExprKind::Union(items) => {
+                let tys: Vec<Ty> = items.iter().map(|i| self.resolve(i)).collect();
+                self.types.union(tys)
             }
         }
     }
 
-    fn mismatch(&mut self, expected: Ty, found: Ty, span: Span, context: &str) -> Diagnostic {
-        Diagnostic::error(
-            "E0201",
-            format!(
-                "mismatched types: expected `{}`, found `{}`",
-                expected.name(),
-                found.name()
-            ),
-            span,
-        )
-        .with_cause(context.to_string())
+    fn name(&self, t: Ty) -> String {
+        self.types.name(t)
+    }
+
+    /// `actual` を `expected` の場所に置けなければ診断を出す。
+    /// `None` を取り除けば置ける場合は E0301（未検証の `None`）、それ以外は E0201。
+    fn require(
+        &mut self,
+        actual: Ty,
+        expected: Ty,
+        span: Span,
+        context: &str,
+        related: Option<(RelatedKind, &str, Span)>,
+    ) {
+        if self.types.fits(actual, expected) {
+            return;
+        }
+        let d = if self.types.contains_none(actual) && {
+            let rest = self.types.without_none(actual);
+            self.types.fits(rest, expected)
+        } {
+            Diagnostic::error(
+                "E0301",
+                format!(
+                    "this value may be `None`: expected `{}`, found `{}`",
+                    self.name(expected),
+                    self.name(actual)
+                ),
+                span,
+            )
+            .with_cause(context.to_string())
+            .with_hint("check it first, e.g. `if x is not None:` or `if x is None: return ...`")
+        } else {
+            Diagnostic::error(
+                "E0201",
+                format!(
+                    "mismatched types: expected `{}`, found `{}`",
+                    self.name(expected),
+                    self.name(actual)
+                ),
+                span,
+            )
+            .with_cause(context.to_string())
+        };
+        let d = match related {
+            Some((kind, name, rspan)) => d.with_related(kind, name, Some(rspan)),
+            None => d,
+        };
+        self.diags.push(d);
     }
 }
 
@@ -191,6 +336,9 @@ struct Var {
     ty: Ty,
     decl: Span,
 }
+
+/// 流れ解析の環境: 確実に代入済みの変数と、その地点での（絞り込み後の）型。
+type Env = HashMap<String, Ty>;
 
 struct FnCk<'a> {
     cx: &'a mut Ctx,
@@ -208,7 +356,7 @@ impl<'a> FnCk<'a> {
             vars: HashMap::new(),
             locals: Vec::new(),
         };
-        let mut assigned = HashSet::new();
+        let mut env = Env::new();
         for (p, &ty) in f.params.iter().zip(&sig.params) {
             if ck.vars.contains_key(&p.name.name) {
                 ck.cx.diags.push(Diagnostic::error(
@@ -226,10 +374,11 @@ impl<'a> FnCk<'a> {
                 ));
             }
             ck.declare(&p.name.name, ty, p.name.span);
-            assigned.insert(p.name.name.clone());
+            env.insert(p.name.name.clone(), ty);
         }
-        let returns = ck.block(&f.body, &mut assigned);
+        let returns = ck.block(&f.body, &mut env);
         if !returns && sig.ret != Ty::None && sig.ret != Ty::Error {
+            let ret_name = ck.cx.name(sig.ret);
             ck.cx.diags.push(
                 Diagnostic::error(
                     "E0206",
@@ -239,7 +388,7 @@ impl<'a> FnCk<'a> {
                     ),
                     f.name.span,
                 )
-                .with_cause(format!("the return type is `{}`", sig.ret.name()))
+                .with_cause(format!("the return type is `{ret_name}`"))
                 .with_hint("add a `return` at the end of the function"),
             );
         }
@@ -251,136 +400,169 @@ impl<'a> FnCk<'a> {
         self.locals.push((name.to_string(), ty));
     }
 
+    /// 複数の経路の環境を合流させる: 代入済みの変数は共通部分、型は和集合。
+    fn join(&mut self, envs: Vec<Env>) -> Env {
+        let mut it = envs.into_iter();
+        let Some(first) = it.next() else {
+            return Env::new();
+        };
+        let rest: Vec<Env> = it.collect();
+        let mut out = Env::new();
+        for (name, &t) in &first {
+            let mut tys = vec![t];
+            let mut everywhere = true;
+            for e in &rest {
+                match e.get(name) {
+                    Some(&u) => tys.push(u),
+                    None => everywhere = false,
+                }
+            }
+            if everywhere {
+                out.insert(name.clone(), self.cx.types.union(tys));
+            }
+        }
+        out
+    }
+
     /// 文の列を検査する。必ず `return` するなら true。
-    fn block(&mut self, stmts: &[Stmt], assigned: &mut HashSet<String>) -> bool {
+    fn block(&mut self, stmts: &[Stmt], env: &mut Env) -> bool {
         let mut returns = false;
         for s in stmts {
-            if self.stmt(s, assigned) {
+            if self.stmt(s, env) {
                 returns = true;
             }
         }
         returns
     }
 
-    fn stmt(&mut self, s: &Stmt, assigned: &mut HashSet<String>) -> bool {
+    fn stmt(&mut self, s: &Stmt, env: &mut Env) -> bool {
         match &s.kind {
             StmtKind::Pass => false,
             StmtKind::Expr(e) => {
-                self.expr(e, assigned);
+                self.expr(e, env);
                 false
             }
             StmtKind::Assign { target, ann, value } => {
-                self.assign(target, ann.as_ref(), value, assigned);
+                self.assign(target, ann.as_ref(), value, env);
                 false
             }
             StmtKind::Return(value) => {
-                self.ret_stmt(s.span, value.as_ref(), assigned);
+                self.ret_stmt(s.span, value.as_ref(), env);
                 true
             }
             StmtKind::If {
                 branches,
                 else_body,
             } => {
-                let mut outcomes: Vec<(bool, HashSet<String>)> = Vec::new();
+                // 各分岐の条件は「それより前の条件がすべて偽」の環境で評価する。
+                let mut cur = env.clone();
+                let mut live = Vec::new();
                 for (cond, body) in branches {
-                    self.condition(cond, assigned);
-                    let mut a = assigned.clone();
-                    let r = self.block(body, &mut a);
-                    outcomes.push((r, a));
+                    let (t, t_env, f_env) = self.cond(cond, &cur);
+                    self.require_condition(t, cond.span);
+                    let mut b = t_env;
+                    if !self.block(body, &mut b) {
+                        live.push(b);
+                    }
+                    cur = f_env;
                 }
                 match else_body {
                     Some(body) => {
-                        let mut a = assigned.clone();
-                        let r = self.block(body, &mut a);
-                        outcomes.push((r, a));
+                        let mut b = cur;
+                        if !self.block(body, &mut b) {
+                            live.push(b);
+                        }
                     }
-                    None => outcomes.push((false, assigned.clone())),
+                    None => live.push(cur),
                 }
-                let mut live = outcomes.into_iter().filter(|(r, _)| !r).map(|(_, a)| a);
-                match live.next() {
-                    None => true, // すべての分岐が return する
-                    Some(first) => {
-                        *assigned = live.fold(first, |acc, a| &acc & &a);
-                        false
-                    }
+                if live.is_empty() {
+                    return true; // すべての分岐が return する
                 }
+                *env = self.join(live);
+                false
             }
             StmtKind::While { cond, body } => {
-                self.condition(cond, assigned);
-                let mut a = assigned.clone();
-                self.block(body, &mut a);
+                // ループ本体で代入される変数は、2回目以降の条件評価で型が変わり得るので、絞り込みを解除する。
+                let mut assigned = HashSet::new();
+                assigned_vars(body, &mut assigned);
+                for name in assigned {
+                    if let (Some(slot), Some(var)) = (env.get_mut(&name), self.vars.get(&name)) {
+                        *slot = var.ty;
+                    }
+                }
+                let (t, t_env, f_env) = self.cond(cond, env);
+                self.require_condition(t, cond.span);
+                let mut b = t_env;
+                self.block(body, &mut b);
+                *env = f_env;
                 false
             }
         }
     }
 
-    fn condition(&mut self, cond: &Expr, assigned: &HashSet<String>) {
-        let t = self.expr(cond, assigned);
-        if t != Ty::Bool && t != Ty::Error {
-            let d = self
-                .cx
-                .mismatch(Ty::Bool, t, cond.span, "a condition must be a `bool`")
-                .with_hint(
-                    "there is no implicit conversion to `bool`; compare explicitly, e.g. `x != 0`",
-                );
-            self.cx.diags.push(d);
+    fn require_condition(&mut self, t: Ty, span: Span) {
+        if t == Ty::Bool || t == Ty::Error {
+            return;
+        }
+        let before = self.cx.diags.len();
+        self.cx
+            .require(t, Ty::Bool, span, "a condition must be a `bool`", None);
+        if let Some(d) = self.cx.diags.get_mut(before)
+            && d.code == "E0201"
+        {
+            d.hints.push(wys_diagnostics::Hint {
+                message:
+                    "there is no implicit conversion to `bool`; compare explicitly, e.g. `x != 0`"
+                        .into(),
+                replacement: None,
+            });
         }
     }
 
-    fn assign(
-        &mut self,
-        target: &Ident,
-        ann: Option<&TypeExpr>,
-        value: &Expr,
-        assigned: &mut HashSet<String>,
-    ) {
-        let vt = self.expr(value, assigned);
+    fn assign(&mut self, target: &Ident, ann: Option<&TypeExpr>, value: &Expr, env: &mut Env) {
+        let vt = self.expr(value, env);
         let ann_ty = ann.map(|a| self.cx.resolve(a));
-        if let Some(var) = self.vars.get(&target.name) {
+        let declared = if let Some(var) = self.vars.get(&target.name) {
             let (decl_ty, decl) = (var.ty, var.decl);
             if let Some(at) = ann_ty
                 && at != decl_ty
                 && at != Ty::Error
                 && decl_ty != Ty::Error
             {
-                let d = self
-                    .cx
-                    .mismatch(
-                        decl_ty,
-                        at,
-                        ann.expect("ann_ty implies ann").span,
-                        "a variable keeps the type of its first assignment",
-                    )
-                    .with_related(RelatedKind::Variable, &target.name, Some(decl));
-                self.cx.diags.push(d);
-            } else if vt != decl_ty && vt != Ty::Error && decl_ty != Ty::Error {
-                let d = self
-                    .cx
-                    .mismatch(
-                        decl_ty,
-                        vt,
-                        value.span,
-                        &format!(
-                            "variable `{}` was declared as `{}`",
-                            target.name,
-                            decl_ty.name()
-                        ),
-                    )
-                    .with_related(RelatedKind::Variable, &target.name, Some(decl));
-                self.cx.diags.push(d);
+                let msg = format!(
+                    "mismatched types: expected `{}`, found `{}`",
+                    self.cx.name(decl_ty),
+                    self.cx.name(at)
+                );
+                self.cx.diags.push(
+                    Diagnostic::error("E0201", msg, ann.expect("ann_ty implies ann").span)
+                        .with_cause("a variable keeps the type of its first assignment")
+                        .with_related(RelatedKind::Variable, &target.name, Some(decl)),
+                );
+            } else {
+                let ctx = format!(
+                    "variable `{}` was declared as `{}`",
+                    target.name,
+                    self.cx.name(decl_ty)
+                );
+                self.cx.require(
+                    vt,
+                    decl_ty,
+                    value.span,
+                    &ctx,
+                    Some((RelatedKind::Variable, &target.name, decl)),
+                );
             }
+            decl_ty
         } else {
             let ty = match ann_ty {
                 Some(at) => {
-                    if vt != at && vt != Ty::Error && at != Ty::Error {
-                        let d = self.cx.mismatch(
-                            at,
-                            vt,
-                            value.span,
-                            &format!("variable `{}` is annotated as `{}`", target.name, at.name()),
-                        );
-                        self.cx.diags.push(d);
-                    }
+                    let ctx = format!(
+                        "variable `{}` is annotated as `{}`",
+                        target.name,
+                        self.cx.name(at)
+                    );
+                    self.cx.require(vt, at, value.span, &ctx, None);
                     at
                 }
                 None => vt,
@@ -389,93 +571,186 @@ impl<'a> FnCk<'a> {
                 self.cx.diags.push(
                     Diagnostic::error(
                         "E0215",
-                        format!("variable `{}` cannot hold `None`", target.name),
+                        format!("variable `{}` cannot hold only `None`", target.name),
                         value.span,
                     )
-                    .with_cause("`None` values cannot be stored in variables yet"),
+                    .with_cause("a variable of type `None` is not useful")
+                    .with_hint(
+                        "annotate the variable with an optional type, e.g. `x: int | None = None`",
+                    ),
                 );
             }
             self.declare(&target.name, ty, target.span);
-        }
-        assigned.insert(target.name.clone());
+            ty
+        };
+        // 再代入で絞り込みは解除する（宣言された型に戻す）。
+        env.insert(target.name.clone(), declared);
     }
 
-    fn ret_stmt(&mut self, span: Span, value: Option<&Expr>, assigned: &HashSet<String>) {
+    fn ret_stmt(&mut self, span: Span, value: Option<&Expr>, env: &Env) {
         match (self.ret, value) {
             (Ty::Error, Some(e)) => {
-                self.expr(e, assigned);
+                self.expr(e, env);
             }
-            (Ty::Error, None) => {}
-            (Ty::None, None) => {}
+            (Ty::Error, None) | (Ty::None, None) => {}
             (Ty::None, Some(e)) => {
-                let t = self.expr(e, assigned);
+                let t = self.expr(e, env);
                 if t != Ty::None && t != Ty::Error {
+                    let msg = format!(
+                        "this function returns `None`, but a `{}` value is returned",
+                        self.cx.name(t)
+                    );
                     self.cx.diags.push(
-                        Diagnostic::error(
-                            "E0211",
-                            format!(
-                                "this function returns `None`, but a `{}` value is returned",
-                                t.name()
-                            ),
-                            e.span,
-                        )
-                        .with_hint("change the return type annotation or remove the value"),
+                        Diagnostic::error("E0211", msg, e.span)
+                            .with_hint("change the return type annotation or remove the value"),
                     );
                 }
             }
             (r, None) => {
-                self.cx.diags.push(Diagnostic::error(
-                    "E0211",
-                    format!("this function must return a `{}` value", r.name()),
-                    span,
-                ));
+                let msg = format!("this function must return a `{}` value", self.cx.name(r));
+                let d = Diagnostic::error("E0211", msg, span);
+                let d = if self.cx.types.contains_none(r) {
+                    d.with_hint("write `return None` explicitly")
+                } else {
+                    d
+                };
+                self.cx.diags.push(d);
             }
             (r, Some(e)) => {
-                let t = self.expr(e, assigned);
-                if t != r && t != Ty::Error {
-                    let d = self.cx.mismatch(
-                        r,
-                        t,
-                        e.span,
-                        &format!("the function's return type is `{}`", r.name()),
-                    );
-                    self.cx.diags.push(d);
-                }
+                let t = self.expr(e, env);
+                let ctx = format!("the function's return type is `{}`", self.cx.name(r));
+                self.cx.require(t, r, e.span, &ctx, None);
             }
         }
     }
 
-    fn expr(&mut self, e: &Expr, assigned: &HashSet<String>) -> Ty {
-        let t = self.expr_inner(e, assigned);
+    fn record(&mut self, e: &Expr, t: Ty) -> Ty {
         self.cx.expr_types[e.id.0 as usize] = t;
         t
     }
 
-    fn expr_inner(&mut self, e: &Expr, assigned: &HashSet<String>) -> Ty {
+    /// 式を検査して型を返す。
+    fn expr(&mut self, e: &Expr, env: &Env) -> Ty {
+        match &e.kind {
+            ExprKind::Is { .. }
+            | ExprKind::Unary {
+                op: UnaryOp::Not, ..
+            }
+            | ExprKind::Binary {
+                op: BinOp::And | BinOp::Or,
+                ..
+            } => self.cond(e, env).0,
+            _ => {
+                let t = self.expr_inner(e, env);
+                self.record(e, t)
+            }
+        }
+    }
+
+    /// 真偽値になり得る式を検査し、`(型, 真のときの環境, 偽のときの環境)` を返す。
+    fn cond(&mut self, e: &Expr, env: &Env) -> (Ty, Env, Env) {
+        match &e.kind {
+            ExprKind::Is { lhs, negated, rhs } => {
+                let lt = self.expr(lhs, env);
+                self.expr(rhs, env);
+                let mut t_env = env.clone();
+                let mut f_env = env.clone();
+                if !matches!(rhs.kind, ExprKind::None) {
+                    self.cx.diags.push(
+                        Diagnostic::error(
+                            "E0207",
+                            "`is` can only be used to compare with `None`",
+                            e.span,
+                        )
+                        .with_hint("use `==` to compare values"),
+                    );
+                } else if lt != Ty::Error {
+                    if !self.cx.types.contains_none(lt) {
+                        let msg = format!(
+                            "this value can never be `None` (its type is `{}`), so the check is always {}",
+                            self.cx.name(lt),
+                            if *negated { "True" } else { "False" }
+                        );
+                        self.cx.diags.push(
+                            Diagnostic::error("E0302", msg, lhs.span)
+                                .with_hint("remove the check, or give the value an optional type such as `T | None`"),
+                        );
+                    } else if let ExprKind::Name(n) = &lhs.kind
+                        && self.vars.contains_key(n)
+                    {
+                        let some = self.cx.types.without_none(lt);
+                        let (on_true, on_false) = if *negated {
+                            (some, Ty::None)
+                        } else {
+                            (Ty::None, some)
+                        };
+                        t_env.insert(n.clone(), on_true);
+                        f_env.insert(n.clone(), on_false);
+                    }
+                }
+                self.record(e, Ty::Bool);
+                (Ty::Bool, t_env, f_env)
+            }
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                operand,
+            } => {
+                let (t, a, b) = self.cond(operand, env);
+                let ty = self.unary_result(UnaryOp::Not, t, e.span);
+                self.record(e, ty);
+                (ty, b, a)
+            }
+            ExprKind::Binary {
+                op: op @ (BinOp::And | BinOp::Or),
+                lhs,
+                rhs,
+            } => {
+                let (lt, t1, f1) = self.cond(lhs, env);
+                let (rt, t_env, f_env) = if *op == BinOp::And {
+                    // 右辺は左辺が真のときだけ評価される
+                    let (rt, t2, f2) = self.cond(rhs, &t1);
+                    (rt, t2, self.join(vec![f1, f2]))
+                } else {
+                    // 右辺は左辺が偽のときだけ評価される
+                    let (rt, t2, f2) = self.cond(rhs, &f1);
+                    (rt, self.join(vec![t1, t2]), f2)
+                };
+                let ty = self.binary(*op, lt, rt, e.span);
+                self.record(e, ty);
+                (ty, t_env, f_env)
+            }
+            _ => {
+                let t = self.expr(e, env);
+                (t, env.clone(), env.clone())
+            }
+        }
+    }
+
+    fn expr_inner(&mut self, e: &Expr, env: &Env) -> Ty {
         match &e.kind {
             ExprKind::Int(_) => Ty::Int,
             ExprKind::Bool(_) => Ty::Bool,
             ExprKind::Str(_) => Ty::Str,
             ExprKind::None => Ty::None,
             ExprKind::Name(name) => {
-                if let Some(var) = self.vars.get(name) {
-                    if !assigned.contains(name) {
-                        let decl = var.decl;
-                        self.cx.diags.push(
-                            Diagnostic::error(
-                                "E0204",
-                                format!("variable `{name}` may be used before it is assigned"),
-                                e.span,
-                            )
-                            .with_cause("it is not assigned on every path that reaches this use")
-                            .with_related(
-                                RelatedKind::Variable,
-                                name,
-                                Some(decl),
-                            ),
-                        );
-                    }
-                    var.ty
+                if let Some(&t) = env.get(name) {
+                    t
+                } else if let Some(var) = self.vars.get(name) {
+                    let (ty, decl) = (var.ty, var.decl);
+                    self.cx.diags.push(
+                        Diagnostic::error(
+                            "E0204",
+                            format!("variable `{name}` may be used before it is assigned"),
+                            e.span,
+                        )
+                        .with_cause("it is not assigned on every path that reaches this use")
+                        .with_related(
+                            RelatedKind::Variable,
+                            name,
+                            Some(decl),
+                        ),
+                    );
+                    ty
                 } else if self.cx.sig_index.contains_key(name) || BUILTINS.contains(&name.as_str())
                 {
                     self.cx.diags.push(
@@ -497,86 +772,107 @@ impl<'a> FnCk<'a> {
                 }
             }
             ExprKind::Unary { op, operand } => {
-                let t = self.expr(operand, assigned);
-                let (want, sym) = match op {
-                    UnaryOp::Neg => (Ty::Int, "-"),
-                    UnaryOp::Not => (Ty::Bool, "not"),
-                };
-                if t == Ty::Error {
-                    return Ty::Error;
-                }
-                if t != want {
-                    self.cx.diags.push(Diagnostic::error(
-                        "E0207",
-                        format!("operator `{sym}` cannot be applied to `{}`", t.name()),
-                        e.span,
-                    ));
-                    return Ty::Error;
-                }
-                want
+                let t = self.expr(operand, env);
+                self.unary_result(*op, t, e.span)
             }
             ExprKind::Binary { op, lhs, rhs } => {
-                let lt = self.expr(lhs, assigned);
-                let rt = self.expr(rhs, assigned);
+                let lt = self.expr(lhs, env);
+                let rt = self.expr(rhs, env);
                 self.binary(*op, lt, rt, e.span)
             }
-            ExprKind::Call { callee, args } => self.call(callee, args, e.span, assigned),
+            ExprKind::Call { callee, args } => self.call(callee, args, e.span, env),
+            ExprKind::Is { .. } => unreachable!("handled by cond"),
         }
+    }
+
+    /// 演算子に使えない型への診断。`None` を取り除けば使える場合は E0301。
+    fn operator_error(
+        &mut self,
+        desc: String,
+        operands: &[Ty],
+        ok: impl Fn(&[Ty]) -> bool,
+        span: Span,
+    ) {
+        let stripped: Vec<Ty> = operands
+            .iter()
+            .map(|t| self.cx.types.without_none(*t))
+            .collect();
+        let maybe_none = operands.iter().any(|t| self.cx.types.contains_none(*t));
+        if maybe_none && ok(&stripped) {
+            self.cx.diags.push(
+                Diagnostic::error("E0301", format!("{desc}: an operand may be `None`"), span)
+                    .with_hint("check it first, e.g. `if x is not None:`"),
+            );
+        } else {
+            self.cx.diags.push(
+                Diagnostic::error("E0207", desc, span)
+                    .with_cause("there are no implicit conversions between types"),
+            );
+        }
+    }
+
+    fn unary_result(&mut self, op: UnaryOp, t: Ty, span: Span) -> Ty {
+        if t == Ty::Error {
+            return Ty::Error;
+        }
+        let (want, sym) = match op {
+            UnaryOp::Neg => (Ty::Int, "-"),
+            UnaryOp::Not => (Ty::Bool, "not"),
+        };
+        if t == want {
+            return want;
+        }
+        let desc = format!(
+            "operator `{sym}` cannot be applied to `{}`",
+            self.cx.name(t)
+        );
+        self.operator_error(desc, &[t], |ts| ts[0] == want, span);
+        Ty::Error
     }
 
     fn binary(&mut self, op: BinOp, lt: Ty, rt: Ty, span: Span) -> Ty {
         if lt == Ty::Error || rt == Ty::Error {
             return Ty::Error;
         }
-        let result = match op {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::FloorDiv | BinOp::Mod => {
-                (lt == Ty::Int && rt == Ty::Int).then_some(Ty::Int)
-            }
-            BinOp::Div => {
-                self.cx.diags.push(
-                    Diagnostic::error("E0207", "operator `/` is not supported yet", span)
-                        .with_cause("`/` produces a float, and floats are not supported yet")
-                        .with_hint("use `//` for integer (floor) division"),
-                );
-                return Ty::Error;
-            }
-            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                (lt == Ty::Int && rt == Ty::Int).then_some(Ty::Bool)
-            }
-            BinOp::Eq | BinOp::Ne => {
-                (lt == rt && matches!(lt, Ty::Int | Ty::Bool)).then_some(Ty::Bool)
-            }
-            BinOp::And | BinOp::Or => (lt == Ty::Bool && rt == Ty::Bool).then_some(Ty::Bool),
-        };
-        match result {
-            Some(t) => t,
-            None => {
-                self.cx.diags.push(
-                    Diagnostic::error(
-                        "E0207",
-                        format!(
-                            "operator `{}` cannot be applied to `{}` and `{}`",
-                            op.symbol(),
-                            lt.name(),
-                            rt.name()
-                        ),
-                        span,
-                    )
-                    .with_cause("there are no implicit conversions between types"),
-                );
-                Ty::Error
-            }
+        if op == BinOp::Div {
+            self.cx.diags.push(
+                Diagnostic::error("E0207", "operator `/` is not supported yet", span)
+                    .with_cause("`/` produces a float, and floats are not supported yet")
+                    .with_hint("use `//` for integer (floor) division"),
+            );
+            return Ty::Error;
         }
+        let rule = move |ts: &[Ty]| -> Option<Ty> {
+            let (l, r) = (ts[0], ts[1]);
+            match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::FloorDiv | BinOp::Mod => {
+                    (l == Ty::Int && r == Ty::Int).then_some(Ty::Int)
+                }
+                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                    (l == Ty::Int && r == Ty::Int).then_some(Ty::Bool)
+                }
+                BinOp::Eq | BinOp::Ne => {
+                    (l == r && matches!(l, Ty::Int | Ty::Bool)).then_some(Ty::Bool)
+                }
+                BinOp::And | BinOp::Or => (l == Ty::Bool && r == Ty::Bool).then_some(Ty::Bool),
+                BinOp::Div => None,
+            }
+        };
+        if let Some(t) = rule(&[lt, rt]) {
+            return t;
+        }
+        let desc = format!(
+            "operator `{}` cannot be applied to `{}` and `{}`",
+            op.symbol(),
+            self.cx.name(lt),
+            self.cx.name(rt)
+        );
+        self.operator_error(desc, &[lt, rt], move |ts| rule(ts).is_some(), span);
+        Ty::Error
     }
 
-    fn call(
-        &mut self,
-        callee: &Ident,
-        args: &[Expr],
-        span: Span,
-        assigned: &HashSet<String>,
-    ) -> Ty {
-        let arg_tys: Vec<Ty> = args.iter().map(|a| self.expr(a, assigned)).collect();
+    fn call(&mut self, callee: &Ident, args: &[Expr], span: Span, env: &Env) -> Ty {
+        let arg_tys: Vec<Ty> = args.iter().map(|a| self.expr(a, env)).collect();
         match callee.name.as_str() {
             "print" => {
                 if args.len() != 1 {
@@ -585,14 +881,14 @@ impl<'a> FnCk<'a> {
                         format!("`print` takes 1 argument but {} were given", args.len()),
                         span,
                     ));
-                } else if !matches!(arg_tys[0], Ty::Int | Ty::Bool | Ty::Str | Ty::Error) {
-                    self.cx.diags.push(
-                        Diagnostic::error(
-                            "E0201",
-                            format!("`print` cannot print a `{}` value", arg_tys[0].name()),
-                            args[0].span,
-                        )
-                        .with_cause("`print` accepts `int`, `bool` or `str`"),
+                } else {
+                    let printable = self.cx.types.union([Ty::Int, Ty::Bool, Ty::Str]);
+                    self.cx.require(
+                        arg_tys[0],
+                        printable,
+                        args[0].span,
+                        "`print` accepts `int`, `bool` or `str`",
+                        None,
                     );
                 }
                 return Ty::None;
@@ -604,14 +900,14 @@ impl<'a> FnCk<'a> {
                         format!("`exit` takes 1 argument but {} were given", args.len()),
                         span,
                     ));
-                } else if arg_tys[0] != Ty::Int && arg_tys[0] != Ty::Error {
-                    let d = self.cx.mismatch(
-                        Ty::Int,
+                } else {
+                    self.cx.require(
                         arg_tys[0],
+                        Ty::Int,
                         args[0].span,
                         "the exit status must be an `int`",
+                        None,
                     );
-                    self.cx.diags.push(d);
                 }
                 return Ty::None;
             }
@@ -646,20 +942,40 @@ impl<'a> FnCk<'a> {
             return sig.ret;
         }
         for ((arg, &at), &pt) in args.iter().zip(&arg_tys).zip(&sig.params) {
-            if at != pt && at != Ty::Error && pt != Ty::Error {
-                let d = self
-                    .cx
-                    .mismatch(
-                        pt,
-                        at,
-                        arg.span,
-                        &format!("argument of function `{}`", sig.name),
-                    )
-                    .with_related(RelatedKind::Function, &sig.name, Some(sig.span));
-                self.cx.diags.push(d);
-            }
+            let ctx = format!("argument of function `{}`", sig.name);
+            self.cx.require(
+                at,
+                pt,
+                arg.span,
+                &ctx,
+                Some((RelatedKind::Function, &sig.name, sig.span)),
+            );
         }
         sig.ret
+    }
+}
+
+/// 文の列の中で代入される変数名を集める（入れ子のブロックを含む）。
+fn assigned_vars(stmts: &[Stmt], out: &mut HashSet<String>) {
+    for s in stmts {
+        match &s.kind {
+            StmtKind::Assign { target, .. } => {
+                out.insert(target.name.clone());
+            }
+            StmtKind::If {
+                branches,
+                else_body,
+            } => {
+                for (_, b) in branches {
+                    assigned_vars(b, out);
+                }
+                if let Some(b) = else_body {
+                    assigned_vars(b, out);
+                }
+            }
+            StmtKind::While { body, .. } => assigned_vars(body, out),
+            StmtKind::Expr(_) | StmtKind::Return(_) | StmtKind::Pass => {}
+        }
     }
 }
 
@@ -743,5 +1059,126 @@ mod tests {
             run("def f() -> int:\n    return\n\ndef main() -> None:\n    pass\n"),
             vec!["E0211"]
         );
+    }
+
+    fn with_main(defs: &str) -> String {
+        format!("{defs}\ndef main() -> None:\n    pass\n")
+    }
+
+    #[test]
+    fn ac002_unchecked_none_is_rejected() {
+        let src = with_main("def f(s: str | None) -> None:\n    print(s)\n");
+        assert_eq!(run(&src), vec!["E0301"]);
+        let (m, _) = wys_parser::parse_source(&src);
+        let d = check(&m).1;
+        assert!(
+            d[0].message.contains("expected `bool | int | str`")
+                || d[0].message.contains("found `str | None`"),
+            "{}",
+            d[0].message
+        );
+    }
+
+    #[test]
+    fn narrowing_by_early_return_and_branches() {
+        let ok = [
+            "def f(s: str | None) -> str:\n    if s is None:\n        return \"none\"\n    return s\n",
+            "def f(s: str | None) -> str:\n    if s is not None:\n        return s\n    return \"none\"\n",
+            "def f(n: int | None) -> int:\n    if n is None:\n        return 0\n    elif n > 0:\n        return n\n    else:\n        return -n\n",
+            "def f(n: int | None) -> int:\n    if not (n is None):\n        return n\n    return 0\n",
+        ];
+        for src in ok {
+            assert_eq!(run(&with_main(src)), Vec::<&str>::new(), "{src}");
+        }
+    }
+
+    #[test]
+    fn narrowing_through_and_or() {
+        assert_eq!(
+            run(&with_main(
+                "def f(n: int | None) -> bool:\n    return n is not None and n > 0\n"
+            )),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            run(&with_main(
+                "def f(n: int | None) -> bool:\n    return n is None or n > 0\n"
+            )),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            run(&with_main(
+                "def f(n: int | None) -> bool:\n    return n is None and n > 0\n"
+            )),
+            vec!["E0207"] // 右辺では n は確実に None なので演算子のエラーになる
+        );
+    }
+
+    #[test]
+    fn join_and_reassignment_reset_narrowing() {
+        let join =
+            "def f(n: int | None) -> int:\n    if n is not None:\n        print(n)\n    return n\n";
+        assert_eq!(run(&with_main(join)), vec!["E0301"]);
+        let reassign = "def f(n: int | None, m: int | None) -> int:\n    if n is None:\n        return 0\n    n = m\n    return n\n";
+        assert_eq!(run(&with_main(reassign)), vec!["E0301"]);
+    }
+
+    #[test]
+    fn loops_reset_narrowing_of_assigned_variables() {
+        let body_assigns = "def f(n: int | None, m: int | None) -> int:\n    if n is None:\n        return 0\n    while True:\n        print(n)\n        n = m\n    return 0\n";
+        assert_eq!(run(&with_main(body_assigns)), vec!["E0301"]);
+        let not_assigned = "def f(n: int | None) -> int:\n    if n is None:\n        return 0\n    i = 0\n    while i < 3:\n        print(n + i)\n        i = i + 1\n    return n\n";
+        assert_eq!(run(&with_main(not_assigned)), Vec::<&str>::new());
+        let until_set = "def f(m: int | None) -> int:\n    x: int | None = None\n    while x is None:\n        x = m\n    return x\n";
+        assert_eq!(run(&with_main(until_set)), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn optional_specific_errors() {
+        assert_eq!(
+            run(&with_main("def f(n: int) -> bool:\n    return n is None\n")),
+            vec!["E0302"]
+        );
+        assert_eq!(
+            run(&with_main(
+                "def f(n: int | None) -> bool:\n    return n is 1\n"
+            )),
+            vec!["E0207"]
+        );
+        assert_eq!(
+            run(&with_main(
+                "def f(n: int | None) -> int:\n    return n + 1\n"
+            )),
+            vec!["E0301"]
+        );
+        assert_eq!(
+            run(&with_main("def f() -> int | None:\n    return\n")),
+            vec!["E0211"]
+        );
+        assert_eq!(
+            run(&with_main(
+                "def f(b: bool | None) -> None:\n    if b:\n        pass\n"
+            )),
+            vec!["E0301"]
+        );
+    }
+
+    #[test]
+    fn unions_are_flattened_and_accepted_where_they_fit() {
+        assert_eq!(
+            run(&with_main(
+                "def f(x: int | str) -> None:\n    print(x)\n\ndef g() -> int | None | int:\n    return None\n"
+            )),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            run(&with_main("def f(x: int | str) -> int:\n    return x\n")),
+            vec!["E0201"]
+        );
+        let mut t = Types::default();
+        let a = t.union([Ty::None, Ty::Int]);
+        let b = t.union([Ty::Int, a, Ty::None]);
+        assert_eq!(a, b);
+        assert_eq!(t.name(a), "int | None");
     }
 }

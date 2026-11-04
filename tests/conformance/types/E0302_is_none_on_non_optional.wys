@@ -1,0 +1,7 @@
+# None になり得ない値の None 検査は常に同じ結果になるので拒否する
+# expect-error: E0302 4:12
+def f(n: int) -> bool:
+    return n is None
+
+def main() -> None:
+    print(f(1))
