@@ -5,7 +5,7 @@
 ## 運用ルール
 
 1. [template.md](template.md) をコピーし、`NNNN-短い名前.md`（例：`0002-memory-model.md`）として作成する。番号は連番で再利用しない。
-2. 作成時の状態は `Proposed`。合意したら `Accepted` にする。
+2. 作成時の状態は `Proposed`。プロジェクトオーナー（人間）がレビューして合意したら `Accepted` にする。**AIエージェントは `Accepted` に変更しない。**
 3. 一度 `Accepted` になったADRは書き換えない。方針を変える場合は新しいADRを作り、古い方を `Superseded by ADR-NNNN` にする。
 4. ADRを追加・変更したら、下の一覧と「未決定事項との対応」を更新する。
 
@@ -14,6 +14,8 @@
 | ID | タイトル | 状態 | 日付 |
 |---|---|---|---|
 | [0001](0001-record-architecture-decisions.md) | 設計判断をADRで記録する | Accepted | 2026-11-04 |
+| [0002](0002-implementation-language-rust.md) | 実装言語に Rust を採用する | Proposed | 2026-11-04 |
+| [0003](0003-mvp-target-platform.md) | MVP の対象環境を macOS arm64 とする | Proposed | 2026-11-04 |
 
 ## 未決定事項との対応
 
@@ -27,7 +29,7 @@
 | 4 | ARC/ORC相当の方式、循環参照回収、Ownership/Borrowの詳細 | Phase 1 | MEM-001〜005 | — |
 | 5 | Effectの表現形式（型シグネチャ、注釈、推論の組合せ） | Phase 1（基礎）／Phase 2 | AI-009 | — |
 | 6 | Runtimeの構成（静的リンク、動的リンク、最小バイナリ） | Phase 1 | COMP-002, AC-004 | — |
-| 7 | MVPの対象OS/CPU、初期標準ライブラリ範囲 | Phase 1 | NFR-006 | — |
+| 7 | MVPの対象OS/CPU、初期標準ライブラリ範囲 | Phase 1 | NFR-006 | [0003](0003-mvp-target-platform.md)（OS/CPU のみ。Proposed） |
 | 8 | Python連携方式と対応バージョン、GIL/スレッド境界 | Phase 2 | INTEROP-001〜003 | — |
 | 9 | AI SDKを標準添付するか別パッケージとするか | Phase 2 | AI-001〜010 | — |
 | 10 | モデルプロバイダ抽象化、費用上限の算定方式、秘密情報保管、トレースのプライバシー方針 | Phase 2 | AI-006, AI-007, NFR-005 | — |
