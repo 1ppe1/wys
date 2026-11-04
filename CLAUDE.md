@@ -22,5 +22,5 @@
 - 優先順位は「言語の意味論・型・所有権・Effect・FFI境界」の確定が最優先。GPU機能やAI向け糖衣構文は後回し。
 - AI関連機能（`agent`/`tool`/`llm`）はまず標準SDK・デコレータとして設計し、専用構文にはしない。
 - セキュリティはRuntime強制が前提。LLM出力・ツール戻り値は信頼しない。プロンプトでの権限制御に依存しない。
-- 実装言語の第一候補はRust（ADR-0002 で Proposed）。ツールチェーンは `rust-toolchain.toml` で固定。
+- 実装言語はRust（ADR-0002 で決定）。ツールチェーンは `rust-toolchain.toml` で固定。
 - 実行計画（マイルストーン・直近タスク）は `docs/roadmap.md`。

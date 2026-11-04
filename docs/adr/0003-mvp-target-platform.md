@@ -1,6 +1,6 @@
 # ADR-0003: MVP の対象環境を macOS arm64 とする
 
-- **状態:** Proposed
+- **状態:** Accepted
 - **日付:** 2026-11-04
 - **関連:** 未決定事項 7、NFR-006、AC-004
 
@@ -29,7 +29,7 @@ NFR-006 は「MVPのサポートOS/CPUを明示し、CIで継続検証する」�
 
 ## 決定
 
-（ユーザーレビュー待ち）案Aを推奨する。Phase 1 の最初の対象環境は **macOS arm64（aarch64-apple-darwin）** とする。
+案Aを採用する。Phase 1 の最初の対象環境は **macOS arm64（aarch64-apple-darwin）** とする。
 **Linux x86_64（x86_64-unknown-linux-gnu）** は、M1 完了後に Conformance テストが安定してから、M2 で CI に追加する。遅くとも Phase 1 の出口（M3）までに追加する。
 Windows は Phase 3 以降に検討する。
 
