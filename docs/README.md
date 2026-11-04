@@ -5,7 +5,8 @@
 | ドキュメント | 状態 | 内容 |
 |---|---|---|
 | [ai_native_language_requirements.md](ai_native_language_requirements.md) | Draft v0.1 | 要件定義書。全ての設計成果物の起点 |
-| [plans/m2.md](plans/m2.md) | 承認済み計画 | M2 のタスク分解（T0〜T10）、暫定値表現、新しい ADR と診断コードの帯 |
+| [plans/m3.md](plans/m3.md) | 承認済み計画 | M3 のタスク分解（T0〜T11）、ヒープと ARC の方針、新しい ADR と診断コードの帯 |
+| [plans/m2.md](plans/m2.md) | 完了 | M2 のタスク分解（T0〜T10）、暫定値表現、新しい ADR と診断コードの帯 |
 | [roadmap.md](roadmap.md) | 承認済み計画 | Phase 0〜3 のマイルストーン、決定順、直近タスク |
 | [spec/diagnostics-schema.json](spec/diagnostics-schema.json) | v0（草案） | 構造化診断JSONのスキーマ（DX-002, AC-005）。実装は `crates/wys_diagnostics` で、テストでスキーマ検証する |
 | [spec/grammar.ebnf](spec/grammar.ebnf) | v0.1 | 文法（PoC1 / M1 サブセット）とレイアウト規則 |

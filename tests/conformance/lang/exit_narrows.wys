@@ -1,0 +1,9 @@
+# exit() は戻らないので、`if n is None: exit(...)` の後では n が絞り込まれる
+# expect-stdout: 6
+def check(n: int | None) -> int:
+    if n is None:
+        exit(2)
+    return n + 1
+
+def main() -> None:
+    print(check(5))

@@ -831,11 +831,16 @@ impl<'s, 't> FnLower<'s, 't> {
                     .collect();
                 let ret = self.sh.ir_ty(ret);
                 let dst = ret.map(|t| self.temp(t));
+                let noreturn = matches!(target, Callee::Builtin(Builtin::Exit));
                 self.emit(Inst::Call {
                     dst,
                     callee: target,
                     args: arg_vals,
                 });
+                if noreturn {
+                    // exit() は戻らない。後続の文は到達しないブロックに入る
+                    self.terminate(Terminator::Unreachable);
+                }
                 dst
             }
         }

@@ -1,0 +1,7 @@
+# Unknown はすべての値を含むので、Union に入れられない（ADR-0011: 絞り込みは match だけ）
+# expect-error: E0603 3:10
+def f(x: Unknown | None) -> None:
+    pass
+
+def main() -> None:
+    pass

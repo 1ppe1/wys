@@ -1,0 +1,6 @@
+# 入れ子の深い型の名前は、診断では途中で省略する（以前は型名が指数的に長くなり得た）
+# expect-error: E0201 6:14
+type Box[T] = {v: T}
+
+def main() -> None:
+    x: int = Box(v=Box(v=Box(v=Box(v=Box(v=Box(v=Box(v=Box(v=Box(v=Box(v=1))))))))))
