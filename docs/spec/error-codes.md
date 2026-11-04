@@ -78,9 +78,9 @@
 
 欠番（未割り当て）: E0212、E0506、E0507。廃止: E0405（`list` はまだ使えない。M3 T4a で `list` に対応したため廃止）。一度割り当てたコードは再利用しない。
 
-## 実行時エラー（PoC1 時点の暫定）
+## 実行時エラー（パニック、ADR-0013）
 
-実行時エラーは stderr に `runtime error: <内容>` を出し、終了コード 101 で終わる。
+実行時エラー（パニック）は、stdout を書き出してから stderr に `runtime error: <内容>` を出し、終了コード **101** で終わる。機械的にはこの接頭辞で判別する。場所が分かるものは ` at ファイル:行:列` を付ける。スタックトレースは出さない（Phase 1）。パニックと `exit()` では、終了時の生存オブジェクト数の検査（102）は行わない（正常終了したときだけ）。
 
 | 内容 | 発生条件 |
 |---|---|
@@ -88,6 +88,7 @@
 | integer division by zero | `//` の除数が 0 |
 | integer modulo by zero | `%` の除数が 0 |
 | assertion failed at ファイル:行:列 | `assert(cond)` の条件が偽 |
+| <msg> at ファイル:行:列 | `panic(msg)` を呼んだ |
 | index out of range: index i, length n | リストの添字が範囲外（負の添字は末尾から数える） |
 
 プログラムの終了時に解放されていないオブジェクトが残っていた場合は、`runtime error: N object(s) were not freed (this is a compiler bug)` を出して終了コード 102 で終わる（ARC の誤りを検出するための検査、ADR-0012）。
@@ -98,6 +99,7 @@
 |---|---|---|
 | `arg_count()` | `int` | コマンドライン引数の数（プログラム名を除く） |
 | `arg(i)` | `str \| None` | `i` 番目（0始まり）の引数。範囲外なら `None` |
+| `panic(msg)` | `None` | `msg`（`str`）を出して実行時エラーで終了する。戻らない文として扱う（値を返す関数の最後に書いてよい）。`unwrap` の代わりに `case Err(e): panic(e)` と書く（ADR-0013） |
 | `assert(cond)` | `None` | `cond` が偽なら実行時エラーで終了する。文として書くと、以降は `cond` が真の場合として絞り込む（`assert(x is not None)`） |
 | `len(x)` | `int` | 文字列の長さ（文字数 = Unicode のコードポイント数。Python の `len` と同じ）、またはリストの要素数 |
 | `range(n)` / `range(a, b)` | — | `for` の中だけで使える整数の範囲 |

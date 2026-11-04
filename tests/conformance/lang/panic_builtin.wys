@@ -1,0 +1,14 @@
+# panic(msg) は stdout を書き出してから、stderr に `runtime error: <msg> at ファイル:行:列` を出して 101 で終わる（ADR-0013）
+# expect-stdout: before
+# expect-exit: 101
+# expect-stderr-contains: runtime error: bad state: x at
+# expect-stderr-contains: panic_builtin.wys:8:9
+def check(s: str) -> None:
+    if s == "x":
+        panic("bad state: " + s)
+    print("ok " + s)
+
+def main() -> None:
+    print("before")
+    check("x")
+    print("unreachable")

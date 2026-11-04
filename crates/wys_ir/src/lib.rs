@@ -170,6 +170,8 @@ pub enum Builtin {
     TestIndex,
     /// `assert` の失敗（引数は場所の文字列）。戻らない。
     AssertFail,
+    /// `panic(msg)`（引数はメッセージと場所の文字列）。戻らない（ADR-0013）。
+    Panic,
     /// 文字列の連結。新しいオブジェクトを +1 所有で返す（M3 T2b）
     StrConcat,
     /// 文字列の中身の比較
@@ -193,6 +195,7 @@ impl Builtin {
             Builtin::ScalarBool => "scalar_bool",
             Builtin::TestIndex => "test_index",
             Builtin::AssertFail => "assert_fail",
+            Builtin::Panic => "panic",
             Builtin::StrConcat => "str_concat",
             Builtin::StrEq => "str_eq",
             Builtin::StrLen => "str_len",
@@ -211,7 +214,8 @@ impl Builtin {
             | Builtin::PrintBool
             | Builtin::PrintStr
             | Builtin::Exit
-            | Builtin::AssertFail => None,
+            | Builtin::AssertFail
+            | Builtin::Panic => None,
             Builtin::ArgCount | Builtin::ScalarKind | Builtin::ScalarInt | Builtin::TestIndex => {
                 Some(Ty::Int)
             }
@@ -228,7 +232,7 @@ impl Builtin {
             Builtin::PrintStr => &[Ty::Str],
             Builtin::ArgCount | Builtin::TestIndex => &[],
             Builtin::AssertFail | Builtin::StrLen => &[Ty::Str],
-            Builtin::StrConcat | Builtin::StrEq => &[Ty::Str, Ty::Str],
+            Builtin::StrConcat | Builtin::StrEq | Builtin::Panic => &[Ty::Str, Ty::Str],
             Builtin::ArgExists | Builtin::ArgStr => &[Ty::Int],
             Builtin::ScalarKind | Builtin::ScalarInt | Builtin::ScalarBool => &[Ty::Str],
         }

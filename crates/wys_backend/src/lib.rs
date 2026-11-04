@@ -148,6 +148,7 @@ declare i64 @wys_scalar_int(ptr)
 declare zeroext i1 @wys_scalar_bool(ptr)
 declare i64 @wys_test_index()
 declare void @wys_assert_fail(ptr) noreturn
+declare void @wys_panic(ptr, ptr) noreturn
 declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
@@ -666,6 +667,14 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                     }
                     Callee::Builtin(Builtin::AssertFail) => {
                         let _ = writeln!(out, "  call void @wys_assert_fail(ptr {})", t(args[0]));
+                    }
+                    Callee::Builtin(Builtin::Panic) => {
+                        let _ = writeln!(
+                            out,
+                            "  call void @wys_panic(ptr {}, ptr {})",
+                            t(args[0]),
+                            t(args[1])
+                        );
                     }
                     Callee::Builtin(Builtin::PrintStr) => {
                         let _ = writeln!(out, "  call void @wys_print_str(ptr {})", t(args[0]));

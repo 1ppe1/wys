@@ -468,6 +468,7 @@ impl TypeckResult {
 const BUILTINS: &[&str] = &[
     "print",
     "exit",
+    "panic",
     "arg_count",
     "arg",
     "parse_scalar",
@@ -1125,13 +1126,13 @@ impl<'a> FnCk<'a> {
                 self.record(e, Ty::None);
                 false
             }
-            // exit() は戻らない: この文の後には到達しない（絞り込みと return の検査のため）
+            // exit() / panic() は戻らない: この文の後には到達しない（絞り込みと return の検査のため）
             StmtKind::Expr(
                 e @ Expr {
                     kind: ExprKind::Call { callee, .. },
                     ..
                 },
-            ) if callee.name == "exit" => {
+            ) if matches!(callee.name.as_str(), "exit" | "panic") => {
                 self.expr(e, env);
                 true
             }
@@ -2888,6 +2889,24 @@ impl<'a> FnCk<'a> {
                         Ty::Bool,
                         args[0].span,
                         "`assert` needs a `bool` condition",
+                        None,
+                    );
+                }
+                return Ty::None;
+            }
+            "panic" => {
+                if args.len() != 1 {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!("`panic` takes 1 argument but {} were given", args.len()),
+                        span,
+                    ));
+                } else {
+                    self.cx.require(
+                        arg_tys[0],
+                        Ty::Str,
+                        args[0].span,
+                        "the panic message must be a `str`",
                         None,
                     );
                 }

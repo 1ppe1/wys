@@ -1,0 +1,23 @@
+# panic() は戻らない文: 値を返す関数の最後に書いても E0206 にならず、絞り込みにも使える
+# expect-stdout: 3
+# expect-stdout: 5
+def pick(n: int) -> int:
+    if n > 0:
+        return n
+    panic("non-positive")
+
+def unwrap_or_panic(r: Result[int, str]) -> int:
+    match r:
+        case Ok(v):
+            return v
+        case Err(e):
+            panic(e)
+
+def main() -> None:
+    print(pick(3))
+    x: int | None = 5
+    if x is None:
+        panic("missing")
+    print(x)
+    r: Result[int, str] = Ok(1)
+    unwrap_or_panic(r)

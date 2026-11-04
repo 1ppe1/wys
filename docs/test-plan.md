@@ -47,6 +47,7 @@ CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は 
 | 参照型の要素・入れ子のリストと借用の安全条件（M3 T4b） | `lang/list_borrow_safety.wys`（`xs[i]` の値を、`xs` を変更する関数の呼び出しと同じ式で使う。ASan で use-after-free を検出したため、`xs[i]` の結果を retain するよう修正）、`lang/list_nested_and_records.wys`。代入による絞り込み: `lang/assign_narrowing.wys` |
 | `Result[T, E]` と束縛パターン（M3 T5a、ADR-0013） | `lang/result_*`・`generic_result_match`、`types/E100x_*`・`E0303_result_missing_err`、e2e の `result_values_run_and_missing_types_are_hinted`。参照型の中身を持つ `Result` も3つのモードで生存オブジェクト 0 |
 | `?` による伝搬（M3 T5b、ADR-0013） | `lang/try_*`（式の途中（`try_mid_expression`）・ループの中・Generics・エラー型の Union への詰め直し）、`types/E1010`〜`E1012`、`syntax/E0101_try_then_field`、e2e の `try_propagates_and_reports_uncovered_errors`。途中で返す経路も3つのモードで生存オブジェクト 0 |
+| パニックの仕様と `panic(msg)`（M3 T5c、NFR-007、ADR-0013） | `lang/panic_builtin.wys`（stdout を書き出してから stderr に `runtime error: … at 場所`、終了コード 101）、`lang/panic_noreturn.wys`（戻らない文）、e2e の `panic_flushes_stdout_and_exits_with_101`。ASan モードでは LeakSanitizer を無効にする（リークの判定は生存オブジェクト数 102） |
 | LANG-001（モジュール） | **合格（M2 T6）**。`tests/conformance/modules/<ケース名>/main.wys`（import するファイルを同じディレクトリに置く）。名前解決の単体テストは `wys_resolve` |
 | AC-003（`Unknown` の検証） | **合格（M2 T5）**。拒否: `types/E0601_*`・`E0602_*`。検証後の利用: `lang/unknown_from_args.wys`（コマンドライン引数を `# expect-args:` で渡す） |
 | Linux x86_64 での CI | **M2 T0 で追加済み** |

@@ -1138,6 +1138,21 @@ impl<'s, 't> FnLower<'s, 't> {
                 });
                 Some(dst)
             }
+            ExprKind::Call { callee, args, .. } if callee.name == "panic" => {
+                let m = self.expr(&args[0]).expect("panic messages are str");
+                let loc = (self.sh.locate)(e.span.start);
+                let id = StrId(self.sh.strings.len() as u32);
+                self.sh.strings.push(loc);
+                let l = self.konst(Const::Str(id), Ty::Str);
+                self.emit(Inst::Call {
+                    dst: None,
+                    callee: Callee::Builtin(Builtin::Panic),
+                    args: vec![m, l],
+                });
+                // panic() は戻らない。後続の文は到達しないブロックに入る
+                self.terminate(Terminator::Unreachable);
+                None
+            }
             ExprKind::Call { callee, args, .. } if callee.name == "assert" => {
                 let c = self.expr(&args[0]).expect("conditions are bool");
                 let (ok, fail) = (self.new_block(), self.new_block());
@@ -1589,6 +1604,7 @@ impl<'s, 't> FnLower<'s, 't> {
                 name,
                 "print"
                     | "exit"
+                    | "panic"
                     | "arg_count"
                     | "arg"
                     | "parse_scalar"
