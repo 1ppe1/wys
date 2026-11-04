@@ -12,7 +12,7 @@
 | Conformance テスト | `tests/conformance/{lang,syntax,types,diagnostics}/*.wys`、`tests/conformance/modules/*/main.wys` | `cargo test -p wys_testharness` | 言語仕様の適合性。期待値は `.wys` の先頭コメントで宣言する |
 | 診断スナップショット | `crates/wys_testharness/tests/snapshots/` | 同上（insta） | 診断 JSON の形を固定する |
 | e2e テスト | `crates/wys_cli/tests/e2e.rs` | `cargo test -p wys_cli` | CLI の挙動（終了コード、出力形式、ビルドした実行ファイル） |
-| ベンチ計測 | `benches/measure.sh` | 手動（M3 で CI 化を検討） | コンパイル時間、バイナリサイズ、起動時間。倍率は書かない |
+| ベンチ計測（M3 T7） | `benches/measure.sh`、`benches/programs/*.wys` | 手動（結果は `benches/results/bench-YYYYMMDD.tsv`、git 管理外）。CI はベンチ用プログラムの `fmt --check` と `check` だけ | コンパイル時間、バイナリサイズ、実行時間、最大常駐メモリ、retain / release の回数（`WYS_RC_STATS=1` でビルドした計測用の実行ファイル）。絶対値と計測環境だけを記録し、倍率は書かない。計数の仕組みは e2e の `rc_stats_count_reference_count_operations` |
 
 CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は `scripts/ci.sh`（fmt / clippy / test、`examples/` の `wys fmt --check`、PoC5 のケース検証）を実行する。
 

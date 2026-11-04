@@ -1,0 +1,15 @@
+# リストへの追加と、添字での読み出し
+def main() -> None:
+    xs: list[int] = []
+    for i in range(200000):
+        xs.append(i % 1000)
+    total = 0
+    for x in xs:
+        total = total + x
+    for i in range(len(xs)):
+        total = total - xs[i]
+    print(total)
+    names: list[str] = []
+    for i in range(20000):
+        names.append("n" + "x")
+    print(len(names))

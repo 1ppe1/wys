@@ -33,6 +33,8 @@ pub struct LlvmTextBackend {
     pub opt_level: u8,
     /// 追加のコンパイラオプション（`-fsanitize=address` など）。
     pub extra_flags: Vec<String>,
+    /// 参照カウントの操作の回数を数える（ベンチ計測用、M3 T7）。
+    pub rc_stats: bool,
 }
 
 impl Default for LlvmTextBackend {
@@ -41,6 +43,7 @@ impl Default for LlvmTextBackend {
             cc: "clang".to_string(),
             opt_level: 0,
             extra_flags: Vec::new(),
+            rc_stats: false,
         }
     }
 }
@@ -53,7 +56,13 @@ impl Backend for LlvmTextBackend {
     fn emit_object(&self, program: &Program, object_path: &Path) -> Result<(), BackendError> {
         let ll_path = object_path.with_extension("ll");
         let sanitize = self.extra_flags.iter().any(|f| f == "-fsanitize=address");
-        std::fs::write(&ll_path, emit_llvm_ir_with(program, sanitize))
+        let ir = emit_llvm_ir_with(program, sanitize);
+        let ir = if self.rc_stats {
+            with_rc_stats(&ir)
+        } else {
+            ir
+        };
+        std::fs::write(&ll_path, ir)
             .map_err(|e| BackendError(format!("cannot write {}: {e}", ll_path.display())))?;
         let output = Command::new(&self.cc)
             .arg("-c")
@@ -93,6 +102,7 @@ load:
   %immortal = icmp slt i64 %rc, 0
   br i1 %immortal, label %done, label %inc
 inc:
+  ;STAT retain
   %n = add i64 %rc, 1
   store i64 %n, ptr %p, align 8
   br label %done
@@ -109,6 +119,7 @@ load:
   %immortal = icmp slt i64 %rc, 0
   br i1 %immortal, label %done, label %dec
 dec:
+  ;STAT release
   %n = sub i64 %rc, 1
   store i64 %n, ptr %p, align 8
   %zero = icmp eq i64 %n, 0
@@ -232,6 +243,25 @@ fn escape_bytes(s: &str) -> String {
 /// IR を LLVM IR テキストに変換する。
 pub fn emit_llvm_ir(p: &Program) -> String {
     emit_llvm_ir_with(p, false)
+}
+
+/// 参照カウントの操作の回数を数えるようにする（ベンチ計測用、M3 T7）。
+/// 生成コードの `;STAT retain` / `;STAT release` の目印（LLVM のコメント）を、ランタイムの計数器への加算に置き換える。
+/// 数えるのは、不死でないオブジェクトに対する実際の増減だけ（Union / レコードの操作は中の参照型の操作として数える）。
+pub fn with_rc_stats(ir: &str) -> String {
+    let mut out = ir
+        .replace(
+            "  ;STAT retain\n",
+            "  %stat.r = atomicrmw add ptr @wys_stat_retains, i64 1 monotonic\n",
+        )
+        .replace(
+            "  ;STAT release\n",
+            "  %stat.d = atomicrmw add ptr @wys_stat_releases, i64 1 monotonic\n",
+        );
+    out.push_str(
+        "@wys_stat_retains = external global i64\n@wys_stat_releases = external global i64\n",
+    );
+    out
 }
 
 /// `sanitize_address` が真なら、すべての関数に `sanitize_address` 属性を付ける。
@@ -392,7 +422,7 @@ fn emit_dict_glue(out: &mut String, p: &Program, drops: &DropInfo) {
         // release: 参照カウントが 0 になったら、キーと値を release してから辞書を返す
         let _ = writeln!(
             out,
-            "\ndefine private void @wys_release_dict{i}(ptr %p) {{\nentry:\n  %isnull = icmp eq ptr %p, null\n  br i1 %isnull, label %done, label %load\nload:\n  %rc = load i64, ptr %p, align 8\n  %n = sub i64 %rc, 1\n  store i64 %n, ptr %p, align 8\n  %zero = icmp eq i64 %n, 0\n  br i1 %zero, label %free, label %done\nfree:\n  %len = call i64 @wys_dict_len(ptr %p)\n  br label %loop\nloop:\n  %pos = phi i64 [0, %free], [%pos2, %body]\n  %e = call i64 @wys_dict_iter_next(ptr %p, i64 %pos, i64 %len)\n  %more = icmp sge i64 %e, 0\n  br i1 %more, label %body, label %fin\nbody:"
+            "\ndefine private void @wys_release_dict{i}(ptr %p) {{\nentry:\n  %isnull = icmp eq ptr %p, null\n  br i1 %isnull, label %done, label %load\nload:\n  ;STAT release\n  %rc = load i64, ptr %p, align 8\n  %n = sub i64 %rc, 1\n  store i64 %n, ptr %p, align 8\n  %zero = icmp eq i64 %n, 0\n  br i1 %zero, label %free, label %done\nfree:\n  %len = call i64 @wys_dict_len(ptr %p)\n  br label %loop\nloop:\n  %pos = phi i64 [0, %free], [%pos2, %body]\n  %e = call i64 @wys_dict_iter_next(ptr %p, i64 %pos, i64 %len)\n  %more = icmp sge i64 %e, 0\n  br i1 %more, label %body, label %fin\nbody:"
         );
         if key_drop {
             let _ = writeln!(
@@ -423,7 +453,7 @@ fn emit_glue(out: &mut String, p: &Program, drops: &DropInfo) {
         let size = elem_size(p, *elem);
         let _ = writeln!(
             out,
-            "\ndefine private void @wys_release_list{i}(ptr %p) {{\nentry:\n  %isnull = icmp eq ptr %p, null\n  br i1 %isnull, label %done, label %load\nload:\n  %rc = load i64, ptr %p, align 8\n  %n = sub i64 %rc, 1\n  store i64 %n, ptr %p, align 8\n  %zero = icmp eq i64 %n, 0\n  br i1 %zero, label %free, label %done\nfree:\n  %len = call i64 @wys_list_len(ptr %p)\n  br label %loop\nloop:\n  %i = phi i64 [0, %free], [%i2, %body]\n  %more = icmp slt i64 %i, %len\n  br i1 %more, label %body, label %fin\nbody:"
+            "\ndefine private void @wys_release_list{i}(ptr %p) {{\nentry:\n  %isnull = icmp eq ptr %p, null\n  br i1 %isnull, label %done, label %load\nload:\n  ;STAT release\n  %rc = load i64, ptr %p, align 8\n  %n = sub i64 %rc, 1\n  store i64 %n, ptr %p, align 8\n  %zero = icmp eq i64 %n, 0\n  br i1 %zero, label %free, label %done\nfree:\n  %len = call i64 @wys_list_len(ptr %p)\n  br label %loop\nloop:\n  %i = phi i64 [0, %free], [%i2, %body]\n  %more = icmp slt i64 %i, %len\n  br i1 %more, label %body, label %fin\nbody:"
         );
         if drops.get(*elem) {
             let lt = llty(*elem);

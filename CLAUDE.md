@@ -39,6 +39,8 @@ target/debug/wys test examples/math_test.wys
 target/debug/wys fmt --check examples/fib.wys
 target/debug/wys build --release examples/fib.wys   # -O2
 WYS_SANITIZE=address target/debug/wys run examples/fib.wys   # AddressSanitizer 付き
+WYS_RC_STATS=1 target/debug/wys run examples/fib.wys         # 終了時に retain / release の回数を出す
+benches/measure.sh                                          # ベンチ計測（倍率は書かない）
 ```
 
 - ARC（retain / release）に関わる変更では、`scripts/ci.sh` の AddressSanitizer モードと生存オブジェクト数の検査（終了コード 102）が通ることを必ず確かめる。
