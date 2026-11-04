@@ -1,0 +1,11 @@
+# 要素が参照型（str）のリスト。要素の置き換えと、リストの解放のときに要素も解放される（漏れれば終了コード 102）
+# expect-stdout: ab
+# expect-stdout: c!
+# expect-stdout: 3
+def main() -> None:
+    names = ["a" + "b", "c"]
+    names[1] = names[1] + "!"
+    names.append("d" + "e")
+    print(names[0])
+    print(names[1])
+    print(len(names))

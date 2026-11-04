@@ -19,6 +19,8 @@ struct Shared<'t> {
     unions: Vec<Vec<Member>>,
     record_ids: HashMap<wys_typeck::RecordId, RecordId>,
     records: Vec<Vec<(String, Ty)>>,
+    list_ids: HashMap<wys_typeck::ListId, ListId>,
+    lists: Vec<Ty>,
     strings: Vec<String>,
     func_index: HashMap<String, usize>,
     /// (関数の番号, 型引数) → IR の関数。Generic でない関数は型引数が空。
@@ -43,6 +45,7 @@ impl Shared<'_> {
             TTy::None => None,
             TTy::Union(u) => Some(Ty::Union(self.ir_union(u))),
             TTy::Record(r) => Some(Ty::Record(self.ir_record(r))),
+            TTy::List(lst) => Some(Ty::List(self.ir_list(lst))),
             TTy::Param(_) => {
                 panic!("type parameter reached code generation; monomorphization missed it")
             }
@@ -74,6 +77,11 @@ impl Shared<'_> {
                     .map(|m| self.norm(m))
                     .collect();
                 self.types.union(ms)
+            }
+            TTy::List(lst) if self.has_unknown(t) => {
+                let e = self.types.list_elem(lst);
+                let e = self.norm(e);
+                self.types.list(e)
             }
             TTy::Record(r) => {
                 let def = self.types.record_def(r).clone();
@@ -108,6 +116,18 @@ impl Shared<'_> {
         let id = UnionId(self.unions.len() as u32);
         self.unions.push(members);
         self.union_ids.insert(u, id);
+        id
+    }
+
+    fn ir_list(&mut self, lst: wys_typeck::ListId) -> ListId {
+        if let Some(&id) = self.list_ids.get(&lst) {
+            return id;
+        }
+        let elem = self.types.list_elem(lst);
+        let elem = self.ir_ty(elem).expect("list elements are never None");
+        let id = ListId(self.lists.len() as u32);
+        self.lists.push(elem);
+        self.list_ids.insert(lst, id);
         id
     }
 
@@ -203,6 +223,8 @@ pub fn lower_with(
         unions: Vec::new(),
         record_ids: HashMap::new(),
         records: Vec::new(),
+        list_ids: HashMap::new(),
+        lists: Vec::new(),
         strings: Vec::new(),
         func_index: module
             .funcs
@@ -254,6 +276,7 @@ pub fn lower_with(
         strings: sh.strings,
         unions: sh.unions,
         records: sh.records,
+        lists: sh.lists,
         funcs,
         entry,
     })
@@ -590,6 +613,30 @@ impl<'s, 't> FnLower<'s, 't> {
                 self.switch_to(join);
             }
             StmtKind::Match { subject, arms } => self.match_stmt(subject, arms),
+            StmtKind::IndexAssign { target, value } => {
+                let ExprKind::Index { base, index } = &target.kind else {
+                    unreachable!("IndexAssign always has an index target")
+                };
+                let TTy::List(l) = self.ty(base) else {
+                    panic!("index assignment on a non-list passed type checking")
+                };
+                let elem = self.sh.types.list_elem(l);
+                let b = self.expr(base).expect("lists have values");
+                let bb = self.cur;
+                let i = self.expr(index).expect("indexes have values");
+                let ib = self.cur;
+                let v = self.expr(value);
+                let vt = self.ty(value);
+                let v = self.coerce(v, vt, elem).expect("list elements have values");
+                let b = self.materialize(b, bb);
+                let i = self.materialize(i, ib);
+                self.emit(Inst::ListSet {
+                    list: b,
+                    index: i,
+                    value: v,
+                });
+            }
+            StmtKind::For { var, iter, body } => self.for_stmt(var, iter, body),
             StmtKind::While { cond, body } => {
                 let head = self.new_block();
                 let body_b = self.new_block();
@@ -766,8 +813,75 @@ impl<'s, 't> FnLower<'s, 't> {
                 Some(self.construct(r, kwargs))
             }
             ExprKind::Call { callee, args, .. } if callee.name == "len" => {
-                let s = self.expr(&args[0]).expect("len takes a str");
+                let at = self.ty(&args[0]);
+                let s = self.expr(&args[0]).expect("len takes a value");
+                if matches!(at, TTy::List(_)) {
+                    let d = self.temp(Ty::Int);
+                    self.emit(Inst::ListLen { dst: d, src: s });
+                    return Some(d);
+                }
                 Some(self.builtin(Builtin::StrLen, vec![s]))
+            }
+            ExprKind::Call { callee, args, .. } if callee.name.ends_with(".append") => {
+                // xs.append(v)（受け手はローカル変数、型検査で確認済み）
+                let (recv, _) = callee.name.rsplit_once('.').expect("method call");
+                let slot = self.local_ids[recv];
+                let lt = self.locals[slot.0 as usize];
+                let list = self.temp(lt);
+                self.emit(Inst::Load {
+                    dst: list,
+                    src: slot,
+                });
+                let TTy::List(l) = self.local_decl[recv] else {
+                    panic!("append on a non-list passed type checking")
+                };
+                let elem = self.sh.types.list_elem(l);
+                let v = self.expr(&args[0]);
+                let vt = self.ty(&args[0]);
+                let v = self.coerce(v, vt, elem).expect("list elements have values");
+                let list = self.materialize_from_local(list, slot);
+                self.emit(Inst::ListPush { list, value: v });
+                None
+            }
+            ExprKind::List(items) => {
+                let TTy::List(l) = self.ty(e) else {
+                    panic!("list literal without a list type")
+                };
+                let elem = self.sh.types.list_elem(l);
+                let mut evaluated = Vec::new();
+                for it in items {
+                    let v = self.expr(it);
+                    let vt = self.ty(it);
+                    let v = self.coerce(v, vt, elem).expect("list elements have values");
+                    evaluated.push((v, self.cur));
+                }
+                let vals: Vec<TempId> = evaluated
+                    .into_iter()
+                    .map(|(t, b)| self.materialize(t, b))
+                    .collect();
+                let il = self.sh.ir_list(l);
+                let d = self.temp(Ty::List(il));
+                self.emit(Inst::ListNew {
+                    dst: d,
+                    list: il,
+                    items: vals,
+                });
+                Some(d)
+            }
+            ExprKind::Index { base, index } => {
+                let b = self.expr(base).expect("lists have values");
+                let bb = self.cur;
+                let i = self.expr(index).expect("indexes have values");
+                let b = self.materialize(b, bb);
+                let et = self.ty(e);
+                let ir = self.sh.ir_ty(et).expect("list elements are never None");
+                let d = self.temp(ir);
+                self.emit(Inst::ListGet {
+                    dst: d,
+                    src: b,
+                    index: i,
+                });
+                Some(d)
             }
             ExprKind::Call { callee, args, .. }
                 if matches!(callee.name.as_str(), "arg_count" | "arg" | "parse_scalar") =>
@@ -848,6 +962,148 @@ impl<'s, 't> FnLower<'s, 't> {
                 dst
             }
         }
+    }
+
+    /// ローカル `slot` から読んだ一時値 `t` を、現在のブロックで使える形にする（ブロックが変わっていれば読み直す）。
+    fn materialize_from_local(&mut self, t: TempId, slot: LocalId) -> TempId {
+        if self.blocks[self.cur]
+            .insts
+            .iter()
+            .any(|i| matches!(i, Inst::Load { dst, .. } if *dst == t))
+        {
+            return t;
+        }
+        let d = self.temp(self.locals[slot.0 as usize]);
+        self.emit(Inst::Load { dst: d, src: slot });
+        d
+    }
+
+    /// `for var in iter:`。`range(a, b)` は整数で数え、`list[T]` は添字で要素を順に取り出す（M3 T4a）。
+    /// 反復対象のリストと位置は隠しローカルに置く（ループの各ブロックで読み直すため）。
+    fn for_stmt(&mut self, var: &ast::Ident, iter: &ast::Expr, body: &[ast::Stmt]) {
+        let var_slot = self.local_ids[&var.name];
+        let var_decl = self.local_decl[&var.name];
+        let pos = self.hidden_local(Ty::Int);
+        let end = self.hidden_local(Ty::Int);
+        let mut list_slot = None;
+        let mut elem_ty = TTy::Int;
+        if let ExprKind::Call { callee, args, .. } = &iter.kind
+            && callee.name == "range"
+        {
+            let (start, stop) = if args.len() == 2 {
+                let a = self.expr(&args[0]).expect("range bounds are ints");
+                let ab = self.cur;
+                let b = self.expr(&args[1]).expect("range bounds are ints");
+                (self.materialize(a, ab), b)
+            } else {
+                let z = self.konst(Const::Int(0), Ty::Int);
+                let b = self.expr(&args[0]).expect("range bounds are ints");
+                let z = self.materialize(z, self.cur);
+                (z, b)
+            };
+            let stop_b = self.cur;
+            self.emit(Inst::Store {
+                dst: pos,
+                src: start,
+            });
+            let stop = self.materialize(stop, stop_b);
+            self.emit(Inst::Store {
+                dst: end,
+                src: stop,
+            });
+        } else {
+            let TTy::List(l) = self.ty(iter) else {
+                panic!("for over a non-list passed type checking")
+            };
+            elem_ty = self.sh.types.list_elem(l);
+            let v = self.expr(iter).expect("lists have values");
+            let lt = self.temp_ty(v);
+            let ls = self.hidden_local(lt);
+            self.emit(Inst::Store { dst: ls, src: v });
+            let z = self.konst(Const::Int(0), Ty::Int);
+            self.emit(Inst::Store { dst: pos, src: z });
+            list_slot = Some(ls);
+        }
+        let (head, body_b, exit) = (self.new_block(), self.new_block(), self.new_block());
+        self.terminate(Terminator::Jump(head));
+        self.switch_to(head);
+        let p = self.temp(Ty::Int);
+        self.emit(Inst::Load { dst: p, src: pos });
+        let limit = match list_slot {
+            Some(ls) => {
+                let lv = self.temp(self.locals[ls.0 as usize]);
+                self.emit(Inst::Load { dst: lv, src: ls });
+                let n = self.temp(Ty::Int);
+                self.emit(Inst::ListLen { dst: n, src: lv });
+                n
+            }
+            None => {
+                let n = self.temp(Ty::Int);
+                self.emit(Inst::Load { dst: n, src: end });
+                n
+            }
+        };
+        let more = self.temp(Ty::Bool);
+        self.emit(Inst::Binary {
+            dst: more,
+            op: BinOp::Lt,
+            lhs: p,
+            rhs: limit,
+        });
+        self.terminate(Terminator::Branch {
+            cond: more,
+            then_block: body_b,
+            else_block: exit,
+        });
+        self.switch_to(body_b);
+        let p = self.temp(Ty::Int);
+        self.emit(Inst::Load { dst: p, src: pos });
+        let value = match list_slot {
+            Some(ls) => {
+                let lv = self.temp(self.locals[ls.0 as usize]);
+                self.emit(Inst::Load { dst: lv, src: ls });
+                let ir = self
+                    .sh
+                    .ir_ty(elem_ty)
+                    .expect("list elements are never None");
+                let x = self.temp(ir);
+                self.emit(Inst::ListGet {
+                    dst: x,
+                    src: lv,
+                    index: p,
+                });
+                self.coerce(Some(x), elem_ty, var_decl)
+            }
+            None => self.coerce(Some(p), TTy::Int, var_decl),
+        };
+        self.emit(Inst::Store {
+            dst: var_slot,
+            src: value.expect("loop variables have values"),
+        });
+        // 位置を先に進めてから本体を実行する（本体の中で return してもよいように、進め方を本体に依存させない）
+        let p = self.temp(Ty::Int);
+        self.emit(Inst::Load { dst: p, src: pos });
+        let one = self.konst(Const::Int(1), Ty::Int);
+        let next = self.temp(Ty::Int);
+        self.emit(Inst::Binary {
+            dst: next,
+            op: BinOp::Add,
+            lhs: p,
+            rhs: one,
+        });
+        self.emit(Inst::Store {
+            dst: pos,
+            src: next,
+        });
+        self.stmts(body);
+        if self.blocks[self.cur].term.is_none() {
+            self.terminate(Terminator::Jump(head));
+        }
+        self.switch_to(exit);
+    }
+
+    fn temp_ty(&self, t: TempId) -> Ty {
+        self.temps[t.0 as usize]
     }
 
     // ---- external input (ADR-0011) ----
@@ -1085,10 +1341,22 @@ impl<'s, 't> FnLower<'s, 't> {
 
     /// 関数でも組み込み関数でもない名前の呼び出しは、`type` で定義したレコードの作成。
     fn is_record_constructor(&self, name: &str) -> bool {
-        !self.sh.func_index.contains_key(name)
+        // `xs.append(...)` のように、`.` の前がローカル変数ならメソッド呼び出し
+        let method_call = name
+            .rsplit_once('.')
+            .is_some_and(|(recv, _)| self.local_ids.contains_key(recv));
+        !method_call
+            && !self.sh.func_index.contains_key(name)
             && !matches!(
                 name,
-                "print" | "exit" | "arg_count" | "arg" | "parse_scalar" | "assert" | "len"
+                "print"
+                    | "exit"
+                    | "arg_count"
+                    | "arg"
+                    | "parse_scalar"
+                    | "assert"
+                    | "len"
+                    | "range"
             )
     }
 

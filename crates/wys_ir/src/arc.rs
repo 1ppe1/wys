@@ -39,7 +39,7 @@ impl DropInfo {
     fn needs_drop(&mut self, p: &Program, t: Ty) -> bool {
         match t {
             Ty::Int | Ty::Bool => false,
-            Ty::Str => true,
+            Ty::Str | Ty::List(_) => true,
             Ty::Union(u) => {
                 if let Some(v) = self.unions[u.0 as usize] {
                     return v;
@@ -69,7 +69,7 @@ impl DropInfo {
     pub fn get(&self, t: Ty) -> bool {
         match t {
             Ty::Int | Ty::Bool => false,
-            Ty::Str => true,
+            Ty::Str | Ty::List(_) => true,
             Ty::Union(u) => self.unions[u.0 as usize].unwrap_or(false),
             Ty::Record(r) => self.records[r.0 as usize].unwrap_or(false),
         }
@@ -144,7 +144,21 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                     own.insert(*dst, (Own::Borrowed, false));
                     out.push(inst);
                 }
-                Inst::UnionPayload { dst, .. } | Inst::Field { dst, .. } => {
+                Inst::ListNew { dst, items, .. } => {
+                    for it in items.clone() {
+                        consume(it, &mut out, &mut own, &temps);
+                    }
+                    own.insert(*dst, (Own::Owned, false));
+                    out.push(inst);
+                }
+                Inst::ListSet { value, .. } | Inst::ListPush { value, .. } => {
+                    consume(*value, &mut out, &mut own, &temps);
+                    out.push(inst);
+                }
+                Inst::ListLen { .. } => out.push(inst),
+                Inst::UnionPayload { dst, .. }
+                | Inst::Field { dst, .. }
+                | Inst::ListGet { dst, .. } => {
                     own.insert(*dst, (Own::Borrowed, false));
                     out.push(inst);
                 }
@@ -258,6 +272,15 @@ pub fn verify(p: &Program) -> Result<(), String> {
                         }
                         add(*dst, 1, &mut bal);
                     }
+                    Inst::ListNew { dst, items, .. } => {
+                        for it in items {
+                            add(*it, -1, &mut bal);
+                        }
+                        add(*dst, 1, &mut bal);
+                    }
+                    Inst::ListSet { value, .. } | Inst::ListPush { value, .. } => {
+                        add(*value, -1, &mut bal)
+                    }
                     Inst::Retain { src } => add(*src, 1, &mut bal),
                     Inst::Release { src } if !loaded.contains(src) => add(*src, -1, &mut bal),
                     Inst::Store { dst, src } if drops.get(f.locals[dst.0 as usize]) => {
@@ -299,6 +322,7 @@ mod tests {
             strings: vec!["s".into()],
             unions: vec![],
             records: vec![],
+            lists: vec![],
             entry: FuncId(0),
             funcs: vec![Function {
                 name: "f".into(),

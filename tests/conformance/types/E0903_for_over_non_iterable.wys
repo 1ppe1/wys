@@ -1,0 +1,4 @@
+# expect-error: E0903 3:14
+def main() -> None:
+    for c in 5:
+        pass

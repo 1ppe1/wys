@@ -32,6 +32,8 @@ pub enum TokenKind {
     Pub,
     Import,
     From,
+    For,
+    In,
     // operators / punctuation
     Plus,
     Minus,
@@ -98,6 +100,8 @@ impl TokenKind {
             Pub => "`pub`",
             Import => "`import`",
             From => "`from`",
+            For => "`for`",
+            In => "`in`",
             Plus => "`+`",
             Minus => "`-`",
             Star => "`*`",
@@ -199,6 +203,8 @@ fn keyword(s: &str) -> Option<TokenKind> {
         "pub" => Pub,
         "import" => Import,
         "from" => From,
+        "for" => For,
+        "in" => In,
         _ => return Option::None,
     })
 }

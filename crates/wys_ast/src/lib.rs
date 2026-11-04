@@ -120,6 +120,17 @@ pub enum StmtKind {
         cond: Expr,
         body: Vec<Stmt>,
     },
+    /// `for var in iter:`（`iter` は `list[T]` か `range(...)`、M3 T4a）
+    For {
+        var: Ident,
+        iter: Expr,
+        body: Vec<Stmt>,
+    },
+    /// `xs[i] = value`（`target` は `ExprKind::Index`）
+    IndexAssign {
+        target: Expr,
+        value: Expr,
+    },
     /// `match subject:` と `case` の並び（ADR-0006）。
     Match {
         subject: Expr,
@@ -179,6 +190,13 @@ pub enum ExprKind {
         args: Vec<Expr>,
         /// `name=value` のキーワード引数（レコードの作成で使う）。
         kwargs: Vec<(Ident, Expr)>,
+    },
+    /// `[a, b, c]`（リストのリテラル、M3 T4a）
+    List(Vec<Expr>),
+    /// `base[index]`
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
     },
     /// `base.name`（レコードのフィールド参照）
     Field {

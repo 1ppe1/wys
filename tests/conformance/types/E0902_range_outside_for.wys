@@ -1,0 +1,3 @@
+# expect-error: E0902 3:9
+def main() -> None:
+    r = range(3)

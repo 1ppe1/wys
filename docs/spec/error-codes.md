@@ -3,7 +3,7 @@
 コンパイラが出す診断のコード。`check --format json` の `code` フィールドに入る（[diagnostics-schema.json](diagnostics-schema.json)）。
 
 - 一度割り当てたコードの意味は変えない。使わなくなったら「廃止」と書いて残す（要件IDと同じ運用）。
-- 範囲: `E00xx` 字句解析、`E01xx` 構文解析、`E02xx` 型検査、`E03xx` 絞り込み・`match`、`E04xx` Generics、`E05xx` レコード、`E06xx` `Unknown`、`E07xx` モジュール（ADR-0010）、`E08xx` テスト（`wys test`）、`W03xx` 警告（M2 計画、`docs/plans/m2.md`）。
+- 範囲: `E00xx` 字句解析、`E01xx` 構文解析、`E02xx` 型検査、`E03xx` 絞り込み・`match`、`E04xx` Generics、`E05xx` レコード、`E06xx` `Unknown`、`E07xx` モジュール（ADR-0010）、`E09xx` コレクション（`list` / `for` / 添字）、`E08xx` テスト（`wys test`）、`W03xx` 警告（M2 計画、`docs/plans/m2.md`）。
 - メッセージは英語。コードと範囲で機械的に判別できるようにする。
 
 | コード | 段階 | 意味 |
@@ -46,7 +46,6 @@
 | E0402 | Generics | 型引数の個数が合わない（`Pair[int]`、`int[str]`、型引数なしの `Pair`） |
 | E0403 | Generics | 型引数を推論できない（引数から型パラメータが決まらない。`None` だけでは決まらない） |
 | E0404 | Generics | 多相再帰: Generic 関数を呼ぶたびに型引数が大きくなり、単相化が終わらない（型の入れ子が32段を超えた） |
-| E0405 | Generics | `list` はまだ使えない（M3 でメモリ管理と一緒に入る、ADR-0009） |
 | E0501 | レコード | 存在しないフィールド（作成時のキーワード引数、または `p.x` の参照） |
 | E0502 | レコード | レコードの作成でフィールドが足りない |
 | E0503 | レコード | フィールドの重複（定義、または作成時の指定） |
@@ -62,9 +61,14 @@
 | E0704 | モジュール | `from ... import` した名前が、モジュール内の定義と衝突している |
 | E0705 | モジュール | import したモジュールに、その名前の定義がない |
 | E0801 | テスト | `wys test` のテスト関数（`test_` で始まる関数）が、引数なし・戻り値 `None` になっていない |
+| E0901 | コレクション | 空のリスト `[]` の要素の型が決まらない（`xs: list[int] = []` のように注釈する） |
+| E0902 | コレクション | `range` を `for` の外で使っている |
+| E0903 | コレクション | `for` で反復できない値（`list[T]` か `range(...)` だけ） |
+| E0904 | コレクション | `list` 以外に添字を付けている |
+| E0905 | コレクション | その型にないメソッド（M3 では `list` の `append` だけ） |
 | W0301 | match（警告） | それより前の `case` ですでに網羅されているため、到達しない `case`。警告だけならビルドできる |
 
-欠番（未割り当て）: E0212、E0506、E0507。一度割り当てたコードは再利用しない。
+欠番（未割り当て）: E0212、E0506、E0507。廃止: E0405（`list` はまだ使えない。M3 T4a で `list` に対応したため廃止）。一度割り当てたコードは再利用しない。
 
 ## 実行時エラー（PoC1 時点の暫定）
 
@@ -76,6 +80,7 @@
 | integer division by zero | `//` の除数が 0 |
 | integer modulo by zero | `%` の除数が 0 |
 | assertion failed at ファイル:行:列 | `assert(cond)` の条件が偽 |
+| index out of range: index i, length n | リストの添字が範囲外（負の添字は末尾から数える） |
 
 プログラムの終了時に解放されていないオブジェクトが残っていた場合は、`runtime error: N object(s) were not freed (this is a compiler bug)` を出して終了コード 102 で終わる（ARC の誤りを検出するための検査、ADR-0012）。
 
@@ -86,5 +91,6 @@
 | `arg_count()` | `int` | コマンドライン引数の数（プログラム名を除く） |
 | `arg(i)` | `str \| None` | `i` 番目（0始まり）の引数。範囲外なら `None` |
 | `assert(cond)` | `None` | `cond` が偽なら実行時エラーで終了する。文として書くと、以降は `cond` が真の場合として絞り込む（`assert(x is not None)`） |
-| `len(s)` | `int` | 文字列の長さ（文字数 = Unicode のコードポイント数。Python の `len` と同じ）。`list` には M3 T4a で対応 |
+| `len(x)` | `int` | 文字列の長さ（文字数 = Unicode のコードポイント数。Python の `len` と同じ）、またはリストの要素数 |
+| `range(n)` / `range(a, b)` | — | `for` の中だけで使える整数の範囲 |
 | `parse_scalar(s)` | `Unknown` | 10進の整数 → `int`、`true` / `false` → `bool`、`null` → `None`、それ以外 → `str` |

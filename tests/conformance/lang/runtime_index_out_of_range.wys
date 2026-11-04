@@ -1,0 +1,5 @@
+# expect-exit: 101
+# expect-stderr-contains: index out of range
+def main() -> None:
+    xs = [1, 2, 3]
+    print(xs[3])

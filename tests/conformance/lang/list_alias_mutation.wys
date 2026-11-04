@@ -1,0 +1,13 @@
+# リストは参照を共有する（Python と同じ）。関数に渡したリストへの append は呼び出し元からも見える
+# expect-stdout: 1
+# expect-stdout: 2
+def add_one(xs: list[int]) -> None:
+    xs.append(1)
+
+def main() -> None:
+    xs: list[int] = []
+    ys = xs
+    ys.append(5)
+    print(len(xs))
+    add_one(xs)
+    print(len(ys))

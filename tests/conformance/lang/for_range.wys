@@ -1,0 +1,19 @@
+# for と range（range(n) と range(a, b)）、ループの後の値、空のリストへの append
+# expect-stdout: 10
+# expect-stdout: 5
+# expect-stdout: 0
+# expect-stdout: 3
+def main() -> None:
+    s = 0
+    for i in range(5):
+        s = s + i
+    print(s)
+    t = 0
+    for i in range(2, 4):
+        t = t + i
+    print(t)
+    empty: list[int] = []
+    print(len(empty))
+    for i in range(3):
+        empty.append(i * i)
+    print(len(empty))
