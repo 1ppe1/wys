@@ -1,0 +1,11 @@
+# 文字列の比較は中身で行う（連結で作った文字列とリテラルを比べる）
+# expect-stdout: True
+# expect-stdout: False
+# expect-stdout: True
+def main() -> None:
+    a = "wy" + "s"
+    print(a == "wys")
+    print(a != "wys")
+    name: str | None = "x" + "y"
+    if name is not None:
+        print(name == "xy")

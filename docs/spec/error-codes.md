@@ -86,4 +86,5 @@
 | `arg_count()` | `int` | コマンドライン引数の数（プログラム名を除く） |
 | `arg(i)` | `str \| None` | `i` 番目（0始まり）の引数。範囲外なら `None` |
 | `assert(cond)` | `None` | `cond` が偽なら実行時エラーで終了する。文として書くと、以降は `cond` が真の場合として絞り込む（`assert(x is not None)`） |
+| `len(s)` | `int` | 文字列の長さ（文字数 = Unicode のコードポイント数。Python の `len` と同じ）。`list` には M3 T4a で対応 |
 | `parse_scalar(s)` | `Unknown` | 10進の整数 → `int`、`true` / `false` → `bool`、`null` → `None`、それ以外 → `str` |

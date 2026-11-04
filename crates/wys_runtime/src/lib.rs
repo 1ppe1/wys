@@ -144,6 +144,44 @@ pub extern "C" fn wys_runtime_finish() {
     }
 }
 
+// ---------------------------------------------------------------- strings (M3 T2b)
+
+/// 連結した新しい文字列オブジェクト（参照カウント 1）を返す。
+///
+/// # Safety
+/// `a` と `b` は生存している文字列オブジェクトでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_str_concat(a: *const Header, b: *const Header) -> *mut Header {
+    // SAFETY: 関数の安全条件どおり。
+    let (a, b) = unsafe { (bytes(a), bytes(b)) };
+    let p = new_object(a.len() + b.len());
+    // SAFETY: new_object が a.len() + b.len() バイトの中身を確保している。
+    unsafe {
+        std::ptr::copy_nonoverlapping(a.as_ptr(), data(p), a.len());
+        std::ptr::copy_nonoverlapping(b.as_ptr(), data(p).add(a.len()), b.len());
+    }
+    p
+}
+
+/// # Safety
+/// `a` と `b` は生存している文字列オブジェクトでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_str_eq(a: *const Header, b: *const Header) -> bool {
+    // SAFETY: 関数の安全条件どおり。
+    unsafe { bytes(a) == bytes(b) }
+}
+
+/// 文字数（Unicode のコードポイント数。Python の `len` と同じ）。
+///
+/// # Safety
+/// `s` は生存している文字列オブジェクトでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_str_len(s: *const Header) -> i64 {
+    // SAFETY: 関数の安全条件どおり。
+    let b = unsafe { bytes(s) };
+    std::str::from_utf8(b).map_or(b.len(), |s| s.chars().count()) as i64
+}
+
 // ---------------------------------------------------------------- command line
 
 /// プログラムに渡されたコマンドライン引数（プログラム名を除く）。不死のオブジェクトとして持つ。
@@ -336,9 +374,14 @@ pub extern "C" fn wys_mod(a: i64, b: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// 生存オブジェクト数（プロセス全体で共有）を使うテストは、並列に動かすと互いの確保を数えてしまうので順番に実行する。
+    static LIVE_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn objects_are_counted_and_freed() {
+        let _guard = LIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let before = LIVE.load(Ordering::Relaxed);
         let p = new_object(5);
         assert_eq!(LIVE.load(Ordering::Relaxed), before + 1);
@@ -359,6 +402,25 @@ mod tests {
             wys_release(i);
             assert_eq!((*i).rc, -1);
             assert_eq!(bytes(i), b"abc");
+        }
+        assert_eq!(LIVE.load(Ordering::Relaxed), before);
+    }
+
+    #[test]
+    fn string_operations() {
+        let _guard = LIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let before = LIVE.load(Ordering::Relaxed);
+        let a = new_immortal("あい".as_bytes());
+        let b = new_immortal(b"u");
+        // SAFETY: a と b は不死のオブジェクト、c は連結で作ったオブジェクト。
+        unsafe {
+            let c = wys_str_concat(a, b);
+            assert_eq!(bytes(c), "あいu".as_bytes());
+            assert_eq!(wys_str_len(c), 3);
+            assert!(wys_str_eq(c, c));
+            assert!(!wys_str_eq(c, a));
+            assert_eq!(LIVE.load(Ordering::Relaxed), before + 1);
+            wys_release(c);
         }
         assert_eq!(LIVE.load(Ordering::Relaxed), before);
     }
