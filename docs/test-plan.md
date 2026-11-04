@@ -44,6 +44,7 @@ CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は 
 | DX-001（`test`） | **合格（M2 T7）**。e2e の `wys_test_*`、`types/E0801_*`（`# expect-mode: test`） |
 | MEM-005 / NFR-001（use-after-free・二重解放・リークの検出）、COMP-005（Debug / Release） | **M3 T3 で検査の仕組みを導入**（3つのモードの Conformance、注入した誤りの検出）。M3 の出口で判定する |
 | `list[T]` と `for`（M3 T4a） | `lang/list_*`・`for_range`・`runtime_index_out_of_range`、`types/E090x_*`。要素が `str` のリストも含め、3つのモードで生存オブジェクト 0 |
+| 参照型の要素・入れ子のリストと借用の安全条件（M3 T4b） | `lang/list_borrow_safety.wys`（`xs[i]` の値を、`xs` を変更する関数の呼び出しと同じ式で使う。ASan で use-after-free を検出したため、`xs[i]` の結果を retain するよう修正）、`lang/list_nested_and_records.wys`。代入による絞り込み: `lang/assign_narrowing.wys` |
 | LANG-001（モジュール） | **合格（M2 T6）**。`tests/conformance/modules/<ケース名>/main.wys`（import するファイルを同じディレクトリに置く）。名前解決の単体テストは `wys_resolve` |
 | AC-003（`Unknown` の検証） | **合格（M2 T5）**。拒否: `types/E0601_*`・`E0602_*`。検証後の利用: `lang/unknown_from_args.wys`（コマンドライン引数を `# expect-args:` で渡す） |
 | Linux x86_64 での CI | **M2 T0 で追加済み** |

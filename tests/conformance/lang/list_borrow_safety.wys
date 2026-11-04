@@ -1,0 +1,19 @@
+# 借用の安全条件（ADR-0005 / ADR-0012）: リストから読んだ値を使っている間に、そのリストを書き換える関数を呼んでも、
+# 読んだ値は解放されない（解放されると use-after-free。ASan モードで検出される）
+# expect-stdout: ab!
+# expect-stdout: ab
+# expect-stdout: zz
+def replace_first(xs: list[str]) -> str:
+    xs[0] = "z" + "z"
+    return "!"
+
+def show_then_replace(s: str, xs: list[str]) -> None:
+    xs[0] = "z" + "z"
+    print(s)
+
+def main() -> None:
+    xs = ["a" + "b"]
+    print(xs[0] + replace_first(xs))
+    ys = ["a" + "b"]
+    show_then_replace(ys[0], ys)
+    print(ys[0])

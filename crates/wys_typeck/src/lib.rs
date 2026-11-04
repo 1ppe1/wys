@@ -884,6 +884,13 @@ struct Var {
 /// 流れ解析の環境: 確実に代入済みの変数と、その地点での（絞り込み後の）型。
 type Env = HashMap<String, Ty>;
 
+/// 到達しない経路の環境に付ける目印（変数名には使えない文字列）。合流ではこの環境を数えない。
+const UNREACHABLE: &str = "\u{0}unreachable";
+
+fn unreachable_env(env: &Env) -> bool {
+    env.contains_key(UNREACHABLE)
+}
+
 struct FnCk<'a> {
     cx: &'a mut Ctx,
     ret: Ty,
@@ -948,7 +955,13 @@ impl<'a> FnCk<'a> {
 
     /// 複数の経路の環境を合流させる: 代入済みの変数は共通部分、型は和集合。
     fn join(&mut self, envs: Vec<Env>) -> Env {
-        let mut it = envs.into_iter();
+        // 到達しない経路は合流に数えない（すべて到達しないなら、そのうちの1つを返す）
+        let (reachable, unreachable): (Vec<Env>, Vec<Env>) =
+            envs.into_iter().partition(|e| !unreachable_env(e));
+        if reachable.is_empty() {
+            return unreachable.into_iter().next().unwrap_or_default();
+        }
+        let mut it = reachable.into_iter();
         let Some(first) = it.next() else {
             return Env::new();
         };
@@ -1035,7 +1048,7 @@ impl<'a> FnCk<'a> {
                     let (t, t_env, f_env) = self.cond(cond, &cur);
                     self.require_condition(t, cond.span);
                     let mut b = t_env;
-                    if !self.block(body, &mut b) {
+                    if !self.block(body, &mut b) && !unreachable_env(&b) {
                         live.push(b);
                     }
                     cur = f_env;
@@ -1043,11 +1056,12 @@ impl<'a> FnCk<'a> {
                 match else_body {
                     Some(body) => {
                         let mut b = cur;
-                        if !self.block(body, &mut b) {
+                        if !self.block(body, &mut b) && !unreachable_env(&b) {
                             live.push(b);
                         }
                     }
-                    None => live.push(cur),
+                    None if !unreachable_env(&cur) => live.push(cur),
+                    None => {}
                 }
                 if live.is_empty() {
                     return true; // すべての分岐が return する
@@ -1142,6 +1156,7 @@ impl<'a> FnCk<'a> {
             ExprKind::Name(n) if self.vars.contains_key(n) => Some(n.clone()),
             _ => None,
         };
+        let subject_declared = subject_var.as_ref().map(|n| self.vars[n].ty);
         // Unknown は int / bool / str / None に加えて「将来増える種類」を持つ開いた型。
         // 最後の Unknown は `case _:` だけが網羅できる（ADR-0011）。
         let members = (st != Ty::Error).then(|| {
@@ -1176,6 +1191,14 @@ impl<'a> FnCk<'a> {
                                     .with_hint("match on `None` or use `case _:`, or make the function non-generic"),
                             );
                             pattern_failed = true;
+                            Vec::new()
+                        }
+                        // 宣言された型には含まれるが、絞り込みで外れた型: エラーではなく到達しない case（W0301）
+                        Some(ms)
+                            if !ms.contains(&pt)
+                                && subject_declared
+                                    .is_some_and(|d| self.cx.types.members(d).contains(&pt)) =>
+                        {
                             Vec::new()
                         }
                         Some(ms) if !ms.contains(&pt) => {
@@ -1318,7 +1341,18 @@ impl<'a> FnCk<'a> {
 
     /// `[a, b, c]`: 手掛かりが `list[T]` なら各要素が `T` に収まるかを確かめる。なければ要素の型の Union。
     fn list_literal(&mut self, items: &[Expr], env: &Env, hint: Option<Ty>, span: Span) -> Ty {
-        let elem_hint = match hint {
+        // 手掛かりがリスト型か、リスト型を1つだけ含む Union（`list[int] | None`）なら、その要素の型を使う
+        let list_hint = hint.and_then(|h| {
+            let lists: Vec<Ty> = self
+                .cx
+                .types
+                .members(h)
+                .into_iter()
+                .filter(|m| matches!(m, Ty::List(_)))
+                .collect();
+            (lists.len() == 1).then(|| lists[0])
+        });
+        let elem_hint = match list_hint {
             Some(Ty::List(l)) => Some(self.cx.types.list_elem(l)),
             _ => None,
         };
@@ -1560,8 +1594,18 @@ impl<'a> FnCk<'a> {
             self.declare(&target.name, ty, target.span);
             ty
         };
-        // 再代入で絞り込みは解除する（宣言された型に戻す）。
-        env.insert(target.name.clone(), declared);
+        // 代入した値の型で絞り込む。ただし宣言が Union で、値の型の構成要素がすべて宣言の構成要素そのものの場合だけ
+        // （レコードの幅部分型ではスロットの値は変換後の型なので、元の型として読めない）。それ以外は宣言された型に戻す。
+        // `None` だけへの絞り込みはしない（Generics の推論で T = None になり、E0215 を招く）
+        let narrowed = if vt != Ty::Error && vt != Ty::None && self.cx.types.is_union(declared) && {
+            let ms = self.cx.types.members(declared);
+            self.cx.types.members(vt).iter().all(|m| ms.contains(m))
+        } {
+            vt
+        } else {
+            declared
+        };
+        env.insert(target.name.clone(), narrowed);
     }
 
     fn ret_stmt(&mut self, span: Span, value: Option<&Expr>, env: &Env) {
@@ -1646,7 +1690,15 @@ impl<'a> FnCk<'a> {
                     .with_cause("values from outside the program must be checked before use (LANG-006, ADR-0011)")
                     .with_hint("inspect it with `match`: `case int():`, `case str():`, ..., `case _:`"));
                 } else if lt != Ty::Error {
-                    if !self.cx.types.contains_none(lt) {
+                    // ローカル変数なら、宣言された型も見る（代入で絞り込まれていても、宣言が None を含めば検査は正当）
+                    let var_decl = match &lhs.kind {
+                        ExprKind::Name(n) => self.vars.get(n).map(|v| (n.clone(), v.ty)),
+                        _ => None,
+                    };
+                    let declared_has_none = var_decl
+                        .as_ref()
+                        .is_some_and(|(_, d)| self.cx.types.contains_none(*d));
+                    if !self.cx.types.contains_none(lt) && !declared_has_none {
                         let msg = format!(
                             "this value can never be `None` (its type is `{}`), so the check is always {}",
                             self.cx.name(lt),
@@ -1656,10 +1708,18 @@ impl<'a> FnCk<'a> {
                             Diagnostic::error("E0302", msg, lhs.span)
                                 .with_hint("remove the check, or give the value an optional type such as `T | None`"),
                         );
-                    } else if let ExprKind::Name(n) = &lhs.kind
-                        && self.vars.contains_key(n)
-                    {
-                        let some = self.cx.types.without_none(lt);
+                    } else if let Some((n, declared)) = var_decl {
+                        // 今の型（絞り込み後）で分岐を決める。どちらかの分岐に到達しない場合は目印を付け、
+                        // その分岐の中では変数を宣言された型から分かる範囲の型として検査する（エラー型にしない）
+                        let none_reachable = self.cx.types.contains_none(lt);
+                        let some_now = self.cx.types.without_none(lt);
+                        let some_reachable = some_now != Ty::Error;
+                        let some = if some_reachable {
+                            some_now
+                        } else {
+                            let d = self.cx.types.without_none(declared);
+                            if d == Ty::Error { lt } else { d }
+                        };
                         let (on_true, on_false) = if *negated {
                             (some, Ty::None)
                         } else {
@@ -1667,6 +1727,17 @@ impl<'a> FnCk<'a> {
                         };
                         t_env.insert(n.clone(), on_true);
                         f_env.insert(n.clone(), on_false);
+                        let (true_reachable, false_reachable) = if *negated {
+                            (some_reachable, none_reachable)
+                        } else {
+                            (none_reachable, some_reachable)
+                        };
+                        if !true_reachable {
+                            t_env.insert(UNREACHABLE.to_string(), Ty::Error);
+                        }
+                        if !false_reachable {
+                            f_env.insert(UNREACHABLE.to_string(), Ty::Error);
+                        }
                     }
                 }
                 self.record(e, Ty::Bool);
@@ -2136,6 +2207,12 @@ impl<'a> FnCk<'a> {
                         let t = self.cx.types.union(rest);
                         map.insert(*p, t);
                     }
+                }
+            }
+            Ty::List(pl) => {
+                if let Ty::List(al) = actual {
+                    let (pe, ae) = (self.cx.types.list_elem(pl), self.cx.types.list_elem(al));
+                    self.unify(pe, ae, own, map);
                 }
             }
             Ty::Record(r) => {

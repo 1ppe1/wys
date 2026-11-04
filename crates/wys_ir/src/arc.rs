@@ -156,11 +156,22 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                     out.push(inst);
                 }
                 Inst::ListLen { .. } => out.push(inst),
-                Inst::UnionPayload { dst, .. }
-                | Inst::Field { dst, .. }
-                | Inst::ListGet { dst, .. } => {
+                Inst::UnionPayload { dst, .. } | Inst::Field { dst, .. } => {
                     own.insert(*dst, (Own::Borrowed, false));
                     out.push(inst);
+                }
+                // 借用の安全条件（memory-model 2.2）: リストの要素は可変な場所なので、読んだ値をすぐに保持する。
+                // 値を使っている間にリストが書き換えられても（`xs[0] + f(xs)` の `f` が `xs[0]` を置き換えるなど）解放されない。
+                // 使われなければブロックの最後で release する（冗長な組の除去は M3b の Move 最適化で行う）
+                Inst::ListGet { dst, .. } => {
+                    let d = *dst;
+                    out.push(inst);
+                    if drops.get(temps[d.0 as usize]) {
+                        out.push(Inst::Retain { src: d });
+                        own.insert(d, (Own::Owned, false));
+                    } else {
+                        own.insert(d, (Own::Borrowed, false));
+                    }
                 }
                 Inst::Call { dst, callee, .. } => {
                     if let Some(d) = dst {
