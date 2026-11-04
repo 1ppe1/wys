@@ -1091,6 +1091,36 @@ impl<'s, 't> FnLower<'s, 't> {
                 Some(self.builtin(Builtin::StrLen, vec![s]))
             }
             ExprKind::Call { callee, args, .. }
+                if callee.name.ends_with(".pop")
+                    && callee
+                        .name
+                        .rsplit_once('.')
+                        .is_some_and(|(r, _)| self.local_ids.contains_key(r)) =>
+            {
+                let (recv, _) = callee.name.rsplit_once('.').expect("method call");
+                let (dv, dt, direct) = self.receiver(recv, |t| matches!(t, TTy::Dict(_)));
+                let db = self.cur;
+                let TTy::Dict(d) = dt else {
+                    unreachable!("receiver returns the requested type")
+                };
+                let (kt, vt) = self.sh.types.dict_args(d);
+                let k = self.expr(&args[0]);
+                let it = self.ty(&args[0]);
+                let k = self.coerce(k, it, kt).expect("keys have values");
+                let dv = match direct {
+                    Some(slot) => self.materialize_from_local(dv, slot),
+                    None => self.materialize(dv, db),
+                };
+                let ir = self.sh.ir_ty(vt).expect("dict values are never None");
+                let dst = self.temp(ir);
+                self.emit(Inst::DictPop {
+                    dst,
+                    src: dv,
+                    key: k,
+                });
+                Some(dst)
+            }
+            ExprKind::Call { callee, args, .. }
                 if callee.name.ends_with(".get")
                     && callee
                         .name

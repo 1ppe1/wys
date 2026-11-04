@@ -28,7 +28,7 @@
 - 型が変わる地点（代入、引数、戻り値、絞り込まれた変数の読み出し）で、lowering が変換を挿入する。基本型 → Union は `make_union`、Union → 基本型は `union_payload`、Union → Union はタグで分岐して詰め直す。
 - LLVM では `%union.N = type { i8, [W x i64] }`（W は最大の中身の語数。`str` は2語）。命令が使う作業領域は関数の入口で `alloca` する。
 - `Result[T, E]`（M3 T5a、ADR-0013）は、構成要素が2つの Union として表す（構成要素 0 が `Ok`、1 が `Err`。`T` と `E` が同じ型でも別の構成要素）。`Result` は Union の構成要素になれるので、Union の構成要素に別の Union が入ることがある。検証器は、構成要素の Union が自分より前に登録されていること（循環しないこと）を確かめる。
-- `dict[K, V]`（M3 T6a、ADR-0015）は `Program.dicts` に登録し、ポインタ1語で表す。命令は `dict_new` / `dict_len` / `dict_contains` / `dict_get`（キーがなければパニック）/ `dict_set` / `dict_key_at` / `dict_iter_next`。ハッシュ表（挿入順のエントリ配列と開番地法の索引表）はランタイムが持ち、キーと値の参照カウント操作は、バックエンドが型ごとに生成する `@wys_dict_set{i}` / `@wys_dict_get{i}` / `@wys_release_dict{i}` が行う。`dict_get` と `dict_key_at` の結果は、`list_get` と同じく ARC パスがすぐ retain する（借用の安全条件）。
+- `dict[K, V]`（M3 T6a、ADR-0015）は `Program.dicts` に登録し、ポインタ1語で表す。命令は `dict_new` / `dict_len` / `dict_contains` / `dict_get`（キーがなければパニック）/ `dict_set` / `dict_pop`（T6b。値を +1 所有で返す）/ `dict_key_at` / `dict_iter_next`。削除したエントリは墓標にし、表の伸長で詰め直す。ハッシュ表（挿入順のエントリ配列と開番地法の索引表）はランタイムが持ち、キーと値の参照カウント操作は、バックエンドが型ごとに生成する `@wys_dict_set{i}` / `@wys_dict_get{i}` / `@wys_release_dict{i}` が行う。`dict_get` と `dict_key_at` の結果は、`list_get` と同じく ARC パスがすぐ retain する（借用の安全条件）。
 - ランタイム（C ABI）には Union を渡さない。`print` は Union のタグで分岐して、構成要素ごとの組み込み関数を呼ぶ。
 
 ## 意味論

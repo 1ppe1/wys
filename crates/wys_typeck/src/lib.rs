@@ -2253,6 +2253,25 @@ impl<'a> FnCk<'a> {
                     .require(vt, elem, args[0].span, "an element of the list", None);
                 Ty::None
             }
+            (Ty::Dict(d), "pop") => {
+                // d.pop(k): 値を取り出してキーを削除する。キーがなければパニック（ADR-0015）
+                let (k, v) = self.cx.types.dict_args(d);
+                if args.len() != 1 {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!("`pop` takes 1 argument but {} were given", args.len()),
+                        span,
+                    ));
+                    for a in args {
+                        self.expr(a, env);
+                    }
+                    return Ty::Error;
+                }
+                let kt = self.expr_hint(&args[0], env, Some(k));
+                self.cx
+                    .require(kt, k, args[0].span, "a key of the dict", None);
+                v
+            }
             (Ty::Dict(d), "get") => {
                 let (k, v) = self.cx.types.dict_args(d);
                 if args.len() != 1 {
@@ -2289,11 +2308,11 @@ impl<'a> FnCk<'a> {
                     self.expr(a, env);
                 }
                 let msg = format!("`{}` has no method `{m}`", self.cx.name(t));
-                self.cx.diags.push(
-                    Diagnostic::error("E0905", msg, mspan).with_cause(
-                        "only `append` on `list` and `get` on `dict` are supported in M3",
-                    ),
-                );
+                self.cx
+                    .diags
+                    .push(Diagnostic::error("E0905", msg, mspan).with_cause(
+                        "only `append` on `list`, and `get` / `pop` on `dict` are supported in M3",
+                    ));
                 Ty::Error
             }
         }

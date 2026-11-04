@@ -168,6 +168,11 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                     own.insert(*dst, (Own::Owned, false));
                     out.push(inst);
                 }
+                // 取り出した値の所有は呼び出し側に移る（+1）
+                Inst::DictPop { dst, .. } => {
+                    own.insert(*dst, (Own::Owned, false));
+                    out.push(inst);
+                }
                 Inst::DictSet { key, value, .. } => {
                     consume(*key, &mut out, &mut own, &temps);
                     consume(*value, &mut out, &mut own, &temps);
@@ -319,6 +324,7 @@ pub fn verify(p: &Program) -> Result<(), String> {
                         }
                         add(*dst, 1, &mut bal);
                     }
+                    Inst::DictPop { dst, .. } => add(*dst, 1, &mut bal),
                     Inst::DictSet { key, value, .. } => {
                         add(*key, -1, &mut bal);
                         add(*value, -1, &mut bal);

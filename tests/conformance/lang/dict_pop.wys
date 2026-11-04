@@ -1,0 +1,23 @@
+# d.pop(k) は値を取り出してキーを削除する。削除後に同じキーを入れると末尾に並ぶ（ADR-0015）
+# expect-stdout: 2
+# expect-stdout: 2
+# expect-stdout: False
+# expect-stdout: a
+# expect-stdout: c
+# expect-stdout: b
+# expect-stdout: 20
+# expect-stdout: bb!
+# expect-stdout: 1
+def main() -> None:
+    d = {"a": 1, "b": 2, "c": 3}
+    print(d.pop("b"))
+    print(len(d))
+    print("b" in d)
+    d["b"] = 20
+    for k in d:
+        print(k)
+    print(d["b"])
+    s = {"x": "a" + "a", "y": "b" + "b"}
+    v = s.pop("y")
+    print(v + "!")
+    print(len(s))

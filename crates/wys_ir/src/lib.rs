@@ -347,6 +347,12 @@ pub enum Inst {
         src: TempId,
         key: TempId,
     },
+    /// 値を取り出してキーを削除する（`pop`）。値は +1 所有で返す。キーがなければパニック。
+    DictPop {
+        dst: TempId,
+        src: TempId,
+        key: TempId,
+    },
     /// 追加または置き換え（`key` と `value` を +1 で消費する。既存のキーなら、新しいキーと古い値を release する）。
     DictSet {
         dict: TempId,
@@ -671,13 +677,15 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                     expect("dict_len result", temp_ty(*dst)?, Ty::Int)?;
                     define(*dst, &mut defined_in)?;
                 }
-                Inst::DictContains { dst, src, key } | Inst::DictGet { dst, src, key } => {
+                Inst::DictContains { dst, src, key }
+                | Inst::DictGet { dst, src, key }
+                | Inst::DictPop { dst, src, key } => {
                     let Ty::Dict(d) = use_(*src, &defined_in)? else {
                         return Err(format!("bb{bi}: dict lookup on a non-dict value"));
                     };
                     let (kt, vt) = dict_types(p, d)?;
                     expect("dict key", use_(*key, &defined_in)?, kt)?;
-                    let want = if matches!(inst, Inst::DictGet { .. }) {
+                    let want = if matches!(inst, Inst::DictGet { .. } | Inst::DictPop { .. }) {
                         vt
                     } else {
                         Ty::Bool
@@ -948,6 +956,9 @@ impl fmt::Display for Program {
                         }
                         Inst::DictGet { dst, src, key } => {
                             writeln!(f, "t{} = dict_get t{}, t{}", dst.0, src.0, key.0)?
+                        }
+                        Inst::DictPop { dst, src, key } => {
+                            writeln!(f, "t{} = dict_pop t{}, t{}", dst.0, src.0, key.0)?
                         }
                         Inst::DictSet { dict, key, value } => {
                             writeln!(f, "dict_set t{}, t{}, t{}", dict.0, key.0, value.0)?

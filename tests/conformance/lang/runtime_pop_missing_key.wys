@@ -1,0 +1,6 @@
+# 存在しないキーの pop はパニック
+# expect-exit: 101
+# expect-stderr-contains: runtime error: key not found: 5
+def main() -> None:
+    d = {1: "a"}
+    d.pop(5)

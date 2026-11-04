@@ -1,0 +1,9 @@
+# 反復中の pop はキーの数が変わるのでパニック
+# expect-stdout: 1
+# expect-exit: 101
+# expect-stderr-contains: runtime error: dict changed size during iteration
+def main() -> None:
+    d = {1: "a", 2: "b"}
+    for k in d:
+        print(k)
+        d.pop(k)
