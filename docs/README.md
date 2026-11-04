@@ -6,6 +6,7 @@
 |---|---|---|
 | [ai_native_language_requirements.md](ai_native_language_requirements.md) | Draft v0.1 | 要件定義書。全ての設計成果物の起点 |
 | [roadmap.md](roadmap.md) | 承認済み計画 | Phase 0〜3 のマイルストーン、決定順、直近タスク |
+| [spec/diagnostics-schema.json](spec/diagnostics-schema.json) | v0（草案） | 構造化診断JSONのスキーマ（DX-002, AC-005）。実装は `crates/sg_diagnostics` で、テストでスキーマ検証する |
 | [glossary.md](glossary.md) | Draft | 用語集。文書間で表記を揃えるための基準 |
 | [adr/README.md](adr/README.md) | 運用中 | ADRの書き方、一覧、未決定事項との対応 |
 

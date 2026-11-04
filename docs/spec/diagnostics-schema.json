@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sg.invalid/schemas/diagnostics/v0.json",
+  "title": "sg diagnostics report",
+  "description": "`check --format json` が出力する構造化診断（DX-002, AC-005）。v0 は M0 時点の草案で、破壊的変更がありうる。",
+  "type": "object",
+  "required": ["schema_version", "diagnostics"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "0" },
+    "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } }
+  },
+  "$defs": {
+    "diagnostic": {
+      "type": "object",
+      "required": ["code", "severity", "message", "span", "hints", "related"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "description": "安定したエラーID。E=エラー、W=警告。一度割り当てたIDは再利用しない。",
+          "type": "string",
+          "pattern": "^[EW][0-9]{4}$"
+        },
+        "severity": { "enum": ["error", "warning", "note"] },
+        "message": { "description": "人間向けの1行の要約。", "type": "string", "minLength": 1 },
+        "span": { "$ref": "#/$defs/span" },
+        "cause": { "description": "原因の説明（任意）。", "type": "string" },
+        "hints": {
+          "description": "推奨される修正。replacement があれば機械的に適用できる。",
+          "type": "array",
+          "items": { "$ref": "#/$defs/hint" }
+        },
+        "related": {
+          "description": "影響する型・関数・定義位置。",
+          "type": "array",
+          "items": { "$ref": "#/$defs/related" }
+        }
+      }
+    },
+    "span": {
+      "description": "ソース範囲。line/column は1始まり、column は Unicode スカラー値単位。byte は0始まりの UTF-8 オフセットで end は含まない。",
+      "type": "object",
+      "required": ["file", "start", "end"],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "start": { "$ref": "#/$defs/position" },
+        "end": { "$ref": "#/$defs/position" }
+      }
+    },
+    "position": {
+      "type": "object",
+      "required": ["line", "column", "byte"],
+      "additionalProperties": false,
+      "properties": {
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 },
+        "byte": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "hint": {
+      "type": "object",
+      "required": ["message"],
+      "additionalProperties": false,
+      "properties": {
+        "message": { "type": "string", "minLength": 1 },
+        "replacement": {
+          "type": "object",
+          "required": ["span", "text"],
+          "additionalProperties": false,
+          "properties": {
+            "span": { "$ref": "#/$defs/span" },
+            "text": { "type": "string" }
+          }
+        }
+      }
+    },
+    "related": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["type", "function", "variable", "module"] },
+        "name": { "type": "string", "minLength": 1 },
+        "span": { "$ref": "#/$defs/span" }
+      }
+    }
+  }
+}
