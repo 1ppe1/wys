@@ -9,7 +9,7 @@
 | 週3（Conformance 48ケース・AI ループ・PoC2 実験・ADR-0005〜0007 草案） | 完了。ADR-0005〜0007 は設計レビュー（Fable）を経て Accepted |
 | 週4（文法 v0.1・用語集・ベンチ骨格・出口判定） | 完了。**Phase 0 の出口条件（ADR-0002〜0008 が Accepted、PoC1 が CI で動く）を満たした** |
 | M1（最小サブセット） | **完了**。AC-001 / AC-004 / AC-005 を確認（`docs/test-plan.md`）。CLI 名は `wys` |
-| M2 | 計画承認済み（[docs/plans/m2.md](plans/m2.md)）。T0・T1a・T1b 完了（AC-002 合格）、T2（match と網羅性検査、警告の導入）PR 中 |
+| M2 | 計画承認済み（[docs/plans/m2.md](plans/m2.md)）。T0〜T2 完了（AC-002 合格、match と警告）、T3（レコード型）PR 中 |
 
 ## Context
 

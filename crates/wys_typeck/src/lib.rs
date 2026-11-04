@@ -22,6 +22,8 @@ pub enum Ty {
     Int,
     Bool,
     Str,
+    /// 構造的レコード（ADR-0007、不変）。
+    Record(RecordId),
     None,
     Union(UnionId),
     /// エラーから回復するための型。これを含む式では追加の診断を出さない。
@@ -31,11 +33,33 @@ pub enum Ty {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct UnionId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RecordId(pub u32);
+
+/// レコード型の定義。フィールドは名前順（同じフィールド集合なら同じ型）。
+#[derive(Debug, Clone)]
+pub struct RecordDef {
+    /// 最初に定義した `type` の名前（表示用）。構造的なので、名前は型の同一性に関係しない。
+    pub name: Option<String>,
+    pub fields: Vec<(String, Ty)>,
+}
+
+impl RecordDef {
+    pub fn field(&self, name: &str) -> Option<(usize, Ty)> {
+        self.fields
+            .iter()
+            .position(|(n, _)| n == name)
+            .map(|i| (i, self.fields[i].1))
+    }
+}
+
 /// Union 型の登録表。同じ構成要素の集合には同じ ID を返す。
 #[derive(Debug, Clone, Default)]
 pub struct Types {
     unions: Vec<Vec<Ty>>,
     index: HashMap<Vec<Ty>, UnionId>,
+    records: Vec<RecordDef>,
+    record_index: HashMap<Vec<(String, Ty)>, RecordId>,
 }
 
 impl Types {
@@ -81,6 +105,20 @@ impl Types {
             Ty::Str => "str".into(),
             Ty::None => "None".into(),
             Ty::Error => "<error>".into(),
+            Ty::Record(r) => {
+                let def = &self.records[r.0 as usize];
+                match &def.name {
+                    Some(n) => n.clone(),
+                    None => format!(
+                        "{{{}}}",
+                        def.fields
+                            .iter()
+                            .map(|(n, t)| format!("{n}: {}", self.name(*t)))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                }
+            }
             Ty::Union(_) => self
                 .members(t)
                 .into_iter()
@@ -104,13 +142,57 @@ impl Types {
         self.union(rest)
     }
 
-    /// `actual` の値をすべて `expected` の場所に置けるか。
+    /// `actual` の値をすべて `expected` の場所に置けるか（レコードは幅部分型、ADR-0007）。
     pub fn fits(&self, actual: Ty, expected: Ty) -> bool {
         if actual == Ty::Error || expected == Ty::Error {
             return true;
         }
         let e = self.members(expected);
-        self.members(actual).iter().all(|a| e.contains(a))
+        self.members(actual)
+            .iter()
+            .all(|a| e.iter().any(|x| self.member_fits(*a, *x)))
+    }
+
+    /// Union の構成要素どうしの互換性。レコードは、要求されるフィールドをすべて同じ型で持てば互換。
+    pub fn member_fits(&self, a: Ty, e: Ty) -> bool {
+        match (a, e) {
+            _ if a == e => true,
+            (Ty::Record(x), Ty::Record(y)) => {
+                let have = &self.records[x.0 as usize].fields;
+                self.records[y.0 as usize]
+                    .fields
+                    .iter()
+                    .all(|f| have.contains(f))
+            }
+            _ => false,
+        }
+    }
+
+    /// レコード型を作る（フィールドは名前順に正規化する）。
+    pub fn record(&mut self, mut fields: Vec<(String, Ty)>, name: Option<String>) -> Ty {
+        fields.sort_by(|a, b| a.0.cmp(&b.0));
+        if let Some(&id) = self.record_index.get(&fields) {
+            let def = &mut self.records[id.0 as usize];
+            if def.name.is_none() {
+                def.name = name;
+            }
+            return Ty::Record(id);
+        }
+        let id = RecordId(self.records.len() as u32);
+        self.records.push(RecordDef {
+            name,
+            fields: fields.clone(),
+        });
+        self.record_index.insert(fields, id);
+        Ty::Record(id)
+    }
+
+    pub fn record_def(&self, id: RecordId) -> &RecordDef {
+        &self.records[id.0 as usize]
+    }
+
+    pub fn records(&self) -> &[RecordDef] {
+        &self.records
     }
 
     pub fn is_union(&self, t: Ty) -> bool {
@@ -162,7 +244,10 @@ pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
         sigs: Vec::new(),
         sig_index: HashMap::new(),
         types: Types::default(),
+        type_defs: module.types.clone(),
+        aliases: HashMap::new(),
     };
+    declare_types(&mut cx, module);
     for f in &module.funcs {
         let params = f.params.iter().map(|p| cx.resolve(&p.ty)).collect();
         let ret = cx.resolve(&f.ret);
@@ -196,6 +281,18 @@ pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
         });
     }
     check_main(&mut cx, module);
+    for t in &module.types {
+        if BUILTINS.contains(&t.name.name.as_str()) || cx.sig_index.contains_key(&t.name.name) {
+            cx.diags.push(Diagnostic::error(
+                "E0209",
+                format!(
+                    "`{}` is defined both as a type and as a function",
+                    t.name.name
+                ),
+                t.name.span,
+            ));
+        }
+    }
 
     let mut funcs = Vec::new();
     for (i, f) in module.funcs.iter().enumerate() {
@@ -210,6 +307,37 @@ pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
         },
         cx.diags,
     )
+}
+
+/// `type` 定義を登録し、すべて解決する（使われていない定義の誤りも報告するため）。
+fn declare_types(cx: &mut Ctx, module: &Module) {
+    for (i, t) in module.types.iter().enumerate() {
+        let name = &t.name.name;
+        if matches!(name.as_str(), "int" | "bool" | "str" | "None") {
+            cx.diags.push(Diagnostic::error(
+                "E0209",
+                format!("`{name}` is a built-in type and cannot be redefined"),
+                t.name.span,
+            ));
+        } else if cx.aliases.contains_key(name) {
+            cx.diags.push(Diagnostic::error(
+                "E0209",
+                format!("type `{name}` is defined more than once"),
+                t.name.span,
+            ));
+        } else {
+            cx.aliases.insert(name.clone(), (i, AliasState::Unresolved));
+        }
+    }
+    for t in &module.types {
+        if cx
+            .aliases
+            .get(&t.name.name)
+            .is_some_and(|(i, _)| module.types[*i].name.span == t.name.span)
+        {
+            cx.resolve_alias(&t.name.name);
+        }
+    }
 }
 
 fn check_main(cx: &mut Ctx, module: &Module) {
@@ -247,6 +375,16 @@ struct Ctx {
     sigs: Vec<FuncSig>,
     sig_index: HashMap<String, usize>,
     types: Types,
+    type_defs: Vec<TypeDef>,
+    /// `type` の名前 → (`type_defs` の番号, 解決状態)
+    aliases: HashMap<String, (usize, AliasState)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AliasState {
+    Unresolved,
+    Resolving,
+    Done(Ty),
 }
 
 impl Ctx {
@@ -257,17 +395,100 @@ impl Ctx {
                 "bool" => Ty::Bool,
                 "str" => Ty::Str,
                 "None" => Ty::None,
+                other if self.aliases.contains_key(other) => self.resolve_alias(other),
                 other => {
                     self.diags.push(
                         Diagnostic::error("E0203", format!("unknown type `{other}`"), t.span)
-                            .with_hint("supported types are `int`, `bool`, `str`, `None` and unions of them (`A | B`)"),
+                            .with_hint("supported types are `int`, `bool`, `str`, `None`, types defined with `type`, and unions of them (`A | B`)"),
                     );
                     Ty::Error
                 }
             },
             TypeExprKind::Union(items) => {
                 let tys: Vec<Ty> = items.iter().map(|i| self.resolve(i)).collect();
-                self.types.union(tys)
+                let u = self.types.union(tys);
+                let records = self
+                    .types
+                    .members(u)
+                    .iter()
+                    .filter(|m| matches!(m, Ty::Record(_)))
+                    .count();
+                if records > 1 {
+                    self.diags.push(
+                        Diagnostic::error("E0508", "a union can contain at most one record type", t.span)
+                            .with_cause("structural records cannot be told apart at run time (ADR-0007)")
+                            .with_hint("use a single record type with an optional field, or separate variables"),
+                    );
+                    return Ty::Error;
+                }
+                u
+            }
+        }
+    }
+
+    /// `type` で定義した名前を解決する。自分自身を（間接的にでも）参照していたら E0504。
+    fn resolve_alias(&mut self, name: &str) -> Ty {
+        let (idx, state) = self.aliases[name];
+        match state {
+            AliasState::Done(t) => t,
+            AliasState::Resolving => {
+                let span = self.type_defs[idx].name.span;
+                self.diags.push(
+                    Diagnostic::error("E0504", format!("type `{name}` refers to itself"), span)
+                        .with_cause("recursive types are not supported yet (ADR-0009)"),
+                );
+                self.aliases
+                    .insert(name.to_string(), (idx, AliasState::Done(Ty::Error)));
+                Ty::Error
+            }
+            AliasState::Unresolved => {
+                self.aliases
+                    .insert(name.to_string(), (idx, AliasState::Resolving));
+                let def = self.type_defs[idx].clone();
+                let t = match &def.value {
+                    TypeDefValue::Alias(te) => self.resolve(te),
+                    TypeDefValue::Record(fields) => {
+                        let mut seen = HashSet::new();
+                        let mut fs = Vec::new();
+                        let mut failed = false;
+                        for (fname, te) in fields {
+                            if !seen.insert(fname.name.clone()) {
+                                self.diags.push(Diagnostic::error(
+                                    "E0503",
+                                    format!("field `{}` is defined more than once", fname.name),
+                                    fname.span,
+                                ));
+                                continue;
+                            }
+                            let ft = self.resolve(te);
+                            if ft == Ty::None {
+                                self.diags.push(
+                                    Diagnostic::error(
+                                        "E0215",
+                                        format!("field `{}` cannot have type `None`", fname.name),
+                                        te.span,
+                                    )
+                                    .with_hint("use an optional type such as `int | None`"),
+                                );
+                                failed = true;
+                            }
+                            failed |= ft == Ty::Error;
+                            fs.push((fname.name.clone(), ft));
+                        }
+                        if failed {
+                            Ty::Error
+                        } else {
+                            self.types.record(fs, Some(name.to_string()))
+                        }
+                    }
+                };
+                let t = match self.aliases[name].1 {
+                    AliasState::Done(Ty::Error) => Ty::Error,
+                    _ => t,
+                };
+                self.aliases
+                    .insert(name.to_string(), (idx, AliasState::Done(t)));
+                t
             }
         }
     }
@@ -505,10 +726,12 @@ impl<'a> FnCk<'a> {
         let mut remaining = members.clone().unwrap_or_default();
         let mut live = Vec::new();
         for arm in arms {
+            let mut pattern_failed = false;
             let covered: Vec<Ty> = match &arm.pattern.kind {
                 PatternKind::Wildcard => remaining.clone(),
                 kind => {
                     let pt = self.pattern_type(kind, arm.pattern.span);
+                    pattern_failed = pt == Ty::Error;
                     match &members {
                         _ if pt == Ty::Error => Vec::new(),
                         Some(ms) if !ms.contains(&pt) => {
@@ -533,7 +756,7 @@ impl<'a> FnCk<'a> {
                 .diags
                 .last()
                 .is_some_and(|d| d.code == "E0305" && d.span == arm.pattern.span);
-            if covered.is_empty() && members.is_some() && !already_reported {
+            if covered.is_empty() && members.is_some() && !already_reported && !pattern_failed {
                 self.cx.diags.push(
                     Diagnostic::warning(
                         "W0301",
@@ -585,6 +808,31 @@ impl<'a> FnCk<'a> {
         match kind {
             PatternKind::None => Ty::None,
             PatternKind::Wildcard => Ty::Error,
+            PatternKind::Type(name) if self.cx.aliases.contains_key(name) => {
+                match self.cx.resolve_alias(name) {
+                    t @ (Ty::Int | Ty::Bool | Ty::Str | Ty::Error) => t,
+                    Ty::Record(_) => {
+                        self.cx.diags.push(
+                            Diagnostic::error(
+                                "E0304",
+                                format!("record type `{name}` cannot be used in a `case` pattern"),
+                                span,
+                            )
+                            .with_cause("structural records cannot be told apart by `case` (ADR-0007)")
+                            .with_hint("match on the optional part instead (e.g. `case None:` / `case _:`), or use separate variables"),
+                        );
+                        Ty::Error
+                    }
+                    _ => {
+                        self.cx.diags.push(Diagnostic::error(
+                            "E0203",
+                            format!("type `{name}` cannot be used as a pattern"),
+                            span,
+                        ));
+                        Ty::Error
+                    }
+                }
+            }
             PatternKind::Type(name) => match name.as_str() {
                 "int" => Ty::Int,
                 "bool" => Ty::Bool,
@@ -880,7 +1128,38 @@ impl<'a> FnCk<'a> {
                 let rt = self.expr(rhs, env);
                 self.binary(*op, lt, rt, e.span)
             }
-            ExprKind::Call { callee, args } => self.call(callee, args, e.span, env),
+            ExprKind::Call {
+                callee,
+                args,
+                kwargs,
+            } => {
+                if self.cx.aliases.contains_key(&callee.name) {
+                    self.construct(callee, args, kwargs, e.span, env)
+                } else if !kwargs.is_empty() {
+                    for a in args {
+                        self.expr(a, env);
+                    }
+                    for (k, v) in kwargs {
+                        self.expr(v, env);
+                        self.cx.diags.push(
+                            Diagnostic::error(
+                                "E0216",
+                                "keyword arguments are only supported when creating a record",
+                                k.span,
+                            )
+                            .with_hint("pass the arguments by position"),
+                        );
+                    }
+                    // 引数の個数や型の検査はしない（キーワード引数の誤りから連鎖させない）
+                    match self.cx.sig_index.get(&callee.name) {
+                        Some(&i) => self.cx.sigs[i].ret,
+                        None => Ty::Error,
+                    }
+                } else {
+                    self.call(callee, args, e.span, env)
+                }
+            }
+            ExprKind::Field { base, name } => self.field(base, name, env),
             ExprKind::Is { .. } => unreachable!("handled by cond"),
         }
     }
@@ -1000,6 +1279,149 @@ impl<'a> FnCk<'a> {
             .with_cause("`print` accepts `int`, `bool` or `str`")
         };
         self.cx.diags.push(d);
+    }
+
+    /// `Point(x=1, y=2)`: レコードの作成。フィールドはすべてキーワード引数でちょうど1回ずつ指定する。
+    fn construct(
+        &mut self,
+        callee: &Ident,
+        args: &[Expr],
+        kwargs: &[(Ident, Expr)],
+        span: Span,
+        env: &Env,
+    ) -> Ty {
+        let ty = self.cx.resolve_alias(&callee.name);
+        for a in args {
+            self.expr(a, env);
+        }
+        let id = match ty {
+            Ty::Record(id) => id,
+            Ty::Error => {
+                for (_, v) in kwargs {
+                    self.expr(v, env);
+                }
+                return Ty::Error;
+            }
+            other => {
+                for (_, v) in kwargs {
+                    self.expr(v, env);
+                }
+                let msg = format!(
+                    "type `{}` is `{}`, not a record, so it cannot be called",
+                    callee.name,
+                    self.cx.name(other)
+                );
+                self.cx
+                    .diags
+                    .push(Diagnostic::error("E0208", msg, callee.span));
+                return Ty::Error;
+            }
+        };
+        if let Some(a) = args.first() {
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E0505",
+                    format!(
+                        "record `{}` must be created with keyword arguments",
+                        callee.name
+                    ),
+                    a.span,
+                )
+                .with_hint(format!(
+                    "write `{}({})`",
+                    callee.name,
+                    self.cx
+                        .types
+                        .record_def(id)
+                        .fields
+                        .iter()
+                        .map(|(n, _)| format!("{n}=..."))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            );
+        }
+        let fields = self.cx.types.record_def(id).fields.clone();
+        let mut seen = HashSet::new();
+        for (k, v) in kwargs {
+            let vt = self.expr(v, env);
+            let Some(&(_, ft)) = fields.iter().find(|(n, _)| *n == k.name) else {
+                let msg = format!("record `{}` has no field `{}`", callee.name, k.name);
+                self.cx.diags.push(Diagnostic::error("E0501", msg, k.span));
+                continue;
+            };
+            if !seen.insert(k.name.clone()) {
+                self.cx.diags.push(Diagnostic::error(
+                    "E0503",
+                    format!("field `{}` is given more than once", k.name),
+                    k.span,
+                ));
+                continue;
+            }
+            let ctx = format!("field `{}` of `{}`", k.name, callee.name);
+            self.cx.require(vt, ft, v.span, &ctx, None);
+        }
+        let missing: Vec<&str> = fields
+            .iter()
+            .filter(|(n, _)| !seen.contains(n))
+            .map(|(n, _)| n.as_str())
+            .collect();
+        if !missing.is_empty() && args.is_empty() {
+            self.cx.diags.push(Diagnostic::error(
+                "E0502",
+                format!(
+                    "missing field{} `{}` for record `{}`",
+                    if missing.len() == 1 { "" } else { "s" },
+                    missing.join("`, `"),
+                    callee.name
+                ),
+                span,
+            ));
+        }
+        Ty::Record(id)
+    }
+
+    /// `p.x`: レコードのフィールド参照。
+    fn field(&mut self, base: &Expr, name: &Ident, env: &Env) -> Ty {
+        let bt = self.expr(base, env);
+        match bt {
+            Ty::Error => Ty::Error,
+            Ty::Record(id) => match self.cx.types.record_def(id).field(&name.name) {
+                Some((_, t)) => t,
+                None => {
+                    let msg = format!("`{}` has no field `{}`", self.cx.name(bt), name.name);
+                    self.cx
+                        .diags
+                        .push(Diagnostic::error("E0501", msg, name.span));
+                    Ty::Error
+                }
+            },
+            t => {
+                let rest = self.cx.types.without_none(t);
+                let d = if self.cx.types.contains_none(t)
+                    && matches!(rest, Ty::Record(id) if self.cx.types.record_def(id).field(&name.name).is_some())
+                {
+                    Diagnostic::error(
+                        "E0301",
+                        format!(
+                            "this value may be `None`: cannot read field `{}` of `{}`",
+                            name.name,
+                            self.cx.name(t)
+                        ),
+                        base.span,
+                    )
+                    .with_hint("check it first, e.g. `if x is not None:`")
+                } else {
+                    Diagnostic::error(
+                        "E0501",
+                        format!("`{}` has no field `{}`", self.cx.name(t), name.name),
+                        name.span,
+                    )
+                };
+                self.cx.diags.push(d);
+                Ty::Error
+            }
+        }
     }
 
     fn call(&mut self, callee: &Ident, args: &[Expr], span: Span, env: &Env) -> Ty {
@@ -1331,5 +1753,73 @@ mod tests {
         let b = t.union([Ty::Int, a, Ty::None]);
         assert_eq!(a, b);
         assert_eq!(t.name(a), "int | None");
+    }
+
+    #[test]
+    fn records_construction_fields_and_width_subtyping() {
+        let defs = "type Named = {name: str}\ntype User = {name: str, age: int}\n\n";
+        let ok = format!(
+            "{defs}def greet(n: Named) -> str:\n    return n.name\n\ndef f() -> int:\n    u = User(name=\"a\", age=3)\n    print(greet(u))\n    m: User | None = None\n    if m is not None:\n        return m.age\n    return u.age\n"
+        );
+        assert_eq!(run(&with_main(&ok)), Vec::<&str>::new());
+        let cases = [
+            (
+                "def f() -> None:\n    u = User(name=\"a\", age=1, zip=2)\n",
+                "E0501",
+            ),
+            ("def f() -> None:\n    u = User(name=\"a\")\n", "E0502"),
+            (
+                "def f() -> None:\n    u = User(name=\"a\", name=\"b\", age=1)\n",
+                "E0503",
+            ),
+            ("def f() -> None:\n    u = User(\"a\", 1)\n", "E0505"),
+            ("def f(u: User) -> int:\n    return u.height\n", "E0501"),
+            ("def f(u: User | None) -> int:\n    return u.age\n", "E0301"),
+            (
+                "def f(n: Named) -> int:\n    u: User = n\n    return 0\n",
+                "E0201",
+            ),
+            (
+                "def f(a: int) -> None:\n    print(a)\n\ndef g() -> None:\n    f(a=1)\n",
+                "E0216",
+            ),
+            ("def f(x: User | Named) -> None:\n    pass\n", "E0508"),
+        ];
+        for (src, code) in cases {
+            assert_eq!(
+                run(&with_main(&format!("{defs}{src}"))),
+                vec![code],
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn recursive_and_duplicate_types() {
+        assert_eq!(
+            run(&with_main("type Node = {value: int, next: Node | None}\n")),
+            vec!["E0504"]
+        );
+        assert_eq!(
+            run(&with_main("type A = {x: int}\ntype A = {y: int}\n")),
+            vec!["E0209"]
+        );
+        assert_eq!(
+            run(&with_main("type P = {x: int, x: int}\n")),
+            vec!["E0503"]
+        );
+        assert_eq!(
+            run(&with_main(
+                "type P = {x: int}\n\ndef f(v: P | None) -> None:\n    match v:\n        case P():\n            pass\n        case _:\n            pass\n"
+            )),
+            vec!["E0304"]
+        );
+        // 別名は構造的: 同じフィールドなら同じ型
+        assert_eq!(
+            run(&with_main(
+                "type A = {x: int}\ntype B = {x: int}\n\ndef f(a: A) -> B:\n    return a\n"
+            )),
+            Vec::<&str>::new()
+        );
     }
 }

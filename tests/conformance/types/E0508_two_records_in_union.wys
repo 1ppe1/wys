@@ -1,0 +1,9 @@
+# expect-error: E0508 5:10
+type A = {x: int}
+type B = {y: int}
+
+def f(v: A | B) -> None:
+    pass
+
+def main() -> None:
+    pass

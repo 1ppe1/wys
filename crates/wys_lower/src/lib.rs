@@ -19,6 +19,7 @@ fn ir_ty(t: TTy) -> Option<Ty> {
         TTy::None => None,
         TTy::Error => panic!("lowering received a type error; run the type checker first"),
         TTy::Union(u) => Some(Ty::Union(UnionId(u.0))),
+        TTy::Record(r) => Some(Ty::Record(RecordId(r.0))),
     }
 }
 
@@ -35,6 +36,17 @@ pub fn lower(module: &ast::Module, tc: &TypeckResult) -> Program {
         .iter()
         .map(|members| members.iter().map(|m| ir_ty(*m)).collect())
         .collect();
+    let records = tc
+        .types
+        .records()
+        .iter()
+        .map(|def| {
+            def.fields
+                .iter()
+                .map(|(n, t)| (n.clone(), ir_ty(*t).expect("record fields are never None")))
+                .collect()
+        })
+        .collect();
     let mut strings = Vec::new();
     let funcs = module
         .funcs
@@ -45,6 +57,7 @@ pub fn lower(module: &ast::Module, tc: &TypeckResult) -> Program {
     Program {
         strings,
         unions,
+        records,
         funcs,
         entry: func_ids["main"],
     }
@@ -404,7 +417,32 @@ impl<'a> FnLower<'a> {
                 })
             }
             ExprKind::Binary { op, lhs, rhs } => Some(self.binary(*op, lhs, rhs)),
-            ExprKind::Call { callee, args } => {
+            ExprKind::Field { base, name } => {
+                let v = self.expr(base).expect("records have values");
+                let TTy::Record(r) = self.tc.ty(base) else {
+                    panic!("field access on a non-record passed type checking")
+                };
+                let (index, ft) = self
+                    .tc
+                    .types
+                    .record_def(r)
+                    .field(&name.name)
+                    .expect("fields exist after type checking");
+                let dst = self.temp(ir_ty(ft).expect("record fields are never None"));
+                self.emit(Inst::Field {
+                    dst,
+                    src: v,
+                    index: index as u32,
+                });
+                Some(dst)
+            }
+            ExprKind::Call { callee, kwargs, .. } if self.is_record_constructor(&callee.name) => {
+                let TTy::Record(r) = self.tc.ty(e) else {
+                    panic!("record construction without a record type")
+                };
+                Some(self.construct(r, kwargs))
+            }
+            ExprKind::Call { callee, args, .. } => {
                 if callee.name == "print" {
                     let v = self.expr(&args[0]).expect("print arguments have values");
                     self.print(v, self.tc.ty(&args[0]));
@@ -491,9 +529,96 @@ impl<'a> FnLower<'a> {
                 Some(self.union_to_union(v, fu, tu))
             }
             (TTy::Union(fu), base) => self.payload(v.expect("union values exist"), fu, base),
-            (base, TTy::Union(tu)) => Some(self.make_union(tu, base, v)),
+            (base, TTy::Union(tu)) => {
+                let tm = self.target_member(tu, base);
+                let p = self.coerce(v, base, tm);
+                Some(self.make_union(tu, tm, p))
+            }
+            (TTy::Record(a), TTy::Record(b)) => {
+                Some(self.record_to_record(v.expect("records have values"), a, b))
+            }
             _ => panic!("no conversion from {from:?} to {to:?}"),
         }
+    }
+
+    /// Union `tu` の中で、値の型 `m` を受け取る構成要素。同じ型がなければ、`m` を幅部分型として受け取るレコード
+    /// （型検査により、1つの Union に入るレコード型は1つまで）。
+    fn target_member(&self, tu: wys_typeck::UnionId, m: TTy) -> TTy {
+        let members = self.members(tu);
+        if members.contains(&m) {
+            return m;
+        }
+        members
+            .into_iter()
+            .find(|t| self.tc.types.member_fits(m, *t))
+            .unwrap_or_else(|| panic!("{m:?} does not fit union {tu:?}"))
+    }
+
+    /// 幅部分型: 変換先のフィールドだけを取り出して、新しい配置のレコードを作る（不変なのでコピーしてよい）。
+    fn record_to_record(
+        &mut self,
+        v: TempId,
+        from: wys_typeck::RecordId,
+        to: wys_typeck::RecordId,
+    ) -> TempId {
+        let src_def = self.tc.types.record_def(from).clone();
+        let dst_fields = self.tc.types.record_def(to).fields.clone();
+        let mut vals = Vec::new();
+        for (name, ft) in &dst_fields {
+            let (index, st) = src_def.field(name).expect("width subtyping checked");
+            let dst = self.temp(ir_ty(st).expect("record fields are never None"));
+            self.emit(Inst::Field {
+                dst,
+                src: v,
+                index: index as u32,
+            });
+            vals.push(self.coerce(Some(dst), st, *ft).expect("fields have values"));
+        }
+        let dst = self.temp(Ty::Record(RecordId(to.0)));
+        self.emit(Inst::MakeRecord {
+            dst,
+            record: RecordId(to.0),
+            fields: vals,
+        });
+        dst
+    }
+
+    /// 関数でも組み込み関数でもない名前の呼び出しは、`type` で定義したレコードの作成。
+    fn is_record_constructor(&self, name: &str) -> bool {
+        !self.func_ids.contains_key(name) && name != "print" && name != "exit"
+    }
+
+    /// `Point(x=..., y=...)`: キーワード引数をソースの順に評価してから、フィールドの順に並べる。
+    fn construct(&mut self, r: wys_typeck::RecordId, kwargs: &[(ast::Ident, ast::Expr)]) -> TempId {
+        let fields = self.tc.types.record_def(r).fields.clone();
+        let mut evaluated: Vec<(String, TempId, usize)> = Vec::new();
+        for (k, value) in kwargs {
+            let (_, ft) = fields
+                .iter()
+                .find(|(n, _)| *n == k.name)
+                .expect("fields exist after type checking");
+            let v = self.expr(value);
+            let v = self
+                .coerce(v, self.tc.ty(value), *ft)
+                .expect("fields have values");
+            evaluated.push((k.name.clone(), v, self.cur));
+        }
+        let mut vals = Vec::new();
+        for (name, _) in &fields {
+            let (_, t, b) = evaluated
+                .iter()
+                .find(|(n, _, _)| n == name)
+                .cloned()
+                .expect("every field is given");
+            vals.push(self.materialize(t, b));
+        }
+        let dst = self.temp(Ty::Record(RecordId(r.0)));
+        self.emit(Inst::MakeRecord {
+            dst,
+            record: RecordId(r.0),
+            fields: vals,
+        });
+        dst
     }
 
     /// Union から Union へ: タグで分岐し、共通の構成要素ごとに詰め直す。
@@ -503,18 +628,33 @@ impl<'a> FnLower<'a> {
         fu: wys_typeck::UnionId,
         tu: wys_typeck::UnionId,
     ) -> TempId {
+        // 変換元の各構成要素が、変換先のどの構成要素に入るか（同じ型か、レコードの幅部分型）。
+        // 変換先に入らない構成要素は、型検査（絞り込み）によりこの地点には来ない。
         let target = self.members(tu);
-        let common: Vec<TTy> = self
+        let pairs: Vec<(TTy, TTy)> = self
             .members(fu)
             .into_iter()
-            .filter(|m| target.contains(m))
+            .filter_map(|m| {
+                target
+                    .iter()
+                    .find(|t| **t == m)
+                    .or_else(|| target.iter().find(|t| self.tc.types.member_fits(m, **t)))
+                    .map(|t| (m, *t))
+            })
             .collect();
+        let common: Vec<TTy> = pairs.iter().map(|(m, _)| *m).collect();
         let src = self.hidden_local(Ty::Union(UnionId(fu.0)));
         self.emit(Inst::Store { dst: src, src: v });
         let out = self.hidden_local(Ty::Union(UnionId(tu.0)));
         self.for_each_variant(src, fu, &common, |l, val, m| {
+            let tm = pairs
+                .iter()
+                .find(|(f, _)| *f == m)
+                .map(|(_, t)| *t)
+                .expect("paired above");
             let p = l.payload(val, fu, m);
-            let u = l.make_union(tu, m, p);
+            let p = l.coerce(p, m, tm);
+            let u = l.make_union(tu, tm, p);
             l.emit(Inst::Store { dst: out, src: u });
         });
         let dst = self.temp(Ty::Union(UnionId(tu.0)));

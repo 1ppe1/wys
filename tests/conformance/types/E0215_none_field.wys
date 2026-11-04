@@ -1,0 +1,5 @@
+# expect-error: E0215 2:24
+type Empty = {nothing: None}
+
+def main() -> None:
+    pass

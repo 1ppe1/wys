@@ -1,0 +1,5 @@
+# expect-error: E0505 5:15
+type Point = {x: int, y: int}
+
+def main() -> None:
+    p = Point(1, 2)
