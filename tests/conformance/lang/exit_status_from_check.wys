@@ -1,0 +1,9 @@
+# exit() で終わる経路の終了コード
+# expect-exit: 2
+def check(n: int | None) -> int:
+    if n is None:
+        exit(2)
+    return n + 1
+
+def main() -> None:
+    print(check(None))

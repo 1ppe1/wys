@@ -1,0 +1,30 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: "wys_driver::to_json(&fe.file, &fe.diagnostics)"
+---
+{
+  "schema_version": "0",
+  "diagnostics": [
+    {
+      "code": "E0201",
+      "severity": "error",
+      "message": "mismatched types: expected `int`, found `Box[Box[Box[Box[Box[Box[…]]]]]]`",
+      "span": {
+        "file": "tests/conformance/diagnostics/deep_type_name.wys",
+        "start": {
+          "line": 6,
+          "column": 14,
+          "byte": 208
+        },
+        "end": {
+          "line": 6,
+          "column": 85,
+          "byte": 279
+        }
+      },
+      "cause": "variable `x` is annotated as `int`",
+      "hints": [],
+      "related": []
+    }
+  ]
+}

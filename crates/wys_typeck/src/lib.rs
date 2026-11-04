@@ -122,7 +122,16 @@ impl Types {
         }
     }
 
+    /// 表示用の型名。入れ子が深い型は `…` で省略する（`Pair[Pair[...]]` で文字列が指数的に長くならないように）。
     pub fn name(&self, t: Ty) -> String {
+        self.name_within(t, 6)
+    }
+
+    fn name_within(&self, t: Ty, depth: usize) -> String {
+        if depth == 0 && matches!(t, Ty::Union(_) | Ty::Record(_)) {
+            return "…".into();
+        }
+        let name = |t: Ty| self.name_within(t, depth.saturating_sub(1));
         match t {
             Ty::Int => "int".into(),
             Ty::Bool => "bool".into(),
@@ -139,7 +148,7 @@ impl Types {
                         "{n}[{}]",
                         def.args
                             .iter()
-                            .map(|a| self.name(*a))
+                            .map(|a| name(*a))
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
@@ -147,7 +156,7 @@ impl Types {
                         "{{{}}}",
                         def.fields
                             .iter()
-                            .map(|(n, t)| format!("{n}: {}", self.name(*t)))
+                            .map(|(n, t)| format!("{n}: {}", name(*t)))
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
@@ -156,7 +165,7 @@ impl Types {
             Ty::Union(_) => self
                 .members(t)
                 .into_iter()
-                .map(|m| self.name(m))
+                .map(name)
                 .collect::<Vec<_>>()
                 .join(" | "),
         }
@@ -634,6 +643,14 @@ impl Ctx {
             },
             TypeExprKind::Union(items) => {
                 let tys: Vec<Ty> = items.iter().map(|i| self.resolve(i)).collect();
+                if tys.contains(&Ty::Unknown) {
+                    self.diags.push(
+                        Diagnostic::error("E0603", "`Unknown` cannot be part of a union", t.span)
+                            .with_cause("`Unknown` already includes every value; it is narrowed only with `match` (ADR-0011)")
+                            .with_hint("write just `Unknown`"),
+                    );
+                    return Ty::Unknown;
+                }
                 let u = self.types.union(tys);
                 let records = self
                     .types
@@ -931,6 +948,16 @@ impl<'a> FnCk<'a> {
                 *env = t_env;
                 self.record(e, Ty::None);
                 false
+            }
+            // exit() は戻らない: この文の後には到達しない（絞り込みと return の検査のため）
+            StmtKind::Expr(
+                e @ Expr {
+                    kind: ExprKind::Call { callee, .. },
+                    ..
+                },
+            ) if callee.name == "exit" => {
+                self.expr(e, env);
+                true
             }
             StmtKind::Expr(e) => {
                 self.expr(e, env);
