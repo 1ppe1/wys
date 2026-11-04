@@ -32,7 +32,7 @@
 
 ## テキスト形式
 
-`wys_cli dump-ir <file>` で出力する。例:
+`wys dump-ir <file>` で出力する。例:
 
 ```text
 entry f0

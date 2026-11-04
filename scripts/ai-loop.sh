@@ -12,7 +12,7 @@ if [ $# -ne 1 ]; then
 fi
 
 cargo build -q -p wys_cli -p wys_runtime
-cli=target/debug/wys_cli
+cli=target/debug/wys
 
 if ! json=$("$cli" check --format json "$1"); then
   echo "$json"

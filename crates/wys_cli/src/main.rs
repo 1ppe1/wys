@@ -1,6 +1,6 @@
 //! コマンドラインインターフェース（build/run/check）
 //!
-//! 実行ファイル名は M1 で決める（現在は `wys_cli`）。
+//! 実行ファイル名は `wys`（内部コードネームと同じ。正式名称が決まったら変える）。
 //!
 //! 終了コード: 0 = 成功、1 = ソースに診断エラーがある、2 = 使い方・入出力・ツールのエラー。
 //! `run` はプログラム自身の終了コードを返す。
@@ -11,11 +11,11 @@ use wys_driver::{BuildError, BuildOptions, Frontend};
 
 const USAGE: &str = "\
 usage:
-  wys_cli check [--format text|json] <file>   check a file and report diagnostics
-  wys_cli build <file> [-o <output>]          build a native executable
-  wys_cli run <file>                          build and run
-  wys_cli dump-ir <file>                      print the wys IR
-  wys_cli dump-llvm <file>                    print the generated LLVM IR
+  wys check [--format text|json] <file>   check a file and report diagnostics
+  wys build <file> [-o <output>]          build a native executable
+  wys run <file>                          build and run
+  wys dump-ir <file>                      print the wys IR
+  wys dump-llvm <file>                    print the generated LLVM IR
 ";
 
 fn main() -> ExitCode {

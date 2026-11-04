@@ -16,3 +16,7 @@ wys_backend = { path = "../wys_backend" }
 
 [dev-dependencies]
 serde_json = "1"
+
+[[bin]]
+name = "wys"
+path = "src/main.rs"

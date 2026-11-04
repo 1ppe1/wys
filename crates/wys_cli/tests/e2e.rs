@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::OnceLock;
 
-const CLI: &str = env!("CARGO_BIN_EXE_wys_cli");
+const CLI: &str = env!("CARGO_BIN_EXE_wys");
 
 /// ランタイムの staticlib をビルドしてパスを返す。
 ///
@@ -41,7 +41,7 @@ fn cli(args: &[&str]) -> Output {
         .args(args)
         .env("WYS_RUNTIME_LIB", runtime_lib())
         .output()
-        .expect("run wys_cli")
+        .expect("run wys")
 }
 
 fn run(name: &str, src: &str) -> (i32, String, String) {

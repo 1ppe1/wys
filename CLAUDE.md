@@ -32,9 +32,9 @@ cargo test --workspace
 
 ```sh
 cargo build
-target/debug/wys_cli run examples/hello.wys
-target/debug/wys_cli check --format json examples/type_error.wys
-target/debug/wys_cli dump-ir examples/fib.wys
+target/debug/wys run examples/hello.wys
+target/debug/wys check --format json examples/type_error.wys
+target/debug/wys dump-ir examples/fib.wys
 ```
 
 - 新しいエラーコードを追加したら `docs/spec/error-codes.md` に追記する。コードは再利用しない。
