@@ -1,0 +1,13 @@
+# 絞り込んだ Optional のローカル変数に対するメソッド呼び出し（.get / .append）
+# expect-stdout: 1
+# expect-stdout: 2
+def main() -> None:
+    d: dict[str, int] | None = {"a": 1}
+    if d is not None:
+        v = d.get("a")
+        if v is not None:
+            print(v)
+    xs: list[str] | None = ["x"]
+    if xs is not None:
+        xs.append("y" + "z")
+        print(len(xs))
