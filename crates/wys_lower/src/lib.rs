@@ -168,6 +168,23 @@ impl<'a> FnLower<'a> {
         LocalId(self.locals.len() as u32 - 1)
     }
 
+    /// ブロック `def_block` で定義した一時値を、現在のブロックで使える値にする。
+    /// 後続の式（`and` / `or` など）でブロックが変わった場合は、定義したブロックの末尾でローカルに退避し、
+    /// 現在のブロックで読み直す（一時値はブロック内でのみ使えるという IR の規則のため）。
+    fn materialize(&mut self, t: TempId, def_block: usize) -> TempId {
+        if def_block == self.cur {
+            return t;
+        }
+        let ty = self.temps[t.0 as usize];
+        let slot = self.hidden_local(ty);
+        self.blocks[def_block]
+            .insts
+            .push(Inst::Store { dst: slot, src: t });
+        let dst = self.temp(ty);
+        self.emit(Inst::Load { dst, src: slot });
+        dst
+    }
+
     fn konst(&mut self, value: Const, ty: Ty) -> TempId {
         let dst = self.temp(ty);
         self.emit(Inst::Const { dst, value });
@@ -397,12 +414,16 @@ impl<'a> FnLower<'a> {
                     "exit" => vec![TTy::Int],
                     name => self.tc.sigs[self.func_ids[name].0 as usize].params.clone(),
                 };
-                let mut arg_vals = Vec::new();
+                let mut evaluated = Vec::new();
                 for (a, pt) in args.iter().zip(params) {
                     let v = self.expr(a);
                     let v = self.coerce(v, self.tc.ty(a), pt);
-                    arg_vals.push(v.expect("arguments have values"));
+                    evaluated.push((v.expect("arguments have values"), self.cur));
                 }
+                let arg_vals: Vec<TempId> = evaluated
+                    .into_iter()
+                    .map(|(t, b)| self.materialize(t, b))
+                    .collect();
                 let (callee, ret) = match callee.name.as_str() {
                     "exit" => (Callee::Builtin(Builtin::Exit), None),
                     name => {
@@ -586,7 +607,9 @@ impl<'a> FnLower<'a> {
             return self.short_circuit(op == A::And, lhs, rhs);
         }
         let l = self.expr(lhs).expect("operands have values");
+        let l_block = self.cur;
         let r = self.expr(rhs).expect("operands have values");
+        let l = self.materialize(l, l_block);
         let (iop, ty) = match op {
             A::Add => (BinOp::Add, Ty::Int),
             A::Sub => (BinOp::Sub, Ty::Int),
