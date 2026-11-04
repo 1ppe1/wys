@@ -1,0 +1,4 @@
+pub def nonzero(n: int) -> bool:
+    if n:
+        return True
+    return False

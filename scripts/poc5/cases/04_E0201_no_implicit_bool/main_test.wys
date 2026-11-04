@@ -1,0 +1,5 @@
+from lib import nonzero
+
+def test_nonzero() -> None:
+    assert(nonzero(2))
+    assert(not nonzero(0))

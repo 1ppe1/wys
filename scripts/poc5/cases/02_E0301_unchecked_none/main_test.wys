@@ -1,0 +1,7 @@
+from lib import or_zero
+
+def test_none() -> None:
+    assert(or_zero(None) == 0)
+
+def test_value() -> None:
+    assert(or_zero(5) == 5)

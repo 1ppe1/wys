@@ -1,0 +1,4 @@
+from lib import age_of, sample
+
+def test_age() -> None:
+    assert(age_of(sample()) == 36)

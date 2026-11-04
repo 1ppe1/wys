@@ -1,0 +1,7 @@
+from lib import kind
+
+def test_kind() -> None:
+    assert(kind("1") == 1)
+    assert(kind("true") == 2)
+    assert(kind("x") == 3)
+    assert(kind("null") == 4)

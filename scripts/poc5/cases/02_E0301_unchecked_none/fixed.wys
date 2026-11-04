@@ -1,0 +1,4 @@
+pub def or_zero(n: int | None) -> int:
+    if n is None:
+        return 0
+    return n

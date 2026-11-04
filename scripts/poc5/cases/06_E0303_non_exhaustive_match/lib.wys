@@ -1,0 +1,6 @@
+pub def code(v: int | str | None) -> int:
+    match v:
+        case int():
+            return 1
+        case str():
+            return 2

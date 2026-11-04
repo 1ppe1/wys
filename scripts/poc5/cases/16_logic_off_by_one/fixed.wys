@@ -1,0 +1,8 @@
+# 1 から n までの和
+pub def sum_to(n: int) -> int:
+    total = 0
+    i = 1
+    while i <= n:
+        total = total + i
+        i = i + 1
+    return total

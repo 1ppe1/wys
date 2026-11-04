@@ -1,0 +1,5 @@
+pub def double(n: int) -> int:
+    return n * 2
+
+pub def six() -> int:
+    return double(3)

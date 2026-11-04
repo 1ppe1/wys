@@ -1,0 +1,5 @@
+from lib import unwrap_or
+
+def test_unwrap() -> None:
+    assert(unwrap_or(5, 0) == 5)
+    assert(unwrap_or(None, 7) == 7)

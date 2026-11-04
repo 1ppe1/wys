@@ -1,0 +1,7 @@
+from lib import plus_one
+
+def test_int() -> None:
+    assert(plus_one("41") == 42)
+
+def test_other() -> None:
+    assert(plus_one("hello") == 0)

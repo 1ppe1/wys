@@ -1,0 +1,4 @@
+pub type Point = {x: int, y: int}
+
+pub def origin() -> Point:
+    return Point(x=0, y=0)

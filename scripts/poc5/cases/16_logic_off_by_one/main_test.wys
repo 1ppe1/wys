@@ -1,0 +1,5 @@
+from lib import sum_to
+
+def test_sum() -> None:
+    assert(sum_to(3) == 6)
+    assert(sum_to(100) == 5050)

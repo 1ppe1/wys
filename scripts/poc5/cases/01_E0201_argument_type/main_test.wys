@@ -1,0 +1,4 @@
+from lib import six
+
+def test_six() -> None:
+    assert(six() == 6)

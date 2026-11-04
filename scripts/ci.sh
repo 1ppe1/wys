@@ -13,4 +13,6 @@ echo "==> wys fmt --check examples"
 for f in examples/*.wys; do
   ./target/debug/wys fmt --check "$f"
 done
+echo "==> poc5 cases"
+./scripts/poc5/verify.sh
 echo "==> OK"

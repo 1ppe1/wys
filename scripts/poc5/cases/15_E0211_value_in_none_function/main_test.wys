@@ -1,0 +1,5 @@
+from lib import remember
+
+def test_remember() -> None:
+    remember(1)
+    assert(True)

@@ -1,0 +1,4 @@
+from lib import area
+
+def test_area() -> None:
+    assert(area(2, 3) == 6)
