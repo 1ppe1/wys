@@ -178,7 +178,7 @@ impl Parser<'_> {
                 TokenKind::Ident(kw)
                     if kw == "type"
                         && matches!(self.peek_at(1), TokenKind::Ident(_))
-                        && matches!(self.peek_at(2), TokenKind::Assign) =>
+                        && matches!(self.peek_at(2), TokenKind::Assign | TokenKind::LBracket) =>
                 {
                     match self.type_def() {
                         Ok(t) => types.push(t),
@@ -219,6 +219,7 @@ impl Parser<'_> {
     fn type_def(&mut self) -> PResult<TypeDef> {
         let start = self.bump().span.start; // `type`
         let name = self.ident("a type name")?;
+        let params = self.type_params()?;
         self.expect(&TokenKind::Assign, "`=`")?;
         let value = if self.eat(&TokenKind::LBrace) {
             let mut fields = Vec::new();
@@ -240,6 +241,7 @@ impl Parser<'_> {
         self.expect(&TokenKind::Newline, "end of line")?;
         Ok(TypeDef {
             name,
+            params,
             value,
             span: Span::new(start, end),
         })
@@ -261,6 +263,21 @@ impl Parser<'_> {
         })
     }
 
+    /// `[T, U]`（省略可）。
+    fn type_params(&mut self) -> PResult<Vec<Ident>> {
+        let mut params = Vec::new();
+        if self.eat(&TokenKind::LBracket) {
+            loop {
+                params.push(self.ident("a type parameter name")?);
+                if !self.eat(&TokenKind::Comma) || self.at(&TokenKind::RBracket) {
+                    break;
+                }
+            }
+            self.expect(&TokenKind::RBracket, "`,` or `]`")?;
+        }
+        Ok(params)
+    }
+
     fn type_atom(&mut self) -> PResult<TypeExpr> {
         let name = match self.peek().clone() {
             TokenKind::Ident(name) => name,
@@ -268,6 +285,20 @@ impl Parser<'_> {
             _ => return Err(self.error_here("a type")),
         };
         let span = self.bump().span;
+        if self.eat(&TokenKind::LBracket) {
+            let mut args = Vec::new();
+            loop {
+                args.push(self.type_expr()?);
+                if !self.eat(&TokenKind::Comma) || self.at(&TokenKind::RBracket) {
+                    break;
+                }
+            }
+            self.expect(&TokenKind::RBracket, "`,` or `]`")?;
+            return Ok(TypeExpr {
+                kind: TypeExprKind::Apply(name, args),
+                span: Span::new(span.start, self.prev_end()),
+            });
+        }
         Ok(TypeExpr {
             kind: TypeExprKind::Name(name),
             span,
@@ -277,6 +308,7 @@ impl Parser<'_> {
     fn func_def(&mut self) -> PResult<FuncDef> {
         let start = self.expect(&TokenKind::Def, "`def`")?.start;
         let name = self.ident("a function name")?;
+        let type_params = self.type_params()?;
         self.expect(&TokenKind::LParen, "`(`")?;
         let mut params = Vec::new();
         if !self.at(&TokenKind::RParen) {
@@ -329,6 +361,7 @@ impl Parser<'_> {
         let body = self.block()?;
         Ok(FuncDef {
             name,
+            type_params,
             params,
             ret,
             body,
@@ -886,6 +919,19 @@ mod tests {
         assert!(matches!(kwargs[1].1.kind, ExprKind::Field { .. }));
         // `type` は予約語ではない
         ok("def f(type: int) -> int:\n    return type\n");
+    }
+
+    #[test]
+    fn generic_functions_and_types() {
+        let m = ok(
+            "type Pair[A, B] = {first: A, second: B}\n\ndef swap[A, B](p: Pair[A, B]) -> Pair[B, A]:\n    return Pair(first=p.second, second=p.first)\n",
+        );
+        assert_eq!(m.types[0].params.len(), 2);
+        let f = &m.funcs[0];
+        assert_eq!(f.type_params.len(), 2);
+        assert!(
+            matches!(&f.params[0].ty.kind, TypeExprKind::Apply(n, a) if n == "Pair" && a.len() == 2)
+        );
     }
 
     #[test]

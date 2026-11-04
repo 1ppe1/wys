@@ -24,6 +24,8 @@ pub enum Ty {
     Str,
     /// 構造的レコード（ADR-0007、不変）。
     Record(RecordId),
+    /// 型パラメータ（`def f[T]` の `T`）。中身の分からない型として扱い、単相化で具体的な型に置き換える。
+    Param(ParamId),
     None,
     Union(UnionId),
     /// エラーから回復するための型。これを含む式では追加の診断を出さない。
@@ -36,11 +38,19 @@ pub struct UnionId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RecordId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ParamId(pub u32);
+
+/// 型パラメータから具体的な型への対応。
+pub type Subst = HashMap<ParamId, Ty>;
+
 /// レコード型の定義。フィールドは名前順（同じフィールド集合なら同じ型）。
 #[derive(Debug, Clone)]
 pub struct RecordDef {
     /// 最初に定義した `type` の名前（表示用）。構造的なので、名前は型の同一性に関係しない。
     pub name: Option<String>,
+    /// Generic な `type` の型引数（表示用。`Pair[int, str]`）。
+    pub args: Vec<Ty>,
     pub fields: Vec<(String, Ty)>,
 }
 
@@ -60,6 +70,7 @@ pub struct Types {
     index: HashMap<Vec<Ty>, UnionId>,
     records: Vec<RecordDef>,
     record_index: HashMap<Vec<(String, Ty)>, RecordId>,
+    params: Vec<String>,
 }
 
 impl Types {
@@ -105,10 +116,19 @@ impl Types {
             Ty::Str => "str".into(),
             Ty::None => "None".into(),
             Ty::Error => "<error>".into(),
+            Ty::Param(p) => self.params[p.0 as usize].clone(),
             Ty::Record(r) => {
                 let def = &self.records[r.0 as usize];
                 match &def.name {
-                    Some(n) => n.clone(),
+                    Some(n) if def.args.is_empty() => n.clone(),
+                    Some(n) => format!(
+                        "{n}[{}]",
+                        def.args
+                            .iter()
+                            .map(|a| self.name(*a))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
                     None => format!(
                         "{{{}}}",
                         def.fields
@@ -169,22 +189,79 @@ impl Types {
     }
 
     /// レコード型を作る（フィールドは名前順に正規化する）。
-    pub fn record(&mut self, mut fields: Vec<(String, Ty)>, name: Option<String>) -> Ty {
+    pub fn record(&mut self, fields: Vec<(String, Ty)>, name: Option<String>) -> Ty {
+        self.record_named(fields, name, Vec::new())
+    }
+
+    pub fn record_named(
+        &mut self,
+        mut fields: Vec<(String, Ty)>,
+        name: Option<String>,
+        args: Vec<Ty>,
+    ) -> Ty {
         fields.sort_by(|a, b| a.0.cmp(&b.0));
         if let Some(&id) = self.record_index.get(&fields) {
             let def = &mut self.records[id.0 as usize];
             if def.name.is_none() {
                 def.name = name;
+                def.args = args;
             }
             return Ty::Record(id);
         }
         let id = RecordId(self.records.len() as u32);
         self.records.push(RecordDef {
             name,
+            args,
             fields: fields.clone(),
         });
         self.record_index.insert(fields, id);
         Ty::Record(id)
+    }
+
+    pub fn new_param(&mut self, name: &str) -> ParamId {
+        self.params.push(name.to_string());
+        ParamId(self.params.len() as u32 - 1)
+    }
+
+    /// 型パラメータを置き換える。Union は置き換えた後に平坦化し直す（`T | None` で `T = str | None` なら `str | None`）。
+    pub fn subst(&mut self, t: Ty, map: &Subst) -> Ty {
+        match t {
+            Ty::Param(p) => map.get(&p).copied().unwrap_or(t),
+            Ty::Union(_) => {
+                let ms: Vec<Ty> = self
+                    .members(t)
+                    .into_iter()
+                    .map(|m| self.subst(m, map))
+                    .collect();
+                self.union(ms)
+            }
+            Ty::Record(r) => {
+                if !self.contains_param(t) {
+                    return t;
+                }
+                let def = self.records[r.0 as usize].clone();
+                let fields = def
+                    .fields
+                    .iter()
+                    .map(|(n, ft)| (n.clone(), self.subst(*ft, map)))
+                    .collect();
+                let args = def.args.iter().map(|a| self.subst(*a, map)).collect();
+                self.record_named(fields, def.name, args)
+            }
+            _ => t,
+        }
+    }
+
+    pub fn contains_param(&self, t: Ty) -> bool {
+        match t {
+            Ty::Param(_) => true,
+            Ty::Union(_) => self.members(t).iter().any(|m| self.contains_param(*m)),
+            Ty::Record(r) => self.records[r.0 as usize]
+                .fields
+                .iter()
+                .any(|(_, ft)| self.contains_param(*ft)),
+            _ => false,
+        }
     }
 
     pub fn record_def(&self, id: RecordId) -> &RecordDef {
@@ -208,6 +285,8 @@ impl Types {
 #[derive(Debug, Clone)]
 pub struct FuncSig {
     pub name: String,
+    /// 型パラメータ（Generic 関数でなければ空）。
+    pub type_params: Vec<ParamId>,
     pub params: Vec<Ty>,
     pub ret: Ty,
     pub span: Span,
@@ -227,6 +306,8 @@ pub struct TypeckResult {
     pub sigs: Vec<FuncSig>,
     pub funcs: Vec<FuncInfo>,
     pub types: Types,
+    /// Generic 関数の呼び出しごとの型引数（`FuncSig::type_params` の順）。呼び出し元の型パラメータを含むことがある。
+    pub call_type_args: HashMap<ExprId, Vec<Ty>>,
 }
 
 impl TypeckResult {
@@ -246,11 +327,21 @@ pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
         types: Types::default(),
         type_defs: module.types.clone(),
         aliases: HashMap::new(),
+        generics: HashMap::new(),
+        type_scope: Vec::new(),
+        call_type_args: HashMap::new(),
     };
     declare_types(&mut cx, module);
     for f in &module.funcs {
+        let type_params: Vec<ParamId> = f
+            .type_params
+            .iter()
+            .map(|t| cx.types.new_param(&t.name))
+            .collect();
+        cx.push_type_scope(&f.type_params, &type_params);
         let params = f.params.iter().map(|p| cx.resolve(&p.ty)).collect();
         let ret = cx.resolve(&f.ret);
+        cx.type_scope.pop();
         if BUILTINS.contains(&f.name.name.as_str()) {
             cx.diags.push(Diagnostic::error(
                 "E0209",
@@ -275,6 +366,7 @@ pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
         }
         cx.sigs.push(FuncSig {
             name: f.name.name.clone(),
+            type_params,
             params,
             ret,
             span: f.name.span,
@@ -304,6 +396,7 @@ pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
             sigs: cx.sigs,
             funcs,
             types: cx.types,
+            call_type_args: cx.call_type_args,
         },
         cx.diags,
     )
@@ -378,6 +471,11 @@ struct Ctx {
     type_defs: Vec<TypeDef>,
     /// `type` の名前 → (`type_defs` の番号, 解決状態)
     aliases: HashMap<String, (usize, AliasState)>,
+    /// Generic な `type` の型パラメータと本体（型パラメータを含む型）。
+    generics: HashMap<String, (Vec<ParamId>, Ty)>,
+    /// 型パラメータの名前のスコープ（内側が後ろ）。
+    type_scope: Vec<HashMap<String, Ty>>,
+    call_type_args: HashMap<ExprId, Vec<Ty>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -385,11 +483,76 @@ enum AliasState {
     Unresolved,
     Resolving,
     Done(Ty),
+    /// Generic な `type`（`Ctx::generics` に本体がある）。
+    Generic,
 }
 
 impl Ctx {
     fn resolve(&mut self, t: &TypeExpr) -> Ty {
         match &t.kind {
+            TypeExprKind::Name(name)
+                if self.type_scope.iter().rev().any(|sc| sc.contains_key(name)) =>
+            {
+                *self
+                    .type_scope
+                    .iter()
+                    .rev()
+                    .find_map(|sc| sc.get(name))
+                    .expect("checked above")
+            }
+            TypeExprKind::Name(name) | TypeExprKind::Apply(name, _) if name == "list" => {
+                self.diags.push(
+                    Diagnostic::error("E0405", "`list` is not available yet", t.span).with_cause(
+                        "lists need heap memory management, which arrives in M3 (ADR-0009)",
+                    ),
+                );
+                Ty::Error
+            }
+            TypeExprKind::Name(name)
+                if matches!(self.aliases.get(name), Some((_, AliasState::Generic))) =>
+            {
+                let n = self.generics[name].0.len();
+                self.diags.push(Diagnostic::error(
+                    "E0402",
+                    format!("type `{name}` needs {n} type argument(s), e.g. `{name}[...]`"),
+                    t.span,
+                ));
+                Ty::Error
+            }
+            TypeExprKind::Apply(name, args) => {
+                let arg_tys: Vec<Ty> = args.iter().map(|a| self.resolve(a)).collect();
+                if matches!(self.aliases.get(name), Some((_, AliasState::Resolving))) {
+                    return self.resolve_alias(name); // 自己参照（E0504）
+                }
+                if self.aliases.contains_key(name) && !self.generics.contains_key(name) {
+                    self.resolve_alias(name);
+                }
+                let Some((params, body)) = self.generics.get(name).cloned() else {
+                    self.diags.push(Diagnostic::error(
+                        "E0402",
+                        format!("type `{name}` takes no type arguments"),
+                        t.span,
+                    ));
+                    return Ty::Error;
+                };
+                if params.len() != arg_tys.len() {
+                    self.diags.push(Diagnostic::error(
+                        "E0402",
+                        format!(
+                            "type `{name}` takes {} type argument(s) but {} were given",
+                            params.len(),
+                            arg_tys.len()
+                        ),
+                        t.span,
+                    ));
+                    return Ty::Error;
+                }
+                if arg_tys.contains(&Ty::Error) || body == Ty::Error {
+                    return Ty::Error;
+                }
+                let map: Subst = params.into_iter().zip(arg_tys).collect();
+                self.types.subst(body, &map)
+            }
             TypeExprKind::Name(name) => match name.as_str() {
                 "int" => Ty::Int,
                 "bool" => Ty::Bool,
@@ -441,10 +604,18 @@ impl Ctx {
                     .insert(name.to_string(), (idx, AliasState::Done(Ty::Error)));
                 Ty::Error
             }
+            AliasState::Generic => Ty::Error,
             AliasState::Unresolved => {
                 self.aliases
                     .insert(name.to_string(), (idx, AliasState::Resolving));
                 let def = self.type_defs[idx].clone();
+                let params: Vec<ParamId> = def
+                    .params
+                    .iter()
+                    .map(|p| self.types.new_param(&p.name))
+                    .collect();
+                self.push_type_scope(&def.params, &params);
+                let param_tys: Vec<Ty> = params.iter().map(|p| Ty::Param(*p)).collect();
                 let t = match &def.value {
                     TypeDefValue::Alias(te) => self.resolve(te),
                     TypeDefValue::Record(fields) => {
@@ -478,23 +649,42 @@ impl Ctx {
                         if failed {
                             Ty::Error
                         } else {
-                            self.types.record(fs, Some(name.to_string()))
+                            self.types
+                                .record_named(fs, Some(name.to_string()), param_tys)
                         }
                     }
                 };
+                self.type_scope.pop();
                 let t = match self.aliases[name].1 {
                     AliasState::Done(Ty::Error) => Ty::Error,
                     _ => t,
                 };
-                self.aliases
-                    .insert(name.to_string(), (idx, AliasState::Done(t)));
-                t
+                if params.is_empty() {
+                    self.aliases
+                        .insert(name.to_string(), (idx, AliasState::Done(t)));
+                    t
+                } else {
+                    self.generics.insert(name.to_string(), (params, t));
+                    self.aliases
+                        .insert(name.to_string(), (idx, AliasState::Generic));
+                    Ty::Error
+                }
             }
         }
     }
 
     fn name(&self, t: Ty) -> String {
         self.types.name(t)
+    }
+
+    fn push_type_scope(&mut self, names: &[Ident], params: &[ParamId]) {
+        self.type_scope.push(
+            names
+                .iter()
+                .zip(params)
+                .map(|(n, p)| (n.name.clone(), Ty::Param(*p)))
+                .collect(),
+        );
     }
 
     /// `actual` を `expected` の場所に置けなければ診断を出す。
@@ -569,6 +759,7 @@ impl<'a> FnCk<'a> {
             vars: HashMap::new(),
             locals: Vec::new(),
         };
+        ck.cx.push_type_scope(&f.type_params, &sig.type_params);
         let mut env = Env::new();
         for (p, &ty) in f.params.iter().zip(&sig.params) {
             if ck.vars.contains_key(&p.name.name) {
@@ -590,6 +781,7 @@ impl<'a> FnCk<'a> {
             env.insert(p.name.name.clone(), ty);
         }
         let returns = ck.block(&f.body, &mut env);
+        ck.cx.type_scope.pop();
         if !returns && sig.ret != Ty::None && sig.ret != Ty::Error {
             let ret_name = ck.cx.name(sig.ret);
             ck.cx.diags.push(
@@ -732,8 +924,24 @@ impl<'a> FnCk<'a> {
                 kind => {
                     let pt = self.pattern_type(kind, arm.pattern.span);
                     pattern_failed = pt == Ty::Error;
+                    let on_param = members
+                        .as_ref()
+                        .is_some_and(|ms| ms.iter().any(|m| matches!(m, Ty::Param(_))));
                     match &members {
                         _ if pt == Ty::Error => Vec::new(),
+                        _ if on_param && matches!(kind, PatternKind::Type(_)) => {
+                            let msg = format!(
+                                "cannot match a type pattern against `{}`, which contains a type parameter",
+                                self.cx.name(st)
+                            );
+                            self.cx.diags.push(
+                                Diagnostic::error("E0401", msg, arm.pattern.span)
+                                    .with_cause("generic code must work for every type argument (ADR-0006)")
+                                    .with_hint("match on `None` or use `case _:`, or make the function non-generic"),
+                            );
+                            pattern_failed = true;
+                            Vec::new()
+                        }
                         Some(ms) if !ms.contains(&pt) => {
                             let msg = format!(
                                 "this pattern can never match: `{}` is not part of `{}`",
@@ -1156,7 +1364,7 @@ impl<'a> FnCk<'a> {
                         None => Ty::Error,
                     }
                 } else {
-                    self.call(callee, args, e.span, env)
+                    self.call(callee, args, e.span, e.id, env)
                 }
             }
             ExprKind::Field { base, name } => self.field(base, name, env),
@@ -1282,6 +1490,7 @@ impl<'a> FnCk<'a> {
     }
 
     /// `Point(x=1, y=2)`: レコードの作成。フィールドはすべてキーワード引数でちょうど1回ずつ指定する。
+    /// Generic な `type`（`Pair(first=1, second="a")`）なら、キーワード引数の型から型引数を推論する。
     fn construct(
         &mut self,
         callee: &Ident,
@@ -1290,22 +1499,31 @@ impl<'a> FnCk<'a> {
         span: Span,
         env: &Env,
     ) -> Ty {
-        let ty = self.cx.resolve_alias(&callee.name);
         for a in args {
             self.expr(a, env);
         }
+        let kw_tys: Vec<Ty> = kwargs.iter().map(|(_, v)| self.expr(v, env)).collect();
+        let ty = match self.cx.generics.get(&callee.name).cloned() {
+            Some((_, Ty::Error)) => Ty::Error,
+            Some((params, body)) => {
+                let mut map = Subst::new();
+                if let Ty::Record(r) = body {
+                    for ((k, _), &kt) in kwargs.iter().zip(&kw_tys) {
+                        if let Some((_, ft)) = self.cx.types.record_def(r).field(&k.name) {
+                            self.unify(ft, kt, &params, &mut map);
+                        }
+                    }
+                }
+                let what = format!("record `{}`", callee.name);
+                self.require_inferred(&params, &mut map, &what, span);
+                self.cx.types.subst(body, &map)
+            }
+            None => self.cx.resolve_alias(&callee.name),
+        };
         let id = match ty {
             Ty::Record(id) => id,
-            Ty::Error => {
-                for (_, v) in kwargs {
-                    self.expr(v, env);
-                }
-                return Ty::Error;
-            }
+            Ty::Error => return Ty::Error,
             other => {
-                for (_, v) in kwargs {
-                    self.expr(v, env);
-                }
                 let msg = format!(
                     "type `{}` is `{}`, not a record, so it cannot be called",
                     callee.name,
@@ -1317,7 +1535,13 @@ impl<'a> FnCk<'a> {
                 return Ty::Error;
             }
         };
+        let fields = self.cx.types.record_def(id).fields.clone();
         if let Some(a) = args.first() {
+            let example = fields
+                .iter()
+                .map(|(n, _)| format!("{n}=..."))
+                .collect::<Vec<_>>()
+                .join(", ");
             self.cx.diags.push(
                 Diagnostic::error(
                     "E0505",
@@ -1327,24 +1551,11 @@ impl<'a> FnCk<'a> {
                     ),
                     a.span,
                 )
-                .with_hint(format!(
-                    "write `{}({})`",
-                    callee.name,
-                    self.cx
-                        .types
-                        .record_def(id)
-                        .fields
-                        .iter()
-                        .map(|(n, _)| format!("{n}=..."))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
+                .with_hint(format!("write `{}({example})`", callee.name)),
             );
         }
-        let fields = self.cx.types.record_def(id).fields.clone();
         let mut seen = HashSet::new();
-        for (k, v) in kwargs {
-            let vt = self.expr(v, env);
+        for ((k, v), &vt) in kwargs.iter().zip(&kw_tys) {
             let Some(&(_, ft)) = fields.iter().find(|(n, _)| *n == k.name) else {
                 let msg = format!("record `{}` has no field `{}`", callee.name, k.name);
                 self.cx.diags.push(Diagnostic::error("E0501", msg, k.span));
@@ -1424,7 +1635,79 @@ impl<'a> FnCk<'a> {
         }
     }
 
-    fn call(&mut self, callee: &Ident, args: &[Expr], span: Span, env: &Env) -> Ty {
+    /// 呼び出しの引数から、Generic 関数の型パラメータを推論する。
+    /// `pattern` は仮引数の型（`own` の型パラメータを含む）、`actual` は実引数の型。最初に決まった型を採用し、
+    /// 矛盾は推論後の型検査（`require`）で報告する。
+    fn unify(&mut self, pattern: Ty, actual: Ty, own: &[ParamId], map: &mut Subst) {
+        if actual == Ty::Error {
+            return;
+        }
+        match pattern {
+            Ty::Param(p) if own.contains(&p) => {
+                map.entry(p).or_insert(actual);
+            }
+            Ty::Union(_) => {
+                // `T | None` に `str | None` を渡したら `T = str`（パターン側の具体的な構成要素を除いた残り）
+                let ms = self.cx.types.members(pattern);
+                let is_own = |m: &Ty| matches!(m, Ty::Param(p) if own.contains(p));
+                let ps: Vec<Ty> = ms.iter().filter(|m| is_own(m)).copied().collect();
+                if let [Ty::Param(p)] = ps.as_slice()
+                    && !map.contains_key(p)
+                {
+                    let concrete: Vec<Ty> = ms.iter().filter(|m| !is_own(m)).copied().collect();
+                    let rest: Vec<Ty> = self
+                        .cx
+                        .types
+                        .members(actual)
+                        .into_iter()
+                        .filter(|a| !concrete.iter().any(|c| self.cx.types.member_fits(*a, *c)))
+                        .collect();
+                    if !rest.is_empty() {
+                        let t = self.cx.types.union(rest);
+                        map.insert(*p, t);
+                    }
+                }
+            }
+            Ty::Record(r) => {
+                if let Ty::Record(a) = actual {
+                    let fields = self.cx.types.record_def(r).fields.clone();
+                    for (n, ft) in fields {
+                        if let Some((_, at)) = self.cx.types.record_def(a).field(&n) {
+                            self.unify(ft, at, own, map);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 推論できなかった型パラメータを報告し、`Error` で埋める。
+    fn require_inferred(&mut self, params: &[ParamId], map: &mut Subst, what: &str, span: Span) {
+        let missing: Vec<String> = params
+            .iter()
+            .filter(|p| !map.contains_key(p))
+            .map(|p| self.cx.name(Ty::Param(*p)))
+            .collect();
+        if !missing.is_empty() {
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E0403",
+                    format!(
+                        "cannot infer type parameter `{}` of {what}",
+                        missing.join("`, `")
+                    ),
+                    span,
+                )
+                .with_hint("pass an argument whose type determines it (a bare `None` does not)"),
+            );
+            for p in params {
+                map.entry(*p).or_insert(Ty::Error);
+            }
+        }
+    }
+
+    fn call(&mut self, callee: &Ident, args: &[Expr], span: Span, id: ExprId, env: &Env) -> Ty {
         let arg_tys: Vec<Ty> = args.iter().map(|a| self.expr(a, env)).collect();
         match callee.name.as_str() {
             "print" => {
@@ -1485,9 +1768,32 @@ impl<'a> FnCk<'a> {
                 )
                 .with_related(RelatedKind::Function, &sig.name, Some(sig.span)),
             );
-            return sig.ret;
+            return if sig.type_params.is_empty() {
+                sig.ret
+            } else {
+                Ty::Error
+            };
         }
-        for ((arg, &at), &pt) in args.iter().zip(&arg_tys).zip(&sig.params) {
+        let (params, ret) = if sig.type_params.is_empty() {
+            (sig.params.clone(), sig.ret)
+        } else {
+            let mut map = Subst::new();
+            for (&pt, &at) in sig.params.iter().zip(&arg_tys) {
+                self.unify(pt, at, &sig.type_params, &mut map);
+            }
+            let what = format!("function `{}`", sig.name);
+            self.require_inferred(&sig.type_params, &mut map, &what, span);
+            self.cx
+                .call_type_args
+                .insert(id, sig.type_params.iter().map(|p| map[p]).collect());
+            let params = sig
+                .params
+                .iter()
+                .map(|t| self.cx.types.subst(*t, &map))
+                .collect();
+            (params, self.cx.types.subst(sig.ret, &map))
+        };
+        for ((arg, &at), &pt) in args.iter().zip(&arg_tys).zip(&params) {
             let ctx = format!("argument of function `{}`", sig.name);
             self.cx.require(
                 at,
@@ -1497,7 +1803,7 @@ impl<'a> FnCk<'a> {
                 Some((RelatedKind::Function, &sig.name, sig.span)),
             );
         }
-        sig.ret
+        ret
     }
 }
 
@@ -1821,5 +2127,60 @@ mod tests {
             )),
             Vec::<&str>::new()
         );
+    }
+
+    #[test]
+    fn generic_functions_infer_and_check() {
+        let defs = "def unwrap_or[T](x: T | None, d: T) -> T:\n    if x is None:\n        return d\n    return x\n\ndef identity[T](x: T) -> T:\n    return x\n\n";
+        let ok = format!(
+            "{defs}def f() -> None:\n    n: int | None = None\n    print(unwrap_or(n, 5) + 1)\n    print(unwrap_or(None, \"d\"))\n    print(identity(3) + 1)\n"
+        );
+        assert_eq!(run(&with_main(&ok)), Vec::<&str>::new());
+        let cases = [
+            (
+                "def same[T](a: T, b: T) -> T:\n    return a\n\ndef f() -> None:\n    print(same(1, \"a\"))\n",
+                vec!["E0201"],
+            ),
+            ("def f[T](x: T) -> T:\n    return x + 1\n", vec!["E0207"]),
+            (
+                "def none[T]() -> T | None:\n    return None\n\ndef f() -> None:\n    x = none()\n",
+                vec!["E0403"],
+            ),
+            (
+                "def f[T](x: T | None) -> None:\n    match x:\n        case int():\n            pass\n        case _:\n            pass\n",
+                vec!["E0401"],
+            ),
+            ("def f(x: list[int]) -> None:\n    pass\n", vec!["E0405"]),
+            ("def f(x: int[str]) -> None:\n    pass\n", vec!["E0402"]),
+        ];
+        for (src, codes) in cases {
+            assert_eq!(run(&with_main(src)), codes, "{src}");
+        }
+    }
+
+    #[test]
+    fn generic_records() {
+        let defs = "type Pair[A, B] = {first: A, second: B}\n\ndef swap[A, B](p: Pair[A, B]) -> Pair[B, A]:\n    return Pair(first=p.second, second=p.first)\n\n";
+        let ok = format!(
+            "{defs}def f() -> None:\n    q = swap(Pair(first=1, second=\"x\"))\n    print(q.first)\n    print(q.second + 1)\n    r: Pair[str, int] = q\n"
+        );
+        assert_eq!(run(&with_main(&ok)), Vec::<&str>::new());
+        assert_eq!(
+            run(&with_main(&format!(
+                "{defs}def f(p: Pair) -> None:\n    pass\n"
+            ))),
+            vec!["E0402"]
+        );
+        assert_eq!(
+            run(&with_main(&format!(
+                "{defs}def f() -> None:\n    q: Pair[int, int] = Pair(first=1, second=\"x\")\n"
+            ))),
+            vec!["E0201"]
+        );
+        let (m, _) = wys_parser::parse_source(&with_main(&format!(
+            "{defs}def f() -> None:\n    q = Pair(first=1, second=\"x\")\n    q.nope\n"
+        )));
+        let d = check(&m).1;
+        assert!(d[0].message.contains("Pair[int, str]"), "{}", d[0].message);
     }
 }

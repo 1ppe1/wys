@@ -1,0 +1,20 @@
+# Generic 関数: 呼び出しごとに型引数を推論し、型ごとに単相化する
+# expect-stdout: 6
+# expect-stdout: default
+# expect-stdout: given
+# expect-stdout: 4
+def unwrap_or[T](x: T | None, default: T) -> T:
+    if x is None:
+        return default
+    return x
+
+def identity[T](x: T) -> T:
+    return x
+
+def main() -> None:
+    n: int | None = 5
+    print(unwrap_or(n, 0) + 1)
+    print(unwrap_or(None, "default"))
+    s: str | None = "given"
+    print(unwrap_or(s, "default"))
+    print(identity(identity(4)))

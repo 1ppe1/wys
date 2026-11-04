@@ -1,0 +1,6 @@
+# expect-error: E0403 6:9
+def nothing[T]() -> T | None:
+    return None
+
+def main() -> None:
+    x = nothing()

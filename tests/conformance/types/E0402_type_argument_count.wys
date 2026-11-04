@@ -1,0 +1,8 @@
+# expect-error: E0402 4:10
+type Pair[A, B] = {first: A, second: B}
+
+def f(p: Pair[int]) -> None:
+    pass
+
+def main() -> None:
+    pass
