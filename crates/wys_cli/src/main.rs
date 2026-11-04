@@ -83,11 +83,7 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
         }
         "dump-ir" | "dump-llvm" => {
             let fe = load(file.as_deref())?;
-            if let Some(msg) = &fe.unsupported {
-                return Err(msg.clone());
-            }
-            let Some(p) = &fe.program else {
-                report(&fe, format);
+            let Some(p) = buildable(&fe, format)? else {
                 return Ok(ExitCode::from(1));
             };
             if cmd == "dump-ir" {
@@ -100,7 +96,11 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
         "build" => {
             let src = file.ok_or("missing source file")?;
             let out = output.unwrap_or_else(|| default_output(&src));
-            match wys_driver::build_file(&src, &out, &opts) {
+            let fe = load(Some(&src))?;
+            let Some(p) = buildable(&fe, format)? else {
+                return Ok(ExitCode::from(1));
+            };
+            match wys_driver::link_program(p, &out, &opts) {
                 Ok(()) => Ok(ExitCode::SUCCESS),
                 Err(e) => build_error(e, format),
             }
@@ -108,11 +108,7 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
         "run" => {
             let src = file.ok_or("missing source file")?;
             let fe = load(Some(&src))?;
-            if let Some(msg) = &fe.unsupported {
-                return Err(msg.clone());
-            }
-            let Some(p) = &fe.program else {
-                report(&fe, format);
+            let Some(p) = buildable(&fe, format)? else {
                 return Ok(ExitCode::from(1));
             };
             let exe = std::env::temp_dir().join(format!("wys-run-{}", std::process::id()));
@@ -143,6 +139,22 @@ fn load(file: Option<&Path>) -> Result<Frontend, String> {
     let text = std::fs::read_to_string(file)
         .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
     Ok(wys_driver::frontend(&file.display().to_string(), &text))
+}
+
+/// ビルドできるなら IR を返す。エラーがあれば報告して `None`。警告は標準エラーに出してから続ける。
+fn buildable(fe: &Frontend, format: Format) -> Result<Option<&wys_driver::Program>, String> {
+    if let Some(msg) = &fe.unsupported {
+        return Err(msg.clone());
+    }
+    if fe.has_errors() {
+        report(fe, format);
+        return Ok(None);
+    }
+    let warnings = fe.warnings();
+    if !warnings.is_empty() {
+        eprint!("{}", wys_driver::to_text(&fe.file, &warnings));
+    }
+    Ok(fe.program.as_ref())
 }
 
 fn report(fe: &Frontend, format: Format) {

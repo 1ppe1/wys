@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use wys_backend::{Backend, LlvmTextBackend};
 use wys_diagnostics::Diagnostic;
-use wys_ir::Program;
+pub use wys_ir::Program;
 use wys_span::SourceFile;
 
 pub use wys_diagnostics::{to_json, to_text};
@@ -22,8 +22,17 @@ pub struct Frontend {
 }
 
 impl Frontend {
+    /// エラー（警告ではない診断）があるか。警告だけならビルドできる。
     pub fn has_errors(&self) -> bool {
-        !self.diagnostics.is_empty()
+        self.diagnostics.iter().any(Diagnostic::is_error)
+    }
+
+    pub fn warnings(&self) -> Vec<Diagnostic> {
+        self.diagnostics
+            .iter()
+            .filter(|d| !d.is_error())
+            .cloned()
+            .collect()
     }
 }
 
@@ -40,7 +49,7 @@ pub fn frontend(name: &str, text: &str) -> Frontend {
         };
     }
     let (tc, diagnostics) = wys_typeck::check(&module);
-    if !diagnostics.is_empty() {
+    if diagnostics.iter().any(Diagnostic::is_error) {
         return Frontend {
             file,
             diagnostics,
@@ -225,6 +234,17 @@ mod tests {
         assert!(!fe.has_errors());
         assert!(fe.unsupported.is_none());
         assert!(!fe.program.unwrap().unions.is_empty());
+    }
+
+    #[test]
+    fn warnings_do_not_block_the_build() {
+        let fe = frontend(
+            "t.wys",
+            "def main() -> None:\n    x: int | None = 1\n    match x:\n        case _:\n            pass\n        case None:\n            pass\n",
+        );
+        assert!(!fe.has_errors());
+        assert_eq!(fe.warnings().len(), 1);
+        assert!(fe.program.is_some());
     }
 
     #[test]

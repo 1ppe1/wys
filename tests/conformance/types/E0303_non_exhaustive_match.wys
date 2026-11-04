@@ -1,0 +1,10 @@
+# expect-error: E0303 3:11
+def describe(v: int | str | None) -> None:
+    match v:
+        case int():
+            pass
+        case None:
+            pass
+
+def main() -> None:
+    describe(1)

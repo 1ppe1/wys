@@ -63,6 +63,17 @@ impl Diagnostic {
         }
     }
 
+    pub fn warning(code: &'static str, message: impl Into<String>, span: Span) -> Self {
+        Self {
+            severity: Severity::Warning,
+            ..Self::error(code, message, span)
+        }
+    }
+
+    pub fn is_error(&self) -> bool {
+        self.severity == Severity::Error
+    }
+
     pub fn with_cause(mut self, cause: impl Into<String>) -> Self {
         self.cause = Some(cause.into());
         self

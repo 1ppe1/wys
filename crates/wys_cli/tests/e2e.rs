@@ -213,3 +213,24 @@ fn check_succeeds_with_empty_report() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["diagnostics"].as_array().unwrap().len(), 0);
 }
+
+#[test]
+fn warnings_are_reported_but_do_not_fail() {
+    let path = scratch(
+        "warn",
+        "def main() -> None:\n    x: int | None = 1\n    match x:\n        case _:\n            print(\"ok\")\n        case None:\n            pass\n",
+    );
+    let check = cli(&["check", "--format", "json", path.to_str().unwrap()]);
+    assert_eq!(check.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
+    assert_eq!(v["diagnostics"][0]["severity"], "warning");
+    assert_eq!(v["diagnostics"][0]["code"], "W0301");
+    let run = cli(&["run", path.to_str().unwrap()]);
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "ok\n");
+    assert!(
+        String::from_utf8(run.stderr)
+            .unwrap()
+            .contains("warning[W0301]")
+    );
+}

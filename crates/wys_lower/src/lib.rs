@@ -7,7 +7,7 @@
 //! Union → Union はタグで分岐して詰め直す。
 
 use std::collections::HashMap;
-use wys_ast::{self as ast, ExprKind, StmtKind, UnaryOp};
+use wys_ast::{self as ast, ExprKind, PatternKind, StmtKind, UnaryOp};
 use wys_ir::*;
 use wys_typeck::{Ty as TTy, TypeckResult};
 
@@ -237,6 +237,7 @@ impl<'a> FnLower<'a> {
                 }
                 self.switch_to(join);
             }
+            StmtKind::Match { subject, arms } => self.match_stmt(subject, arms),
             StmtKind::While { cond, body } => {
                 let head = self.new_block();
                 let body_b = self.new_block();
@@ -257,6 +258,62 @@ impl<'a> FnLower<'a> {
                 self.switch_to(exit);
             }
         }
+    }
+
+    /// `match`: 被検査値を一度だけ評価してローカルに置き、`case` を上から順にタグで判定する。
+    /// 型パターンが被検査値の型そのもの（Union でない）なら常に一致する。
+    fn match_stmt(&mut self, subject: &ast::Expr, arms: &[ast::MatchArm]) {
+        let st = self.tc.ty(subject);
+        let v = self.expr(subject);
+        let slot = v.map(|t| {
+            let ty = self.temps[t.0 as usize];
+            let l = self.hidden_local(ty);
+            self.emit(Inst::Store { dst: l, src: t });
+            l
+        });
+        let join = self.new_block();
+        for arm in arms {
+            let pattern_ty = match &arm.pattern.kind {
+                PatternKind::Wildcard => None,
+                PatternKind::None => Some(TTy::None),
+                PatternKind::Type(name) => Some(match name.as_str() {
+                    "int" => TTy::Int,
+                    "bool" => TTy::Bool,
+                    "str" => TTy::Str,
+                    other => panic!("unknown pattern type `{other}` passed type checking"),
+                }),
+            };
+            let next = self.new_block();
+            if let (Some(pt), TTy::Union(u), Some(slot)) = (pattern_ty, st, slot) {
+                let val = self.temp(self.locals[slot.0 as usize]);
+                self.emit(Inst::Load {
+                    dst: val,
+                    src: slot,
+                });
+                let c = self.temp(Ty::Bool);
+                let variant = self.variant(u, pt);
+                self.emit(Inst::UnionIs {
+                    dst: c,
+                    src: val,
+                    variant,
+                });
+                let body = self.new_block();
+                self.terminate(Terminator::Branch {
+                    cond: c,
+                    then_block: body,
+                    else_block: next,
+                });
+                self.switch_to(body);
+            }
+            self.stmts(&arm.body);
+            if self.blocks[self.cur].term.is_none() {
+                self.terminate(Terminator::Jump(join));
+            }
+            self.switch_to(next);
+        }
+        // 型検査で網羅性を確認済みなので、ここには到達しない
+        self.terminate(Terminator::Unreachable);
+        self.switch_to(join);
     }
 
     // ---- expressions ----

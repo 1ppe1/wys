@@ -331,6 +331,7 @@ impl Parser<'_> {
                 return Err(Reported);
             }
             TokenKind::If => return self.if_stmt(),
+            TokenKind::Match => return self.match_stmt(),
             TokenKind::While => {
                 self.bump();
                 let cond = self.expr()?;
@@ -401,6 +402,74 @@ impl Parser<'_> {
                 branches,
                 else_body,
             },
+            span: Span::new(start, self.prev_end()),
+        })
+    }
+
+    fn match_stmt(&mut self) -> PResult<Stmt> {
+        let start = self.expect(&TokenKind::Match, "`match`")?.start;
+        let subject = self.expr()?;
+        self.expect(&TokenKind::Colon, "`:`")?;
+        self.expect(&TokenKind::Newline, "a new line after `:`")?;
+        if !self.at(&TokenKind::Indent) {
+            return Err(self.error_here("an indented block of `case` clauses"));
+        }
+        self.bump();
+        let mut arms = Vec::new();
+        while !matches!(self.peek(), TokenKind::Dedent | TokenKind::Eof) {
+            match self.match_arm() {
+                Ok(arm) => arms.push(arm),
+                // 1つの case の誤りで match 全体を読み飛ばさない
+                Err(Reported) => self.sync(),
+            }
+        }
+        self.eat(&TokenKind::Dedent);
+        Ok(Stmt {
+            kind: StmtKind::Match { subject, arms },
+            span: Span::new(start, self.prev_end()),
+        })
+    }
+
+    fn match_arm(&mut self) -> PResult<MatchArm> {
+        let start = self.expect(&TokenKind::Case, "`case`")?.start;
+        let pattern = self.pattern()?;
+        self.expect(&TokenKind::Colon, "`:`")?;
+        let body = self.block()?;
+        Ok(MatchArm {
+            pattern,
+            body,
+            span: Span::new(start, self.prev_end()),
+        })
+    }
+
+    fn pattern(&mut self) -> PResult<Pattern> {
+        let start = self.span().start;
+        let kind = match self.peek().clone() {
+            TokenKind::None => {
+                self.bump();
+                PatternKind::None
+            }
+            TokenKind::Ident(name) if name == "_" => {
+                self.bump();
+                PatternKind::Wildcard
+            }
+            TokenKind::Ident(name) => {
+                self.bump();
+                self.expect(
+                    &TokenKind::LParen,
+                    "`(` (type patterns are written like `int()`)",
+                )?;
+                self.expect(&TokenKind::RParen, "`)`")?;
+                PatternKind::Type(name)
+            }
+            _ => {
+                return Err(
+                    self.error_here("a pattern (`int()`, `bool()`, `str()`, `None` or `_`)")
+                );
+            }
+        };
+        Ok(Pattern {
+            kind,
             span: Span::new(start, self.prev_end()),
         })
     }
@@ -689,6 +758,37 @@ mod tests {
             branches[0].0.kind,
             ExprKind::Is { negated: true, .. }
         ));
+    }
+
+    #[test]
+    fn match_statement() {
+        let m = ok(
+            "def f(x: int | None) -> None:\n    match x:\n        case int():\n            pass\n        case None:\n            pass\n        case _:\n            pass\n",
+        );
+        let StmtKind::Match { arms, .. } = &m.funcs[0].body[0].kind else {
+            panic!()
+        };
+        let kinds: Vec<_> = arms.iter().map(|a| a.pattern.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                PatternKind::Type("int".into()),
+                PatternKind::None,
+                PatternKind::Wildcard
+            ]
+        );
+    }
+
+    #[test]
+    fn match_recovers_per_case() {
+        let src = "def f(x: int) -> None:\n    match x:\n        case 1:\n            pass\n        case int():\n            pass\n    pass\n";
+        let (m, d) = parse_source(src);
+        assert_eq!(d.iter().map(|d| d.code).collect::<Vec<_>>(), vec!["E0101"]);
+        let StmtKind::Match { arms, .. } = &m.funcs[0].body[0].kind else {
+            panic!()
+        };
+        assert_eq!(arms.len(), 1);
+        assert_eq!(m.funcs[0].body.len(), 2);
     }
 
     #[test]

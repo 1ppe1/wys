@@ -1,0 +1,24 @@
+# match で Union を分岐し、各 case の中で値が絞り込まれる
+# expect-stdout: int
+# expect-stdout: 11
+# expect-stdout: str
+# expect-stdout: hello
+# expect-stdout: none
+# expect-stdout: int
+# expect-stdout: 0
+def describe(v: int | str | None) -> None:
+    match v:
+        case int():
+            print("int")
+            print(v + 10)
+        case str():
+            print("str")
+            print(v)
+        case None:
+            print("none")
+
+def main() -> None:
+    describe(1)
+    describe("hello")
+    describe(None)
+    describe(-10)

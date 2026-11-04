@@ -73,7 +73,35 @@ pub enum StmtKind {
         cond: Expr,
         body: Vec<Stmt>,
     },
+    /// `match subject:` と `case` の並び（ADR-0006）。
+    Match {
+        subject: Expr,
+        arms: Vec<MatchArm>,
+    },
     Pass,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct Pattern {
+    pub kind: PatternKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatternKind {
+    /// `int()` / `bool()` / `str()`: 値がその型であることに一致する。
+    Type(String),
+    /// `None`
+    None,
+    /// `_`: 何にでも一致する。
+    Wildcard,
 }
 
 #[derive(Debug, Clone)]

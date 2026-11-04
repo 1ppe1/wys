@@ -1,0 +1,12 @@
+# 警告だけならビルドして実行できる
+# expect-warning: W0301 8:14
+# expect-stdout: covered
+def f(v: int | None) -> None:
+    match v:
+        case _:
+            print("covered")
+        case int():
+            print("never")
+
+def main() -> None:
+    f(1)

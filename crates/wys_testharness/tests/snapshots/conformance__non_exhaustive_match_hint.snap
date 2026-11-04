@@ -1,0 +1,37 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: "wys_driver::to_json(&fe.file, &fe.diagnostics)"
+---
+{
+  "schema_version": "0",
+  "diagnostics": [
+    {
+      "code": "E0303",
+      "severity": "error",
+      "message": "non-exhaustive `match`: `int`, `bool`, `None` are not covered",
+      "span": {
+        "file": "tests/conformance/diagnostics/non_exhaustive_match_hint.wys",
+        "start": {
+          "line": 3,
+          "column": 11,
+          "byte": 87
+        },
+        "end": {
+          "line": 3,
+          "column": 12,
+          "byte": 88
+        }
+      },
+      "cause": "the value has type `int | bool | str | None`",
+      "hints": [
+        {
+          "message": "add `case int():`, `case bool():`, `case None:`"
+        },
+        {
+          "message": "or add `case _:` to handle every remaining value"
+        }
+      ],
+      "related": []
+    }
+  ]
+}
