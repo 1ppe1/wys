@@ -1,0 +1,15 @@
+[package]
+name = "wys_fmt"
+description = "ソースの整形（DX-001 fmt）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wys_lexer = { path = "../wys_lexer" }
+wys_diagnostics = { path = "../wys_diagnostics" }

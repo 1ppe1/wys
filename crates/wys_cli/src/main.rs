@@ -15,6 +15,7 @@ usage:
   wys build <file> [-o <output>]          build a native executable
   wys run <file> [-- <args>...]           build and run (arguments after -- go to the program)
   wys test <file>                         run the functions named test_* (no main needed)
+  wys fmt [--check] <file>                format a file in place (--check: only report)
   wys dump-ir <file>                      print the wys IR
   wys dump-llvm <file>                    print the generated LLVM IR
 ";
@@ -42,6 +43,7 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::from(2));
     };
     let mut format = Format::Text;
+    let mut check_only = false;
     let mut output: Option<PathBuf> = None;
     let mut file: Option<PathBuf> = None;
     let mut program_args: Vec<String> = Vec::new();
@@ -60,6 +62,7 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
                 }
             }
             "-o" => output = Some(PathBuf::from(it.next().ok_or("`-o` needs a path")?)),
+            "--check" => check_only = true,
             "-h" | "--help" => {
                 print!("{USAGE}");
                 return Ok(ExitCode::SUCCESS);
@@ -86,6 +89,33 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
             } else {
                 ExitCode::SUCCESS
             })
+        }
+        "fmt" => {
+            let src = file.ok_or("missing source file")?;
+            let text = std::fs::read_to_string(&src)
+                .map_err(|e| format!("cannot read {}: {e}", src.display()))?;
+            let formatted = match wys_fmt::format_source(&text) {
+                Ok(f) => f,
+                Err(diags) => {
+                    let map = wys_driver::SourceMap::single(wys_driver::SourceFile::new(
+                        src.display().to_string(),
+                        text,
+                    ));
+                    eprint!("{}", wys_driver::to_text(&map, &diags));
+                    return Ok(ExitCode::from(1));
+                }
+            };
+            if formatted == text {
+                return Ok(ExitCode::SUCCESS);
+            }
+            if check_only {
+                println!("would reformat {}", src.display());
+                return Ok(ExitCode::from(1));
+            }
+            std::fs::write(&src, formatted)
+                .map_err(|e| format!("cannot write {}: {e}", src.display()))?;
+            println!("reformatted {}", src.display());
+            Ok(ExitCode::SUCCESS)
         }
         "test" => {
             let src = file.ok_or("missing source file")?;

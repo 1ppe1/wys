@@ -289,3 +289,23 @@ fn wys_test_passes_and_checks_signatures() {
             .contains("error[E0801]")
     );
 }
+
+#[test]
+fn wys_fmt_rewrites_and_checks() {
+    let path = scratch("fmt_me", "def main()->None:\n  print( 1+2 )\n");
+    let check = cli(&["fmt", "--check", path.to_str().unwrap()]);
+    assert_eq!(check.status.code(), Some(1));
+    assert!(
+        String::from_utf8(check.stdout)
+            .unwrap()
+            .contains("would reformat")
+    );
+    let fmt = cli(&["fmt", path.to_str().unwrap()]);
+    assert_eq!(fmt.status.code(), Some(0));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "def main() -> None:\n    print(1 + 2)\n"
+    );
+    let again = cli(&["fmt", "--check", path.to_str().unwrap()]);
+    assert_eq!(again.status.code(), Some(0));
+}

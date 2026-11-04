@@ -37,6 +37,7 @@ CI（`.github/workflows/ci.yml`、macOS arm64）は `scripts/ci.sh`（fmt / clip
 | AC-002（`None` の可能性がある値の未検証利用を拒否） | **合格（M2 T1a / T1b）**。拒否: `types/E0301_*`。検査後の値が正しく動くこと: `lang/optional_*`、`lang/union_*` |
 | LANG-004（`match` と網羅性検査、Generics） | **合格（M2 T2 / T4）**。`lang/match_*`、`lang/generic_*`、`types/E030x_*`・`W0301_*`・`E040x_*`、e2e の `warnings_are_reported_but_do_not_fail` |
 | LANG-003 / LANG-005（レコード型、構造的な幅部分型） | **合格（M2 T3）**。`lang/record_*`、`types/E05xx_*`・`E0304_*` |
+| DX-001（`fmt`） | **合格（M2 T8）**。`wys_fmt` の `formatting_preserves_tokens_and_is_idempotent`（全 Conformance ケースと例で、トークン列が変わらないことと冪等性）、e2e の `wys_fmt_rewrites_and_checks`、CI で `examples/` の `fmt --check` |
 | DX-001（`test`） | **合格（M2 T7）**。e2e の `wys_test_*`、`types/E0801_*`（`# expect-mode: test`） |
 | LANG-001（モジュール） | **合格（M2 T6）**。`tests/conformance/modules/<ケース名>/main.wys`（import するファイルを同じディレクトリに置く）。名前解決の単体テストは `wys_resolve` |
 | AC-003（`Unknown` の検証） | **合格（M2 T5）**。拒否: `types/E0601_*`・`E0602_*`。検証後の利用: `lang/unknown_from_args.wys`（コマンドライン引数を `# expect-args:` で渡す） |
