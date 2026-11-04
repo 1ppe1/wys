@@ -32,9 +32,13 @@ Pythonの簡潔さ、TypeScriptの型表現力、Nim/Codon/Mojoのネイティ�
 ├── README.md          # このファイル
 ├── CLAUDE.md          # AIエージェント（Claude Code）向けのプロジェクト指示
 ├── .claude/           # Claude Code のプロジェクト設定
+├── Cargo.toml         # Rust ワークスペース
+├── rust-toolchain.toml
+├── crates/sg_*/       # コンパイラ・ランタイム・CLI（sg は内部コードネーム）
 └── docs/
     ├── README.md      # ドキュメント索引
     ├── ai_native_language_requirements.md
     ├── glossary.md
+    ├── roadmap.md     # 実行計画
     └── adr/           # Architecture Decision Records
 ```

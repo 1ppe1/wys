@@ -7,6 +7,7 @@
 - AIネイティブ次世代プログラミング言語の**構想・要件定義フェーズ**。実装コードはまだない。
 - 正となる文書は `docs/ai_native_language_requirements.md`（要件定義書）。迷ったらここに戻る。
 - 言語名・拡張子は未定。文書中では「本言語」と呼ぶ。勝手に名前を付けない。
+- 内部コードネームは `sg`（ユーザーが決定）。Rust クレートは `crates/sg_*`。これは正式名称ではない。
 
 ## ドキュメントのルール
 
@@ -16,6 +17,16 @@
 - 設計判断は `docs/adr/` にADRとして記録する。AIは `Proposed` で起草するだけで、`Accepted` にするのはユーザー（手順は `docs/adr/README.md`）。要件定義書「10. 未決定事項」の項目を決めたら、ADRを作成し、ADR一覧の対応欄を更新する。
 - 新しい文書を追加したら `docs/README.md` の索引を更新する。
 - 性能について根拠のない倍率（「Python比○倍」など）を書かない（要件定義書 5.1 の方針）。
+
+## 開発コマンド
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+変更を終える前に、この3つがすべて通ることを確認する。
 
 ## 設計上の前提（要件定義書より）
 
