@@ -140,6 +140,7 @@ declare i64 @wys_dict_key(ptr, i64)
 declare i64 @wys_dict_iter_next(ptr, i64, i64)
 declare void @wys_dict_key_missing(ptr, i64) noreturn
 declare void @wys_dict_free(ptr)
+declare void @wys_dict_erase(ptr, i64)
 declare void @wys_runtime_finish()
 declare ptr @wys_str_concat(ptr, ptr)
 declare zeroext i1 @wys_str_eq(ptr, ptr)
@@ -371,6 +372,23 @@ fn emit_dict_glue(out: &mut String, p: &Program, drops: &DropInfo) {
             "\ndefine private {vt} @wys_dict_get{i}(ptr %d, {kt} %k) {{\nentry:\n{}\n  %e = call i64 @wys_dict_find(ptr %d, i64 %raw)\n  %found = icmp sge i64 %e, 0\n  br i1 %found, label %ok, label %missing\nmissing:\n  call void @wys_dict_key_missing(ptr %d, i64 %raw)\n  unreachable\nok:\n  %s = call ptr @wys_dict_val(ptr %d, i64 %e)\n  %v = load {vt}, ptr %s\n  ret {vt} %v\n}}",
             key_to_raw(k, "%raw", "%k")
         );
+        // pop: 値の所有を呼び出し側に移し、辞書が持っていたキーを release してから削除する
+        let _ = writeln!(
+            out,
+            "\ndefine private {vt} @wys_dict_pop{i}(ptr %d, {kt} %k) {{\nentry:\n{}\n  %e = call i64 @wys_dict_find(ptr %d, i64 %raw)\n  %found = icmp sge i64 %e, 0\n  br i1 %found, label %ok, label %missing\nmissing:\n  call void @wys_dict_key_missing(ptr %d, i64 %raw)\n  unreachable\nok:\n  %s = call ptr @wys_dict_val(ptr %d, i64 %e)\n  %v = load {vt}, ptr %s",
+            key_to_raw(k, "%raw", "%k")
+        );
+        if key_drop {
+            let _ = writeln!(
+                out,
+                "  %kr = call i64 @wys_dict_key(ptr %d, i64 %e)\n{}\n  call void @wys_dict_erase(ptr %d, i64 %e)\n  call void {}({kt} %stored)",
+                raw_to_key(k, "%stored", "%kr"),
+                glue("release", k)
+            );
+        } else {
+            let _ = writeln!(out, "  call void @wys_dict_erase(ptr %d, i64 %e)");
+        }
+        let _ = writeln!(out, "  ret {vt} %v\n}}");
         // release: 参照カウントが 0 になったら、キーと値を release してから辞書を返す
         let _ = writeln!(
             out,
@@ -640,6 +658,22 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                     let _ = writeln!(
                         out,
                         "  {} = call {} @wys_dict_get{}(ptr {}, {} {})",
+                        t(*dst),
+                        llty(v),
+                        di.0,
+                        t(*src),
+                        llty(k),
+                        t(*key)
+                    );
+                }
+                Inst::DictPop { dst, src, key } => {
+                    let Ty::Dict(di) = f.temps[src.0 as usize] else {
+                        unreachable!("verified")
+                    };
+                    let (k, v) = p.dicts[di.0 as usize];
+                    let _ = writeln!(
+                        out,
+                        "  {} = call {} @wys_dict_pop{}(ptr {}, {} {})",
                         t(*dst),
                         llty(v),
                         di.0,

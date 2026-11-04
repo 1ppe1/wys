@@ -65,7 +65,7 @@
 | E0902 | コレクション | `range` を `for` の外で使っている |
 | E0903 | コレクション | `for` で反復できない値（`list[T]` か `range(...)` だけ） |
 | E0904 | コレクション | `list` 以外に添字を付けている |
-| E0905 | コレクション | その型にないメソッド（M3 では `list` の `append` と `dict` の `get` だけ） |
+| E0905 | コレクション | その型にないメソッド（M3 では `list` の `append`、`dict` の `get` と `pop` だけ） |
 | E0906 | コレクション | 空の `{}` のキーと値の型が決まらない（`d: dict[str, int] = {}` のように注釈する） |
 | E0907 | コレクション | `dict` のキーに使えない型（キーは `int` / `bool` / `str`。ADR-0015） |
 | E0908 | コレクション | 値の型が `None` を含む `dict` に `.get` を使っている（「キーがない」と区別できない。`in` と `d[k]` を使う） |
@@ -94,7 +94,7 @@
 | assertion failed at ファイル:行:列 | `assert(cond)` の条件が偽 |
 | <msg> at ファイル:行:列 | `panic(msg)` を呼んだ |
 | index out of range: index i, length n | リストの添字が範囲外（負の添字は末尾から数える） |
-| key not found: キー | `d[k]` のキーがない（`str` のキーは引用符付きで表示する） |
+| key not found: キー | `d[k]` / `d.pop(k)` のキーがない（`str` のキーは引用符付きで表示する） |
 | dict changed size during iteration | `for k in d:` の途中で `d` のキーの数が変わった |
 
 プログラムの終了時に解放されていないオブジェクトが残っていた場合は、`runtime error: N object(s) were not freed (this is a compiler bug)` を出して終了コード 102 で終わる（ARC の誤りを検出するための検査、ADR-0012）。

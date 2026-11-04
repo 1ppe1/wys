@@ -338,9 +338,14 @@ struct DictInner {
     keys: Vec<i64>,
     /// 値はエントリごとに `val_words` 語。箱に入れない
     vals: Vec<u64>,
-    /// 索引表: エントリの番号、空きは -1。大きさは 2 の累乗
+    /// エントリが生きているか（`pop` で削除したエントリは偽。表の伸長で詰め直す）
+    live: Vec<bool>,
+    /// 索引表: エントリの番号、空きは `EMPTY`、削除した場所は `DELETED`（探索を続ける）。大きさは 2 の累乗
     index: Vec<i64>,
 }
+
+const EMPTY: i64 = -1;
+const DELETED: i64 = -2;
 
 fn hash_key(kind: i64, key: i64) -> u64 {
     if kind == KEY_STR {
@@ -374,23 +379,42 @@ impl DictInner {
         let mut i = (h as usize) & mask;
         loop {
             let e = self.index[i];
-            if e < 0 {
+            if e == EMPTY {
                 return Err(i);
             }
-            let e = e as usize;
-            if self.hashes[e] == h && keys_equal(self.kind, self.keys[e], key) {
-                return Ok(e);
+            if e != DELETED {
+                let e = e as usize;
+                if self.hashes[e] == h && keys_equal(self.kind, self.keys[e], key) {
+                    return Ok(e);
+                }
             }
             i = (i + 1) & mask;
         }
     }
 
+    /// 削除したエントリを詰めてから、索引表を大きさ `cap` で作り直す。エントリの番号は変わる。
     fn rebuild(&mut self, cap: usize) {
-        self.index = vec![-1; cap];
+        if self.live.iter().any(|l| !l) {
+            let w = self.val_words;
+            let mut j = 0;
+            for e in 0..self.hashes.len() {
+                if self.live[e] {
+                    self.hashes[j] = self.hashes[e];
+                    self.keys[j] = self.keys[e];
+                    self.vals.copy_within(e * w..(e + 1) * w, j * w);
+                    j += 1;
+                }
+            }
+            self.hashes.truncate(j);
+            self.keys.truncate(j);
+            self.vals.truncate(j * w);
+            self.live = vec![true; j];
+        }
+        self.index = vec![EMPTY; cap];
         let mask = cap - 1;
         for (e, &h) in self.hashes.iter().enumerate() {
             let mut i = (h as usize) & mask;
-            while self.index[i] >= 0 {
+            while self.index[i] != EMPTY {
                 i = (i + 1) & mask;
             }
             self.index[i] = e as i64;
@@ -408,7 +432,8 @@ pub extern "C" fn wys_dict_new(kind: i64, val_size: i64) -> *mut DictObj {
         hashes: Vec::new(),
         keys: Vec::new(),
         vals: Vec::new(),
-        index: vec![-1; 8],
+        live: Vec::new(),
+        index: vec![EMPTY; 8],
     });
     let obj = Box::new(DictObj {
         rc: 1,
@@ -451,9 +476,13 @@ pub unsafe extern "C" fn wys_dict_push(d: *mut DictObj, key: i64) -> i64 {
     // SAFETY: 関数の安全条件どおり。
     let (obj, inner) = unsafe { (&mut *d, &mut *(*d).inner) };
     let h = hash_key(inner.kind, key);
-    // 負荷率 2/3 を超えないように、索引表を広げる
+    // 負荷率 2/3 を超えないように索引表を作り直す（削除したエントリを詰め、足りなければ広げる）
     if (inner.hashes.len() + 1) * 3 > inner.index.len() * 2 {
-        let cap = inner.index.len() * 2;
+        let live = obj.len as usize;
+        let mut cap = inner.index.len();
+        while (live + 1) * 3 > cap * 2 {
+            cap *= 2;
+        }
         inner.rebuild(cap);
     }
     let slot = match inner.find(key, h) {
@@ -463,6 +492,7 @@ pub unsafe extern "C" fn wys_dict_push(d: *mut DictObj, key: i64) -> i64 {
     let e = inner.hashes.len();
     inner.hashes.push(h);
     inner.keys.push(key);
+    inner.live.push(true);
     inner.vals.resize(inner.vals.len() + inner.val_words, 0);
     inner.index[slot] = e as i64;
     obj.len += 1;
@@ -503,7 +533,35 @@ pub unsafe extern "C" fn wys_dict_iter_next(d: *const DictObj, pos: i64, len0: i
     if len != len0 {
         runtime_error("dict changed size during iteration");
     }
-    if pos < used { pos } else { -1 }
+    // SAFETY: 関数の安全条件どおり。
+    let live = unsafe { &(*(*d).inner).live };
+    let mut p = pos;
+    while p < used {
+        if live[p as usize] {
+            return p;
+        }
+        p += 1;
+    }
+    -1
+}
+
+/// エントリ `e` を削除する（`pop`）。キーと値は、生成コードが先に取り出して所有を引き継ぐ。
+///
+/// # Safety
+/// `d` は生存している辞書で、`e` は生きているエントリの番号でなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_dict_erase(d: *mut DictObj, e: i64) {
+    // SAFETY: 関数の安全条件どおり。
+    let (obj, inner) = unsafe { (&mut *d, &mut *(*d).inner) };
+    let e = e as usize;
+    let mask = inner.index.len() - 1;
+    let mut i = (inner.hashes[e] as usize) & mask;
+    while inner.index[i] != e as i64 {
+        i = (i + 1) & mask;
+    }
+    inner.index[i] = DELETED;
+    inner.live[e] = false;
+    obj.len -= 1;
 }
 
 /// `d[k]` でキーがなかった（実行時エラー）。
@@ -772,6 +830,30 @@ mod tests {
             assert_eq!(wys_dict_find(d, 3), -1);
             assert_eq!(wys_dict_iter_next(d, 999, 1000), 999);
             assert_eq!(wys_dict_iter_next(d, 1000, 1000), -1);
+            wys_dict_free(d);
+        }
+        assert_eq!(LIVE.load(Ordering::Relaxed), before);
+        // 削除と再挿入: 削除したキーは見つからず、反復で飛ばされ、伸長で詰め直される
+        let d = wys_dict_new(KEY_INT, 8);
+        // SAFETY: d は生存している辞書。
+        unsafe {
+            for i in 0..100i64 {
+                wys_dict_push(d, i);
+            }
+            for i in 0..90i64 {
+                wys_dict_erase(d, wys_dict_find(d, i));
+            }
+            assert_eq!(wys_dict_len(d), 10);
+            assert_eq!(wys_dict_find(d, 5), -1);
+            assert_eq!(wys_dict_iter_next(d, 0, 10), 90);
+            for i in 100..1000i64 {
+                wys_dict_push(d, i);
+            }
+            assert_eq!(wys_dict_len(d), 910);
+            assert_eq!(wys_dict_key(d, wys_dict_iter_next(d, 0, 910)), 90);
+            for i in 90..1000i64 {
+                assert!(wys_dict_find(d, i) >= 0);
+            }
             wys_dict_free(d);
         }
         assert_eq!(LIVE.load(Ordering::Relaxed), before);

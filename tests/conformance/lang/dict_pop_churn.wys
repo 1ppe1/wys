@@ -1,0 +1,32 @@
+# 削除と追加を繰り返す（削除済みの場所は、表の伸長で詰め直される）。参照型のキーと値も解放され、生存オブジェクトは 0
+# expect-stdout: 10
+# expect-stdout: k1990
+def main() -> None:
+    d: dict[str, str] = {}
+    names: list[str] = []
+    for i in range(2000):
+        key = "k" + digits(i)
+        d[key] = "v" + digits(i)
+        names.append(key)
+        if i >= 10:
+            d.pop(names[i - 10])
+    print(len(d))
+    first = ""
+    for k in d:
+        if first == "":
+            first = k
+    print(first)
+
+def digits(n: int) -> str:
+    if n == 0:
+        return "0"
+    out = ""
+    m = n
+    while m > 0:
+        out = digit(m % 10) + out
+        m = m // 10
+    return out
+
+def digit(x: int) -> str:
+    ds = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+    return ds[x]
