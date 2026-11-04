@@ -20,3 +20,6 @@
 
 # Claude Code (local only)
 .claude/settings.local.json
+
+# Benchmark results (machine-specific; commit selectively)
+/benches/results/

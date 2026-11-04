@@ -7,6 +7,7 @@
 | [ai_native_language_requirements.md](ai_native_language_requirements.md) | Draft v0.1 | 要件定義書。全ての設計成果物の起点 |
 | [roadmap.md](roadmap.md) | 承認済み計画 | Phase 0〜3 のマイルストーン、決定順、直近タスク |
 | [spec/diagnostics-schema.json](spec/diagnostics-schema.json) | v0（草案） | 構造化診断JSONのスキーマ（DX-002, AC-005）。実装は `crates/wys_diagnostics` で、テストでスキーマ検証する |
+| [spec/grammar.ebnf](spec/grammar.ebnf) | v0.1 | 文法（PoC1 / M1 サブセット）とレイアウト規則 |
 | [spec/error-codes.md](spec/error-codes.md) | PoC1 | 診断のエラーコード一覧と実行時エラー |
 | [design/ir.md](design/ir.md) | 草案 | 共通IRの構造・値のルール・テキスト形式 |
 | [design/memory-model.md](design/memory-model.md) | 草案 | メモリモデル（ARC + Move）、保証範囲、Union の値表現 |
