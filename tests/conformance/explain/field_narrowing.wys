@@ -1,0 +1,11 @@
+# `wys explain` のスナップショット: フィールドの経路の絞り込み（ADR-0016）
+# expect-stdout: 2
+type P = {x: int | None}
+
+def inc(p: P) -> int:
+    if p.x is not None:
+        return p.x + 1
+    return 0
+
+def main() -> None:
+    print(inc(P(x=1)))

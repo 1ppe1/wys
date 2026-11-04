@@ -1,0 +1,10 @@
+# ループの本体で根が代入されるなら、入口でフィールドの絞り込みを捨てる
+# expect-error: E0301 9:19
+type P = {x: int | None}
+
+def main() -> None:
+    p = P(x=1)
+    if p.x is not None:
+        while True:
+            print(p.x + 1)
+            p = P(x=None)

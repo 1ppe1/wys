@@ -1,0 +1,25 @@
+# Generic 関数の `T | None` に `Unknown` を渡すと、`Unknown` の null は None として扱う（ADR-0016 論点 18）
+# expect-stdout: True
+# expect-stdout: False
+# expect-stdout: 0
+# expect-stdout: 5
+def is_missing[T](x: T | None) -> bool:
+    return x is None
+
+def unwrap_or[T](x: T | None, d: T) -> T:
+    if x is None:
+        return d
+    return x
+
+def show(u: Unknown) -> None:
+    match u:
+        case int():
+            print(u)
+        case _:
+            print("other")
+
+def main() -> None:
+    print(is_missing(parse_scalar("null")))
+    print(is_missing(parse_scalar("1")))
+    show(unwrap_or(parse_scalar("null"), parse_scalar("0")))
+    show(unwrap_or(parse_scalar("5"), parse_scalar("0")))

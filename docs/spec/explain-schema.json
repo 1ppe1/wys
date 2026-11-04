@@ -171,7 +171,7 @@
           }
         },
         "narrowing": {
-          "description": "変数の参照のうち、その地点の型が宣言型と異なる（絞り込まれている）もの。位置の順。",
+          "description": "変数やフィールドの経路の参照のうち、その地点の型が宣言型と異なる（絞り込まれている）もの。位置の順。",
           "type": "array",
           "items": {
             "type": "object",
@@ -185,7 +185,8 @@
             "properties": {
               "variable": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "絞り込まれた変数、またはレコードのフィールドの経路（`p.x`、`a.b.c`。ADR-0016）。"
               },
               "span": {
                 "$ref": "#/$defs/span"

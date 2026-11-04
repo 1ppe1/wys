@@ -1,0 +1,6 @@
+# 添字の値は絞り込まない（可変な場所。ADR-0016 論点 1）。ローカル変数に取り出してから検査する
+# expect-error: E0301 6:15
+def main() -> None:
+    xs: list[int | None] = [1]
+    if xs[0] is not None:
+        print(xs[0] + 1)
