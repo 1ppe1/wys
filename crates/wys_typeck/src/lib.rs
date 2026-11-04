@@ -1732,6 +1732,77 @@ impl<'a> FnCk<'a> {
         }
     }
 
+    /// `operand?`（ADR-0013）: 被演算子は `Result`（E1010）、囲む関数は `Result` を返す（E1011）、
+    /// 被演算子のエラー型は宣言されたエラー型に収まる（E1012）。式の型は成功時の型。
+    fn try_expr(&mut self, inner: &Expr, span: Span, env: &Env) -> Ty {
+        let t = self.expr(inner, env);
+        let Ty::Result(r) = t else {
+            if t != Ty::Error {
+                let msg = format!(
+                    "`?` can only be applied to a `Result`, but this value has type `{}`",
+                    self.cx.name(t)
+                );
+                let d = Diagnostic::error("E1010", msg, span).with_cause(
+                    "`?` propagates the `Err` of a `Result`; it is not used for `None` (ADR-0006)",
+                );
+                let d = if self.cx.types.contains_none(t) {
+                    d.with_hint("check for `None` with `if x is None:` instead")
+                } else {
+                    d.with_hint("remove the `?`")
+                };
+                self.cx.diags.push(d);
+            }
+            return Ty::Error;
+        };
+        let (ok, err) = self.cx.types.result_args(r);
+        match self.ret {
+            Ty::Result(fr) => {
+                let (_, ferr) = self.cx.types.result_args(fr);
+                if !self.cx.types.fits(err, ferr) {
+                    let missing: Vec<String> = self
+                        .cx
+                        .types
+                        .members(err)
+                        .into_iter()
+                        .filter(|m| !self.cx.types.fits(*m, ferr))
+                        .map(|m| format!("`{}`", self.cx.name(m)))
+                        .collect();
+                    let msg = format!(
+                        "`?` cannot propagate the error type `{}`: the function's error type is `{}`",
+                        self.cx.name(err),
+                        self.cx.name(ferr)
+                    );
+                    let union = self.cx.types.union([ferr, err]);
+                    self.cx.diags.push(
+                        Diagnostic::error("E1012", msg, span)
+                            .with_cause(format!(
+                                "{} {} not part of the declared error type",
+                                missing.join(", "),
+                                if missing.len() == 1 { "is" } else { "are" }
+                            ))
+                            .with_hint(format!(
+                                "widen the declared error type, e.g. `Result[..., {}]`, or handle the error with `match`",
+                                self.cx.name(union)
+                            )),
+                    );
+                }
+            }
+            Ty::Error => {}
+            other => {
+                let msg = format!(
+                    "`?` can only be used in a function that returns a `Result`, but this function returns `{}`",
+                    self.cx.name(other)
+                );
+                self.cx.diags.push(
+                    Diagnostic::error("E1011", msg, span)
+                        .with_cause("`?` returns the `Err` from the enclosing function (ADR-0013)")
+                        .with_hint("handle the error with `match` and `case Err(e):`, or change the return type to a `Result`"),
+                );
+            }
+        }
+        ok
+    }
+
     /// `Ok(v)` / `Err(e)`: もう一方の型引数は手掛かり（期待型）から決める（ADR-0013）。
     /// 手掛かりが `Result` か、`Result` を1つだけ含む Union（`Result[int, str] | None`）でなければ E1001。
     fn result_ctor(
@@ -2361,6 +2432,7 @@ impl<'a> FnCk<'a> {
                 }
             }
             ExprKind::Field { base, name } => self.field(base, name, env),
+            ExprKind::Try(inner) => self.try_expr(inner, e.span, env),
             ExprKind::Is { .. } => unreachable!("handled by cond"),
         }
     }

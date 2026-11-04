@@ -1,0 +1,28 @@
+# Generic 関数の中の `?`（型引数ごとに単相化される）
+# expect-stdout: 2
+# expect-stdout: bad
+# expect-stdout: 2
+def pair[T](a: Result[T, str], b: Result[T, str]) -> Result[list[T], str]:
+    x = a?
+    y = b?
+    return Ok([x, y])
+
+def main() -> None:
+    i1: Result[int, str] = Ok(1)
+    i2: Result[int, str] = Err("bad")
+    s1: Result[str, str] = Ok("s")
+    match pair(i1, i1):
+        case Ok(xs):
+            print(len(xs))
+        case Err(e):
+            print(e)
+    match pair(i1, i2):
+        case Ok(xs):
+            print(len(xs))
+        case Err(e):
+            print(e)
+    match pair(s1, s1):
+        case Ok(xs):
+            print(len(xs))
+        case Err(e):
+            print(e)

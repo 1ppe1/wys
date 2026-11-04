@@ -1,0 +1,7 @@
+# expect-error: E1010 3:9
+def f(x: int | None) -> Result[int, str]:
+    v = x?
+    return Ok(v)
+
+def main() -> None:
+    f(1)

@@ -201,6 +201,8 @@ pub enum ExprKind {
         base: Box<Expr>,
         index: Box<Expr>,
     },
+    /// `operand?`: `Err` なら関数からそのまま返し、`Ok` なら中身（ADR-0013）
+    Try(Box<Expr>),
     /// `base.name`（レコードのフィールド参照）
     Field {
         base: Box<Expr>,

@@ -1,0 +1,7 @@
+# expect-error: E1011 6:9
+def f() -> Result[int, str]:
+    return Ok(1)
+
+def main() -> None:
+    x = f()?
+    print(x)

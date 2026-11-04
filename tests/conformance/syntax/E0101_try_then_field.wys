@@ -1,0 +1,10 @@
+# expect-error: E0101 6:13
+def f() -> Result[int, str]:
+    return Ok(1)
+
+def g() -> Result[int, str]:
+    x = f()?[0]
+    return Ok(x)
+
+def main() -> None:
+    g()

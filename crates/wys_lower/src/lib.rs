@@ -762,6 +762,81 @@ impl<'s, 't> FnLower<'s, 't> {
         self.switch_to(join);
     }
 
+    /// `operand?`: 値をローカルに置き、`Err` なら中身を関数の `Result` の `Err` に詰め直して返す。
+    /// `Ok` なら次のブロックで中身を取り出す（一時値はブロック内でのみ使えるので、ローカルから読み直す）。
+    fn try_expr(&mut self, inner: &ast::Expr) -> Option<TempId> {
+        let TTy::Result(r) = self.ty(inner) else {
+            panic!("`?` on a non-Result passed type checking")
+        };
+        let TTy::Result(fr) = self.ret else {
+            panic!("`?` in a function that does not return a Result passed type checking")
+        };
+        let (ok, err) = self.sh.types.result_args(r);
+        let (_, ferr) = self.sh.types.result_args(fr);
+        let v = self.expr(inner).expect("Result values exist");
+        let union_ty = self.temps[v.0 as usize];
+        let slot = self.hidden_local(union_ty);
+        self.emit(Inst::Store { dst: slot, src: v });
+        let val = self.temp(union_ty);
+        self.emit(Inst::Load {
+            dst: val,
+            src: slot,
+        });
+        let is_err = self.temp(Ty::Bool);
+        self.emit(Inst::UnionIs {
+            dst: is_err,
+            src: val,
+            variant: 1,
+        });
+        let (err_b, ok_b) = (self.new_block(), self.new_block());
+        self.terminate(Terminator::Branch {
+            cond: is_err,
+            then_block: err_b,
+            else_block: ok_b,
+        });
+        // Err: 関数の Result の Err として返す
+        self.switch_to(err_b);
+        let e = self.sh.ir_ty(err).map(|ety| {
+            let val = self.temp(union_ty);
+            self.emit(Inst::Load {
+                dst: val,
+                src: slot,
+            });
+            let p = self.temp(ety);
+            self.emit(Inst::UnionPayload {
+                dst: p,
+                src: val,
+                variant: 1,
+            });
+            p
+        });
+        let e = self.coerce(e, err, ferr);
+        let fu = self.sh.ir_result(fr);
+        let out = self.temp(Ty::Union(fu));
+        self.emit(Inst::MakeUnion {
+            dst: out,
+            union: fu,
+            variant: 1,
+            payload: e,
+        });
+        self.terminate(Terminator::Return(Some(out)));
+        // Ok: 中身を取り出す
+        self.switch_to(ok_b);
+        let oty = self.sh.ir_ty(ok)?;
+        let val = self.temp(union_ty);
+        self.emit(Inst::Load {
+            dst: val,
+            src: slot,
+        });
+        let p = self.temp(oty);
+        self.emit(Inst::UnionPayload {
+            dst: p,
+            src: val,
+            variant: 0,
+        });
+        Some(p)
+    }
+
     /// `Result` に対する `case`: タグで判定し、束縛変数は `case` の本体だけで使えるローカルにする（ADR-0013）。
     /// 中身は借用で取り出し、束縛のスロットに格納する（ARC パスが retain し、スロットが +1 で所有する）。
     fn result_arms(
@@ -928,6 +1003,7 @@ impl<'s, 't> FnLower<'s, 't> {
                 })
             }
             ExprKind::Binary { op, lhs, rhs } => Some(self.binary(*op, lhs, rhs)),
+            ExprKind::Try(inner) => self.try_expr(inner),
             ExprKind::Field { base, name } => {
                 let v = self.expr(base).expect("records have values");
                 let TTy::Record(r) = self.ty(base) else {

@@ -1,0 +1,34 @@
+# エラー型が宣言されたエラー型の構成要素なら、`?` で伝搬できる（str と int → str | int）
+# expect-stdout: 6
+# expect-stdout: str negative
+# expect-stdout: int 7
+def a(n: int) -> Result[int, str]:
+    if n < 0:
+        return Err("negative")
+    return Ok(n * 2)
+
+def b(n: int) -> Result[int, int]:
+    if n > 10:
+        return Err(7)
+    return Ok(n)
+
+def both(n: int) -> Result[int, str | int]:
+    x = a(n)?
+    y = b(x)?
+    return Ok(y)
+
+def show(r: Result[int, str | int]) -> None:
+    match r:
+        case Ok(v):
+            print(v)
+        case Err(e):
+            match e:
+                case str():
+                    print("str " + e)
+                case int():
+                    print("int " + "7")
+
+def main() -> None:
+    show(both(3))
+    show(both(-1))
+    show(both(6))

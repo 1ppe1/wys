@@ -137,7 +137,10 @@ fn starts_operand(prev: Option<&TokenKind>) -> bool {
 /// `prev` と `cur` の間に空白を入れるか。`depth` は括弧の深さ（括弧の中の `=` はキーワード引数）。
 fn space_between(prev: &TokenKind, cur: &TokenKind, depth: usize, prev_unary_minus: bool) -> bool {
     use TokenKind::*;
-    if matches!(cur, RParen | RBracket | RBrace | Comma | Colon | Dot) {
+    if matches!(
+        cur,
+        RParen | RBracket | RBrace | Comma | Colon | Dot | Question
+    ) {
         return false;
     }
     if matches!(prev, LParen | LBracket | LBrace | Dot) {

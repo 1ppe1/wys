@@ -1,0 +1,48 @@
+# `?` は Err をそのまま呼び出し元に返し、Ok なら中身を取り出す（ADR-0013）
+# expect-stdout: 3
+# expect-stdout: not a digit: x
+# expect-stdout: not a digit: y
+# expect-stdout: checked
+# expect-stdout: not a digit: z
+# expect-stdout: -2
+def parse_digit(s: str) -> Result[int, str]:
+    if s == "1":
+        return Ok(1)
+    if s == "2":
+        return Ok(2)
+    return Err("not a digit: " + s)
+
+def sum2(a: str, b: str) -> Result[int, str]:
+    x = parse_digit(a)?
+    y = parse_digit(b)?
+    return Ok(x + y)
+
+def check(s: str) -> Result[None, str]:
+    parse_digit(s)?
+    return Ok(None)
+
+def neg(s: str) -> Result[int, str]:
+    return Ok(-parse_digit(s)?)
+
+def show(r: Result[int, str]) -> None:
+    match r:
+        case Ok(v):
+            print(v)
+        case Err(e):
+            print(e)
+
+def main() -> None:
+    show(sum2("1", "2"))
+    show(sum2("1", "x"))
+    show(sum2("y", "2"))
+    match check("1"):
+        case Ok(_):
+            print("checked")
+        case Err(e):
+            print(e)
+    match check("z"):
+        case Ok(_):
+            print("checked")
+        case Err(e):
+            print(e)
+    show(neg("2"))
