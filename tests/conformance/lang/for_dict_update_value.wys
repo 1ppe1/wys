@@ -1,0 +1,9 @@
+# 反復中に既存のキーの値を変えるのはよい（キーの数は変わらない）
+# expect-stdout: 2
+# expect-stdout: 4
+def main() -> None:
+    d = {"a": 1, "b": 2}
+    for k in d:
+        d[k] = d[k] * 2
+    for k in d:
+        print(d[k])

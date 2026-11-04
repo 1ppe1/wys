@@ -39,7 +39,7 @@ impl DropInfo {
     fn needs_drop(&mut self, p: &Program, t: Ty) -> bool {
         match t {
             Ty::Int | Ty::Bool => false,
-            Ty::Str | Ty::List(_) => true,
+            Ty::Str | Ty::List(_) | Ty::Dict(_) => true,
             Ty::Union(u) => {
                 if let Some(v) = self.unions[u.0 as usize] {
                     return v;
@@ -69,7 +69,7 @@ impl DropInfo {
     pub fn get(&self, t: Ty) -> bool {
         match t {
             Ty::Int | Ty::Bool => false,
-            Ty::Str | Ty::List(_) => true,
+            Ty::Str | Ty::List(_) | Ty::Dict(_) => true,
             Ty::Union(u) => self.unions[u.0 as usize].unwrap_or(false),
             Ty::Record(r) => self.records[r.0 as usize].unwrap_or(false),
         }
@@ -155,7 +155,24 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                     consume(*value, &mut out, &mut own, &temps);
                     out.push(inst);
                 }
-                Inst::ListLen { .. } => out.push(inst),
+                Inst::ListLen { .. }
+                | Inst::DictLen { .. }
+                | Inst::DictContains { .. }
+                | Inst::DictIterNext { .. } => out.push(inst),
+                Inst::DictNew {
+                    dst, keys, vals, ..
+                } => {
+                    for it in keys.iter().chain(vals).copied().collect::<Vec<_>>() {
+                        consume(it, &mut out, &mut own, &temps);
+                    }
+                    own.insert(*dst, (Own::Owned, false));
+                    out.push(inst);
+                }
+                Inst::DictSet { key, value, .. } => {
+                    consume(*key, &mut out, &mut own, &temps);
+                    consume(*value, &mut out, &mut own, &temps);
+                    out.push(inst);
+                }
                 Inst::UnionPayload { dst, .. } | Inst::Field { dst, .. } => {
                     own.insert(*dst, (Own::Borrowed, false));
                     out.push(inst);
@@ -163,7 +180,9 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                 // 借用の安全条件（memory-model 2.2）: リストの要素は可変な場所なので、読んだ値をすぐに保持する。
                 // 値を使っている間にリストが書き換えられても（`xs[0] + f(xs)` の `f` が `xs[0]` を置き換えるなど）解放されない。
                 // 使われなければブロックの最後で release する（冗長な組の除去は M3b の Move 最適化で行う）
-                Inst::ListGet { dst, .. } => {
+                Inst::ListGet { dst, .. }
+                | Inst::DictGet { dst, .. }
+                | Inst::DictKeyAt { dst, .. } => {
                     let d = *dst;
                     out.push(inst);
                     if drops.get(temps[d.0 as usize]) {
@@ -292,6 +311,18 @@ pub fn verify(p: &Program) -> Result<(), String> {
                     Inst::ListSet { value, .. } | Inst::ListPush { value, .. } => {
                         add(*value, -1, &mut bal)
                     }
+                    Inst::DictNew {
+                        dst, keys, vals, ..
+                    } => {
+                        for it in keys.iter().chain(vals) {
+                            add(*it, -1, &mut bal);
+                        }
+                        add(*dst, 1, &mut bal);
+                    }
+                    Inst::DictSet { key, value, .. } => {
+                        add(*key, -1, &mut bal);
+                        add(*value, -1, &mut bal);
+                    }
                     Inst::Retain { src } => add(*src, 1, &mut bal),
                     Inst::Release { src } if !loaded.contains(src) => add(*src, -1, &mut bal),
                     Inst::Store { dst, src } if drops.get(f.locals[dst.0 as usize]) => {
@@ -334,6 +365,7 @@ mod tests {
             unions: vec![],
             records: vec![],
             lists: vec![],
+            dicts: vec![],
             entry: FuncId(0),
             funcs: vec![Function {
                 name: "f".into(),

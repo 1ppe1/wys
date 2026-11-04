@@ -1,0 +1,37 @@
+# 多くのキー（伸長と再ハッシュをまたぐ）。挿入順は保たれ、上書きは順序を変えない
+# expect-stdout: 1000
+# expect-stdout: 499500
+# expect-stdout: 0
+# expect-stdout: 999
+# expect-stdout: 200
+# expect-stdout: k
+# expect-stdout: 5
+def main() -> None:
+    d: dict[int, int] = {}
+    for i in range(1000):
+        d[i * 8] = i
+    print(len(d))
+    total = 0
+    first = -1
+    last = -1
+    for k in d:
+        total = total + d[k]
+        if first == -1:
+            first = d[k]
+        last = d[k]
+    print(total)
+    print(first)
+    print(last)
+    s: dict[str, int] = {}
+    w = "k"
+    for i in range(200):
+        s[w] = i
+        w = w + "1"
+    s["k"] = 5
+    print(len(s))
+    first_key = ""
+    for k2 in s:
+        if first_key == "":
+            first_key = k2
+    print(first_key)
+    print(s["k"])

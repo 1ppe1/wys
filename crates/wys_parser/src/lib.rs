@@ -734,6 +734,8 @@ impl Parser<'_> {
             TokenKind::Le => BinOp::Le,
             TokenKind::Gt => BinOp::Gt,
             TokenKind::Ge => BinOp::Ge,
+            TokenKind::In => BinOp::In,
+            TokenKind::Not if matches!(self.peek_at(1), TokenKind::In) => BinOp::NotIn,
             _ => return None,
         })
     }
@@ -768,6 +770,9 @@ impl Parser<'_> {
             return Ok(lhs);
         };
         self.bump();
+        if op == BinOp::NotIn {
+            self.bump(); // `not in` は2語
+        }
         let rhs = self.additive()?;
         if self.cmp_op().is_some() || self.at(&TokenKind::Is) {
             self.diags.push(
@@ -976,6 +981,21 @@ impl Parser<'_> {
                 }
                 self.expect(&TokenKind::RBracket, "`,` or `]`")?;
                 ExprKind::List(items)
+            }
+            TokenKind::LBrace => {
+                self.bump();
+                let mut entries = Vec::new();
+                while !self.at(&TokenKind::RBrace) {
+                    let k = self.expr()?;
+                    self.expect(&TokenKind::Colon, "`:` between a key and its value")?;
+                    let v = self.expr()?;
+                    entries.push((k, v));
+                    if !self.eat(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&TokenKind::RBrace, "`,` or `}`")?;
+                ExprKind::Dict(entries)
             }
             TokenKind::LParen => {
                 self.bump();

@@ -1,0 +1,14 @@
+# キーは int / bool / str。負の数や大きな整数もキーにできる
+# expect-stdout: yes
+# expect-stdout: no
+# expect-stdout: neg
+# expect-stdout: big
+# expect-stdout: 3
+def main() -> None:
+    b = {True: "yes", False: "no"}
+    print(b[True])
+    print(b[False])
+    n = {-1: "neg", 9223372036854775807: "big", 0: "zero"}
+    print(n[-1])
+    print(n[9223372036854775807])
+    print(len(n))

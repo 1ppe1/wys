@@ -1,0 +1,4 @@
+# expect-error: E0909 4:16
+def main() -> None:
+    xs = [1, 2]
+    print(1 in xs)

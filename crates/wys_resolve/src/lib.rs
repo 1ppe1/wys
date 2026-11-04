@@ -440,6 +440,12 @@ impl Resolver<'_> {
                     self.expr(i);
                 }
             }
+            ExprKind::Dict(entries) => {
+                for (k, v) in entries {
+                    self.expr(k);
+                    self.expr(v);
+                }
+            }
             ExprKind::Index { base, index } => {
                 self.expr(base);
                 self.expr(index);

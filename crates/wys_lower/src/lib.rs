@@ -23,6 +23,8 @@ struct Shared<'t> {
     lists: Vec<Ty>,
     /// `Result[T, E]` → 構成要素が2つの Union（0 = `Ok`、1 = `Err`。ADR-0013）
     result_ids: HashMap<wys_typeck::ResultId, UnionId>,
+    dict_ids: HashMap<wys_typeck::DictId, DictId>,
+    dicts: Vec<(Ty, Ty)>,
     strings: Vec<String>,
     func_index: HashMap<String, usize>,
     /// (関数の番号, 型引数) → IR の関数。Generic でない関数は型引数が空。
@@ -49,6 +51,7 @@ impl Shared<'_> {
             TTy::Record(r) => Some(Ty::Record(self.ir_record(r))),
             TTy::List(lst) => Some(Ty::List(self.ir_list(lst))),
             TTy::Result(r) => Some(Ty::Union(self.ir_result(r))),
+            TTy::Dict(d) => Some(Ty::Dict(self.ir_dict(d))),
             TTy::Param(_) => {
                 panic!("type parameter reached code generation; monomorphization missed it")
             }
@@ -85,6 +88,11 @@ impl Shared<'_> {
                 let e = self.types.list_elem(lst);
                 let e = self.norm(e);
                 self.types.list(e)
+            }
+            TTy::Dict(d) if self.has_unknown(t) => {
+                let (k, v) = self.types.dict_args(d);
+                let v = self.norm(v);
+                self.types.dict(k, v)
             }
             TTy::Result(r) if self.has_unknown(t) => {
                 let (ok, err) = self.types.result_args(r);
@@ -136,6 +144,19 @@ impl Shared<'_> {
         let id = UnionId(self.unions.len() as u32);
         self.unions.push(members);
         self.result_ids.insert(r, id);
+        id
+    }
+
+    fn ir_dict(&mut self, d: wys_typeck::DictId) -> DictId {
+        if let Some(&id) = self.dict_ids.get(&d) {
+            return id;
+        }
+        let (k, v) = self.types.dict_args(d);
+        let k = self.ir_ty(k).expect("dict keys are int, bool or str");
+        let v = self.ir_ty(v).expect("dict values are never None");
+        let id = DictId(self.dicts.len() as u32);
+        self.dicts.push((k, v));
+        self.dict_ids.insert(d, id);
         id
     }
 
@@ -245,6 +266,8 @@ pub fn lower_with(
         records: Vec::new(),
         list_ids: HashMap::new(),
         result_ids: HashMap::new(),
+        dict_ids: HashMap::new(),
+        dicts: Vec::new(),
         lists: Vec::new(),
         strings: Vec::new(),
         func_index: module
@@ -298,6 +321,7 @@ pub fn lower_with(
         unions: sh.unions,
         records: sh.records,
         lists: sh.lists,
+        dicts: sh.dicts,
         funcs,
         entry,
     })
@@ -638,6 +662,27 @@ impl<'s, 't> FnLower<'s, 't> {
                 let ExprKind::Index { base, index } = &target.kind else {
                     unreachable!("IndexAssign always has an index target")
                 };
+                if let TTy::Dict(d) = self.ty(base) {
+                    // d[k] = v（ADR-0015）
+                    let (kt, vt) = self.sh.types.dict_args(d);
+                    let b = self.expr(base).expect("dicts have values");
+                    let bb = self.cur;
+                    let k = self.expr(index);
+                    let it = self.ty(index);
+                    let k = self.coerce(k, it, kt).expect("keys have values");
+                    let kb = self.cur;
+                    let v = self.expr(value);
+                    let valt = self.ty(value);
+                    let v = self.coerce(v, valt, vt).expect("dict values have values");
+                    let b = self.materialize(b, bb);
+                    let k = self.materialize(k, kb);
+                    self.emit(Inst::DictSet {
+                        dict: b,
+                        key: k,
+                        value: v,
+                    });
+                    return;
+                }
                 let TTy::List(l) = self.ty(base) else {
                     panic!("index assignment on a non-list passed type checking")
                 };
@@ -1038,26 +1083,39 @@ impl<'s, 't> FnLower<'s, 't> {
                     self.emit(Inst::ListLen { dst: d, src: s });
                     return Some(d);
                 }
+                if matches!(at, TTy::Dict(_)) {
+                    let d = self.temp(Ty::Int);
+                    self.emit(Inst::DictLen { dst: d, src: s });
+                    return Some(d);
+                }
                 Some(self.builtin(Builtin::StrLen, vec![s]))
+            }
+            ExprKind::Call { callee, args, .. }
+                if callee.name.ends_with(".get")
+                    && callee
+                        .name
+                        .rsplit_once('.')
+                        .is_some_and(|(r, _)| self.local_ids.contains_key(r)) =>
+            {
+                let (recv, _) = callee.name.rsplit_once('.').expect("method call");
+                Some(self.dict_get(recv, &args[0], e))
             }
             ExprKind::Call { callee, args, .. } if callee.name.ends_with(".append") => {
                 // xs.append(v)（受け手はローカル変数、型検査で確認済み）
                 let (recv, _) = callee.name.rsplit_once('.').expect("method call");
-                let slot = self.local_ids[recv];
-                let lt = self.locals[slot.0 as usize];
-                let list = self.temp(lt);
-                self.emit(Inst::Load {
-                    dst: list,
-                    src: slot,
-                });
-                let TTy::List(l) = self.local_decl[recv] else {
-                    panic!("append on a non-list passed type checking")
+                let (list, rt, direct) = self.receiver(recv, |t| matches!(t, TTy::List(_)));
+                let lb = self.cur;
+                let TTy::List(l) = rt else {
+                    unreachable!("receiver returns the requested type")
                 };
                 let elem = self.sh.types.list_elem(l);
                 let v = self.expr(&args[0]);
                 let vt = self.ty(&args[0]);
                 let v = self.coerce(v, vt, elem).expect("list elements have values");
-                let list = self.materialize_from_local(list, slot);
+                let list = match direct {
+                    Some(slot) => self.materialize_from_local(list, slot),
+                    None => self.materialize(list, lb),
+                };
                 self.emit(Inst::ListPush { list, value: v });
                 None
             }
@@ -1085,6 +1143,61 @@ impl<'s, 't> FnLower<'s, 't> {
                     items: vals,
                 });
                 Some(d)
+            }
+            ExprKind::Dict(entries) => {
+                let TTy::Dict(d) = self.ty(e) else {
+                    panic!("dict literal without a dict type")
+                };
+                let (kt, vt) = self.sh.types.dict_args(d);
+                let mut evaluated = Vec::new();
+                for (k, v) in entries {
+                    let kv = self.expr(k);
+                    let ktt = self.ty(k);
+                    let kv = self.coerce(kv, ktt, kt).expect("keys have values");
+                    evaluated.push((kv, self.cur));
+                    let vv = self.expr(v);
+                    let vtt = self.ty(v);
+                    let vv = self.coerce(vv, vtt, vt).expect("dict values have values");
+                    evaluated.push((vv, self.cur));
+                }
+                let vals: Vec<TempId> = evaluated
+                    .into_iter()
+                    .map(|(t, b)| self.materialize(t, b))
+                    .collect();
+                let (keys, vals): (Vec<TempId>, Vec<TempId>) = (
+                    vals.iter().step_by(2).copied().collect(),
+                    vals.iter().skip(1).step_by(2).copied().collect(),
+                );
+                let id = self.sh.ir_dict(d);
+                let dst = self.temp(Ty::Dict(id));
+                self.emit(Inst::DictNew {
+                    dst,
+                    dict: id,
+                    keys,
+                    vals,
+                });
+                Some(dst)
+            }
+            ExprKind::Index { base, index } if matches!(self.ty(base), TTy::Dict(_)) => {
+                let TTy::Dict(d) = self.ty(base) else {
+                    unreachable!("checked by the guard")
+                };
+                let (kt, _) = self.sh.types.dict_args(d);
+                let b = self.expr(base).expect("dicts have values");
+                let bb = self.cur;
+                let k = self.expr(index);
+                let it = self.ty(index);
+                let k = self.coerce(k, it, kt).expect("keys have values");
+                let b = self.materialize(b, bb);
+                let et = self.ty(e);
+                let ir = self.sh.ir_ty(et).expect("dict values are never None");
+                let dst = self.temp(ir);
+                self.emit(Inst::DictGet {
+                    dst,
+                    src: b,
+                    key: k,
+                });
+                Some(dst)
             }
             ExprKind::Index { base, index } => {
                 let b = self.expr(base).expect("lists have values");
@@ -1234,6 +1347,9 @@ impl<'s, 't> FnLower<'s, 't> {
     /// `for var in iter:`。`range(a, b)` は整数で数え、`list[T]` は添字で要素を順に取り出す（M3 T4a）。
     /// 反復対象のリストと位置は隠しローカルに置く（ループの各ブロックで読み直すため）。
     fn for_stmt(&mut self, var: &ast::Ident, iter: &ast::Expr, body: &[ast::Stmt]) {
+        if matches!(self.ty(iter), TTy::Dict(_)) {
+            return self.dict_for(var, iter, body);
+        }
         let var_slot = self.local_ids[&var.name];
         let var_decl = self.local_decl[&var.name];
         let pos = self.hidden_local(Ty::Int);
@@ -1342,6 +1458,207 @@ impl<'s, 't> FnLower<'s, 't> {
             dst: next,
             op: BinOp::Add,
             lhs: p,
+            rhs: one,
+        });
+        self.emit(Inst::Store {
+            dst: pos,
+            src: next,
+        });
+        self.stmts(body);
+        if self.blocks[self.cur].term.is_none() {
+            self.terminate(Terminator::Jump(head));
+        }
+        self.switch_to(exit);
+    }
+
+    /// メソッド呼び出しの受け手（ローカル変数）の値。宣言が Union なら、型検査が絞り込んだ構成要素（`want` を満たすもの）を取り出す。
+    /// 3つ目は、値をローカルからそのまま読んだ場合のスロット。
+    fn receiver(
+        &mut self,
+        recv: &str,
+        want: impl Fn(TTy) -> bool,
+    ) -> (TempId, TTy, Option<LocalId>) {
+        let slot = self.local_ids[recv];
+        let decl = self.local_decl[recv];
+        let v = self.temp(self.locals[slot.0 as usize]);
+        self.emit(Inst::Load { dst: v, src: slot });
+        if want(decl) {
+            return (v, decl, Some(slot));
+        }
+        let TTy::Union(u) = decl else {
+            panic!("method receiver of type {decl:?} passed type checking")
+        };
+        let m = self
+            .members(u)
+            .into_iter()
+            .find(|m| want(*m))
+            .expect("type checking narrowed the receiver");
+        let p = self.payload(v, u, m).expect("containers have values");
+        (p, m, None)
+    }
+
+    /// `d.get(k)`: キーがあれば値、なければ `None` の `V | None`（ADR-0015）。
+    fn dict_get(&mut self, recv: &str, key: &ast::Expr, e: &ast::Expr) -> TempId {
+        let (u, out) = self.result_union(e);
+        let (dv, dt, _) = self.receiver(recv, |t| matches!(t, TTy::Dict(_)));
+        let TTy::Dict(d) = dt else {
+            unreachable!("receiver returns the requested type")
+        };
+        let (kt, vt) = self.sh.types.dict_args(d);
+        let dty = self.temp_ty(dv);
+        let d_slot = self.hidden_local(dty);
+        self.emit(Inst::Store {
+            dst: d_slot,
+            src: dv,
+        });
+        let k = self.expr(key);
+        let it = self.ty(key);
+        let k = self.coerce(k, it, kt).expect("keys have values");
+        let kty = self.temp_ty(k);
+        let k_slot = self.hidden_local(kty);
+        self.emit(Inst::Store {
+            dst: k_slot,
+            src: k,
+        });
+        let (dl, kl) = (self.temp(dty), self.temp(kty));
+        self.emit(Inst::Load {
+            dst: dl,
+            src: d_slot,
+        });
+        self.emit(Inst::Load {
+            dst: kl,
+            src: k_slot,
+        });
+        let c = self.temp(Ty::Bool);
+        self.emit(Inst::DictContains {
+            dst: c,
+            src: dl,
+            key: kl,
+        });
+        let (some_b, none_b, join) = (self.new_block(), self.new_block(), self.new_block());
+        self.terminate(Terminator::Branch {
+            cond: c,
+            then_block: some_b,
+            else_block: none_b,
+        });
+        self.switch_to(some_b);
+        let (dl, kl) = (self.temp(dty), self.temp(kty));
+        self.emit(Inst::Load {
+            dst: dl,
+            src: d_slot,
+        });
+        self.emit(Inst::Load {
+            dst: kl,
+            src: k_slot,
+        });
+        let vir = self.sh.ir_ty(vt).expect("dict values are never None");
+        let v = self.temp(vir);
+        self.emit(Inst::DictGet {
+            dst: v,
+            src: dl,
+            key: kl,
+        });
+        let ut = TTy::Union(u);
+        let w = self.coerce(Some(v), vt, ut).expect("unions have values");
+        self.emit(Inst::Store { dst: out, src: w });
+        self.terminate(Terminator::Jump(join));
+        self.switch_to(none_b);
+        let n = self.make_union(u, TTy::None, None);
+        self.emit(Inst::Store { dst: out, src: n });
+        self.terminate(Terminator::Jump(join));
+        self.switch_to(join);
+        let r = self.temp(Ty::Union(self.locals[out.0 as usize].union_id()));
+        self.emit(Inst::Load { dst: r, src: out });
+        r
+    }
+
+    /// `for k in d:` キーを挿入順に反復する。開始時のキーの数を覚えておき、変わればランタイムがパニックにする（ADR-0015）。
+    fn dict_for(&mut self, var: &ast::Ident, iter: &ast::Expr, body: &[ast::Stmt]) {
+        let var_slot = self.local_ids[&var.name];
+        let var_decl = self.local_decl[&var.name];
+        let TTy::Dict(d) = self.ty(iter) else {
+            unreachable!("checked by the caller")
+        };
+        let (kt, _) = self.sh.types.dict_args(d);
+        let dv = self.expr(iter).expect("dicts have values");
+        let dty = self.temp_ty(dv);
+        let d_slot = self.hidden_local(dty);
+        self.emit(Inst::Store {
+            dst: d_slot,
+            src: dv,
+        });
+        let (pos, len0, cur) = (
+            self.hidden_local(Ty::Int),
+            self.hidden_local(Ty::Int),
+            self.hidden_local(Ty::Int),
+        );
+        let dl = self.temp(dty);
+        self.emit(Inst::Load {
+            dst: dl,
+            src: d_slot,
+        });
+        let n = self.temp(Ty::Int);
+        self.emit(Inst::DictLen { dst: n, src: dl });
+        self.emit(Inst::Store { dst: len0, src: n });
+        let z = self.konst(Const::Int(0), Ty::Int);
+        self.emit(Inst::Store { dst: pos, src: z });
+        let (head, body_b, exit) = (self.new_block(), self.new_block(), self.new_block());
+        self.terminate(Terminator::Jump(head));
+        self.switch_to(head);
+        let (dl, p, l0) = (self.temp(dty), self.temp(Ty::Int), self.temp(Ty::Int));
+        self.emit(Inst::Load {
+            dst: dl,
+            src: d_slot,
+        });
+        self.emit(Inst::Load { dst: p, src: pos });
+        self.emit(Inst::Load { dst: l0, src: len0 });
+        let ent = self.temp(Ty::Int);
+        self.emit(Inst::DictIterNext {
+            dst: ent,
+            src: dl,
+            pos: p,
+            len0: l0,
+        });
+        self.emit(Inst::Store { dst: cur, src: ent });
+        let z = self.konst(Const::Int(0), Ty::Int);
+        let more = self.temp(Ty::Bool);
+        self.emit(Inst::Binary {
+            dst: more,
+            op: BinOp::Ge,
+            lhs: ent,
+            rhs: z,
+        });
+        self.terminate(Terminator::Branch {
+            cond: more,
+            then_block: body_b,
+            else_block: exit,
+        });
+        self.switch_to(body_b);
+        let (dl, c) = (self.temp(dty), self.temp(Ty::Int));
+        self.emit(Inst::Load {
+            dst: dl,
+            src: d_slot,
+        });
+        self.emit(Inst::Load { dst: c, src: cur });
+        let kir = self.sh.ir_ty(kt).expect("dict keys have values");
+        let k = self.temp(kir);
+        self.emit(Inst::DictKeyAt {
+            dst: k,
+            src: dl,
+            index: c,
+        });
+        let kv = self.coerce(Some(k), kt, var_decl);
+        self.emit(Inst::Store {
+            dst: var_slot,
+            src: kv.expect("loop variables have values"),
+        });
+        // 位置を先に進めてから本体を実行する（list の for と同じ）
+        let one = self.konst(Const::Int(1), Ty::Int);
+        let next = self.temp(Ty::Int);
+        self.emit(Inst::Binary {
+            dst: next,
+            op: BinOp::Add,
+            lhs: c,
             rhs: one,
         });
         self.emit(Inst::Store {
@@ -1778,6 +2095,31 @@ impl<'s, 't> FnLower<'s, 't> {
         if matches!(op, A::And | A::Or) {
             return self.short_circuit(op == A::And, lhs, rhs);
         }
+        if matches!(op, A::In | A::NotIn) {
+            // k in d（ADR-0015）: 左辺から評価する
+            let TTy::Dict(d) = self.ty(rhs) else {
+                panic!("`in` on a non-dict passed type checking")
+            };
+            let (kt, _) = self.sh.types.dict_args(d);
+            let k = self.expr(lhs);
+            let lt = self.ty(lhs);
+            let k = self.coerce(k, lt, kt).expect("keys have values");
+            let kb = self.cur;
+            let dv = self.expr(rhs).expect("dicts have values");
+            let k = self.materialize(k, kb);
+            let c = self.temp(Ty::Bool);
+            self.emit(Inst::DictContains {
+                dst: c,
+                src: dv,
+                key: k,
+            });
+            if op == A::NotIn {
+                let n = self.temp(Ty::Bool);
+                self.emit(Inst::Not { dst: n, src: c });
+                return n;
+            }
+            return c;
+        }
         let l = self.expr(lhs).expect("operands have values");
         let l_block = self.cur;
         let r = self.expr(rhs).expect("operands have values");
@@ -1809,7 +2151,7 @@ impl<'s, 't> FnLower<'s, 't> {
             A::Le => (BinOp::Le, Ty::Bool),
             A::Gt => (BinOp::Gt, Ty::Bool),
             A::Ge => (BinOp::Ge, Ty::Bool),
-            A::Div | A::And | A::Or => {
+            A::Div | A::And | A::Or | A::In | A::NotIn => {
                 unreachable!("rejected by the type checker or handled above")
             }
         };

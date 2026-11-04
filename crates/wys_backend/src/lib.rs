@@ -131,6 +131,15 @@ declare ptr @wys_list_push_slot(ptr, i64)
 declare ptr @wys_list_slot(ptr, i64, i64)
 declare i64 @wys_list_len(ptr)
 declare void @wys_list_free(ptr, i64)
+declare ptr @wys_dict_new(i64, i64)
+declare i64 @wys_dict_len(ptr)
+declare i64 @wys_dict_find(ptr, i64)
+declare i64 @wys_dict_push(ptr, i64)
+declare ptr @wys_dict_val(ptr, i64)
+declare i64 @wys_dict_key(ptr, i64)
+declare i64 @wys_dict_iter_next(ptr, i64, i64)
+declare void @wys_dict_key_missing(ptr, i64) noreturn
+declare void @wys_dict_free(ptr)
 declare void @wys_runtime_finish()
 declare ptr @wys_str_concat(ptr, ptr)
 declare zeroext i1 @wys_str_eq(ptr, ptr)
@@ -162,7 +171,7 @@ fn llty(t: Ty) -> String {
         Ty::Str => "ptr".into(),
         Ty::Union(u) => format!("%union.{}", u.0),
         Ty::Record(r) => format!("%record.{}", r.0),
-        Ty::List(_) => "ptr".into(),
+        Ty::List(_) | Ty::Dict(_) => "ptr".into(),
     }
 }
 
@@ -171,7 +180,7 @@ fn llty(t: Ty) -> String {
 fn words(p: &Program, t: Ty) -> u32 {
     match t {
         Ty::Int | Ty::Bool => 1,
-        Ty::Str | Ty::List(_) => 1,
+        Ty::Str | Ty::List(_) | Ty::Dict(_) => 1,
         Ty::Union(u) => 1 + union_payload_words(p, u),
         Ty::Record(r) => p.records[r.0 as usize]
             .iter()
@@ -282,6 +291,8 @@ fn glue(kind: &str, t: Ty) -> String {
         // リストの retain は参照カウントだけ。release は要素の解放とバッファの返却を含む型ごとの関数
         Ty::List(_) if kind == "retain" => "@wys_rc_retain".to_string(),
         Ty::List(l) => format!("@wys_release_list{}", l.0),
+        Ty::Dict(_) if kind == "retain" => "@wys_rc_retain".to_string(),
+        Ty::Dict(d) => format!("@wys_release_dict{}", d.0),
         Ty::Union(u) => format!("@wys_{kind}_u{}", u.0),
         Ty::Record(r) => format!("@wys_{kind}_r{}", r.0),
         Ty::Int | Ty::Bool => unreachable!("scalars have no reference counts"),
@@ -295,7 +306,100 @@ fn elem_size(p: &Program, t: Ty) -> u32 {
     words(p, t) * 8
 }
 
+/// 辞書のキーの種類（ランタイムの `KEY_INT` / `KEY_BOOL` / `KEY_STR`）。
+fn dict_key_kind(k: Ty) -> u32 {
+    match k {
+        Ty::Int => 0,
+        Ty::Bool => 1,
+        Ty::Str => 2,
+        other => unreachable!("dict keys are int, bool or str, not {other:?}"),
+    }
+}
+
+/// キーの値をランタイムに渡す i64 1語にする命令（`{dst} = ...`）。
+fn key_to_raw(k: Ty, dst: &str, src: &str) -> String {
+    match k {
+        Ty::Int => format!("  {dst} = add i64 {src}, 0"),
+        Ty::Bool => format!("  {dst} = zext i1 {src} to i64"),
+        Ty::Str => format!("  {dst} = ptrtoint ptr {src} to i64"),
+        other => unreachable!("dict keys are int, bool or str, not {other:?}"),
+    }
+}
+
+/// ランタイムから受け取った i64 1語をキーの値にする命令。
+fn raw_to_key(k: Ty, dst: &str, src: &str) -> String {
+    match k {
+        Ty::Int => format!("  {dst} = add i64 {src}, 0"),
+        Ty::Bool => format!("  {dst} = icmp ne i64 {src}, 0"),
+        Ty::Str => format!("  {dst} = inttoptr i64 {src} to ptr"),
+        other => unreachable!("dict keys are int, bool or str, not {other:?}"),
+    }
+}
+
+/// 辞書の型ごとの関数（ADR-0015）: 追加・置き換え（`set`）、読み出し（`get`）、release。
+/// キーと値の参照カウントの操作は、型を知っている生成コードが行う。
+fn emit_dict_glue(out: &mut String, p: &Program, drops: &DropInfo) {
+    for (i, &(k, v)) in p.dicts.iter().enumerate() {
+        let (kt, vt) = (llty(k), llty(v));
+        let key_drop = drops.get(k);
+        let val_drop = drops.get(v);
+        // set: 既存のキーなら値を置き換えて古い値と新しいキーを release、なければ追加する
+        let _ = writeln!(
+            out,
+            "\ndefine private void @wys_dict_set{i}(ptr %d, {kt} %k, {vt} %v) {{\nentry:\n{}\n  %e = call i64 @wys_dict_find(ptr %d, i64 %raw)\n  %found = icmp sge i64 %e, 0\n  br i1 %found, label %replace, label %insert\nreplace:\n  %s = call ptr @wys_dict_val(ptr %d, i64 %e)",
+            key_to_raw(k, "%raw", "%k")
+        );
+        if val_drop {
+            let _ = writeln!(
+                out,
+                "  %old = load {vt}, ptr %s\n  store {vt} %v, ptr %s\n  call void {}({vt} %old)",
+                glue("release", v)
+            );
+        } else {
+            let _ = writeln!(out, "  store {vt} %v, ptr %s");
+        }
+        if key_drop {
+            let _ = writeln!(out, "  call void {}({kt} %k)", glue("release", k));
+        }
+        let _ = writeln!(
+            out,
+            "  ret void\ninsert:\n  %e2 = call i64 @wys_dict_push(ptr %d, i64 %raw)\n  %s2 = call ptr @wys_dict_val(ptr %d, i64 %e2)\n  store {vt} %v, ptr %s2\n  ret void\n}}"
+        );
+        // get: キーがなければパニック
+        let _ = writeln!(
+            out,
+            "\ndefine private {vt} @wys_dict_get{i}(ptr %d, {kt} %k) {{\nentry:\n{}\n  %e = call i64 @wys_dict_find(ptr %d, i64 %raw)\n  %found = icmp sge i64 %e, 0\n  br i1 %found, label %ok, label %missing\nmissing:\n  call void @wys_dict_key_missing(ptr %d, i64 %raw)\n  unreachable\nok:\n  %s = call ptr @wys_dict_val(ptr %d, i64 %e)\n  %v = load {vt}, ptr %s\n  ret {vt} %v\n}}",
+            key_to_raw(k, "%raw", "%k")
+        );
+        // release: 参照カウントが 0 になったら、キーと値を release してから辞書を返す
+        let _ = writeln!(
+            out,
+            "\ndefine private void @wys_release_dict{i}(ptr %p) {{\nentry:\n  %isnull = icmp eq ptr %p, null\n  br i1 %isnull, label %done, label %load\nload:\n  %rc = load i64, ptr %p, align 8\n  %n = sub i64 %rc, 1\n  store i64 %n, ptr %p, align 8\n  %zero = icmp eq i64 %n, 0\n  br i1 %zero, label %free, label %done\nfree:\n  %len = call i64 @wys_dict_len(ptr %p)\n  br label %loop\nloop:\n  %pos = phi i64 [0, %free], [%pos2, %body]\n  %e = call i64 @wys_dict_iter_next(ptr %p, i64 %pos, i64 %len)\n  %more = icmp sge i64 %e, 0\n  br i1 %more, label %body, label %fin\nbody:"
+        );
+        if key_drop {
+            let _ = writeln!(
+                out,
+                "  %kr = call i64 @wys_dict_key(ptr %p, i64 %e)\n{}\n  call void {}({kt} %key)",
+                raw_to_key(k, "%key", "%kr"),
+                glue("release", k)
+            );
+        }
+        if val_drop {
+            let _ = writeln!(
+                out,
+                "  %s = call ptr @wys_dict_val(ptr %p, i64 %e)\n  %x = load {vt}, ptr %s\n  call void {}({vt} %x)",
+                glue("release", v)
+            );
+        }
+        let _ = writeln!(
+            out,
+            "  %pos2 = add i64 %e, 1\n  br label %loop\nfin:\n  call void @wys_dict_free(ptr %p)\n  br label %done\ndone:\n  ret void\n}}"
+        );
+    }
+}
+
 fn emit_glue(out: &mut String, p: &Program, drops: &DropInfo) {
+    emit_dict_glue(out, p, drops);
     // リストの release: 参照カウントが 0 になったら、要素を release してからバッファを返す
     for (i, elem) in p.lists.iter().enumerate() {
         let size = elem_size(p, *elem);
@@ -483,6 +587,108 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                             t(*it)
                         );
                     }
+                }
+                Inst::DictNew {
+                    dst,
+                    dict,
+                    keys,
+                    vals,
+                } => {
+                    let d = t(*dst);
+                    let (k, v) = p.dicts[dict.0 as usize];
+                    let _ = writeln!(
+                        out,
+                        "  {d} = call ptr @wys_dict_new(i64 {}, i64 {})",
+                        dict_key_kind(k),
+                        elem_size(p, v)
+                    );
+                    for (key, val) in keys.iter().zip(vals) {
+                        let _ = writeln!(
+                            out,
+                            "  call void @wys_dict_set{}(ptr {d}, {} {}, {} {})",
+                            dict.0,
+                            llty(k),
+                            t(*key),
+                            llty(v),
+                            t(*val)
+                        );
+                    }
+                }
+                Inst::DictLen { dst, src } => {
+                    let _ = writeln!(
+                        out,
+                        "  {} = call i64 @wys_dict_len(ptr {})",
+                        t(*dst),
+                        t(*src)
+                    );
+                }
+                Inst::DictContains { dst, src, key } => {
+                    let d = t(*dst);
+                    let kty = f.temps[key.0 as usize];
+                    let _ = writeln!(
+                        out,
+                        "{}\n  {d}.e = call i64 @wys_dict_find(ptr {}, i64 {d}.raw)\n  {d} = icmp sge i64 {d}.e, 0",
+                        key_to_raw(kty, &format!("{d}.raw"), &t(*key)),
+                        t(*src)
+                    );
+                }
+                Inst::DictGet { dst, src, key } => {
+                    let Ty::Dict(di) = f.temps[src.0 as usize] else {
+                        unreachable!("verified")
+                    };
+                    let (k, v) = p.dicts[di.0 as usize];
+                    let _ = writeln!(
+                        out,
+                        "  {} = call {} @wys_dict_get{}(ptr {}, {} {})",
+                        t(*dst),
+                        llty(v),
+                        di.0,
+                        t(*src),
+                        llty(k),
+                        t(*key)
+                    );
+                }
+                Inst::DictSet { dict, key, value } => {
+                    let Ty::Dict(di) = f.temps[dict.0 as usize] else {
+                        unreachable!("verified")
+                    };
+                    let (k, v) = p.dicts[di.0 as usize];
+                    let _ = writeln!(
+                        out,
+                        "  call void @wys_dict_set{}(ptr {}, {} {}, {} {})",
+                        di.0,
+                        t(*dict),
+                        llty(k),
+                        t(*key),
+                        llty(v),
+                        t(*value)
+                    );
+                }
+                Inst::DictKeyAt { dst, src, index } => {
+                    let d = t(*dst);
+                    let kty = f.temps[dst.0 as usize];
+                    let _ = writeln!(
+                        out,
+                        "  {d}.raw = call i64 @wys_dict_key(ptr {}, i64 {})\n{}",
+                        t(*src),
+                        t(*index),
+                        raw_to_key(kty, &d, &format!("{d}.raw"))
+                    );
+                }
+                Inst::DictIterNext {
+                    dst,
+                    src,
+                    pos,
+                    len0,
+                } => {
+                    let _ = writeln!(
+                        out,
+                        "  {} = call i64 @wys_dict_iter_next(ptr {}, i64 {}, i64 {})",
+                        t(*dst),
+                        t(*src),
+                        t(*pos),
+                        t(*len0)
+                    );
                 }
                 Inst::ListLen { dst, src } => {
                     let _ = writeln!(
@@ -798,6 +1004,7 @@ mod tests {
             unions: vec![],
             records: vec![],
             lists: vec![],
+            dicts: vec![],
             entry: FuncId(0),
             funcs: vec![Function {
                 name: "main".into(),

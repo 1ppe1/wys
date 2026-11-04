@@ -313,6 +313,233 @@ pub unsafe extern "C" fn wys_list_free(l: *mut ListObj, elem_size: i64) {
     LIVE.fetch_sub(1, Ordering::Relaxed);
 }
 
+// ---------------------------------------------------------------- dicts (M3 T6a, ADR-0015)
+
+/// キーの種類（生成コードが `wys_dict_new` に渡す）。キーは i64 1語で受け渡す（`bool` は 0 / 1、`str` はポインタ）。
+const KEY_INT: i64 = 0;
+const KEY_BOOL: i64 = 1;
+const KEY_STR: i64 = 2;
+
+/// 辞書のオブジェクト。先頭は `Header` と同じ配置（参照カウントの増減は生成コードが行う）。`len` は生存しているキーの数。
+/// 中身は CPython と同じく、挿入順のエントリ配列と、開番地法（線形探索）の索引表で持つ。
+/// キーと値の参照カウント（retain / release）は生成コードが行う。ランタイムはキーの値（`str` ならポインタ）をそのまま保持する。
+#[repr(C)]
+pub struct DictObj {
+    rc: i64,
+    len: i64,
+    inner: *mut DictInner,
+}
+
+struct DictInner {
+    kind: i64,
+    /// 値の大きさ（8 バイトの語数）
+    val_words: usize,
+    hashes: Vec<u64>,
+    keys: Vec<i64>,
+    /// 値はエントリごとに `val_words` 語。箱に入れない
+    vals: Vec<u64>,
+    /// 索引表: エントリの番号、空きは -1。大きさは 2 の累乗
+    index: Vec<i64>,
+}
+
+fn hash_key(kind: i64, key: i64) -> u64 {
+    if kind == KEY_STR {
+        // FNV-1a（乱数化しない: 反復は挿入順なので、ハッシュは順序に影響しない）
+        // SAFETY: str のキーは生存している文字列オブジェクト（生成コードが +1 で保持させる）。
+        let b = unsafe { bytes(key as *const Header) };
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &x in b {
+            h ^= x as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
+    } else {
+        // 整数は乗算で混ぜる（`i * 8` のような並びが同じ位置に固まらないように）
+        let h = (key as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        h ^ (h >> 29)
+    }
+}
+
+fn keys_equal(kind: i64, a: i64, b: i64) -> bool {
+    if a == b {
+        return true;
+    }
+    // SAFETY: str のキーは生存している文字列オブジェクト。
+    kind == KEY_STR && unsafe { bytes(a as *const Header) == bytes(b as *const Header) }
+}
+
+impl DictInner {
+    fn find(&self, key: i64, h: u64) -> Result<usize, usize> {
+        let mask = self.index.len() - 1;
+        let mut i = (h as usize) & mask;
+        loop {
+            let e = self.index[i];
+            if e < 0 {
+                return Err(i);
+            }
+            let e = e as usize;
+            if self.hashes[e] == h && keys_equal(self.kind, self.keys[e], key) {
+                return Ok(e);
+            }
+            i = (i + 1) & mask;
+        }
+    }
+
+    fn rebuild(&mut self, cap: usize) {
+        self.index = vec![-1; cap];
+        let mask = cap - 1;
+        for (e, &h) in self.hashes.iter().enumerate() {
+            let mut i = (h as usize) & mask;
+            while self.index[i] >= 0 {
+                i = (i + 1) & mask;
+            }
+            self.index[i] = e as i64;
+        }
+    }
+}
+
+/// 空の辞書（参照カウント 1）を作る。`val_size` は値の大きさ（バイト、8 の倍数）。
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_dict_new(kind: i64, val_size: i64) -> *mut DictObj {
+    debug_assert!(matches!(kind, KEY_INT | KEY_BOOL | KEY_STR));
+    let inner = Box::new(DictInner {
+        kind,
+        val_words: (val_size as usize).div_ceil(8).max(1),
+        hashes: Vec::new(),
+        keys: Vec::new(),
+        vals: Vec::new(),
+        index: vec![-1; 8],
+    });
+    let obj = Box::new(DictObj {
+        rc: 1,
+        len: 0,
+        inner: Box::into_raw(inner),
+    });
+    LIVE.fetch_add(1, Ordering::Relaxed);
+    Box::into_raw(obj)
+}
+
+/// # Safety
+/// `d` は生存している辞書でなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_dict_len(d: *const DictObj) -> i64 {
+    // SAFETY: 関数の安全条件どおり。
+    unsafe { (*d).len }
+}
+
+/// キーのエントリの番号。なければ -1。
+///
+/// # Safety
+/// `d` は生存している辞書で、`key` はその種類のキーでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_dict_find(d: *const DictObj, key: i64) -> i64 {
+    // SAFETY: 関数の安全条件どおり。
+    let inner = unsafe { &*(*d).inner };
+    match inner.find(key, hash_key(inner.kind, key)) {
+        Ok(e) => e as i64,
+        Err(_) => -1,
+    }
+}
+
+/// まだないキーのエントリを末尾に追加し、その番号を返す（値は生成コードが `wys_dict_val` の場所に書き込む）。
+/// キーの所有（`str` の +1）は辞書に移る。値の領域の場所は、追加で変わり得るので、追加の後に取り直すこと。
+///
+/// # Safety
+/// `d` は生存している辞書で、`key` はその種類の、まだ辞書にないキーでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_dict_push(d: *mut DictObj, key: i64) -> i64 {
+    // SAFETY: 関数の安全条件どおり。
+    let (obj, inner) = unsafe { (&mut *d, &mut *(*d).inner) };
+    let h = hash_key(inner.kind, key);
+    // 負荷率 2/3 を超えないように、索引表を広げる
+    if (inner.hashes.len() + 1) * 3 > inner.index.len() * 2 {
+        let cap = inner.index.len() * 2;
+        inner.rebuild(cap);
+    }
+    let slot = match inner.find(key, h) {
+        Err(slot) => slot,
+        Ok(_) => panic!("wys_dict_push: the key already exists"),
+    };
+    let e = inner.hashes.len();
+    inner.hashes.push(h);
+    inner.keys.push(key);
+    inner.vals.resize(inner.vals.len() + inner.val_words, 0);
+    inner.index[slot] = e as i64;
+    obj.len += 1;
+    e as i64
+}
+
+/// エントリ `e` の値の場所。
+///
+/// # Safety
+/// `d` は生存している辞書で、`e` は有効なエントリの番号でなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_dict_val(d: *mut DictObj, e: i64) -> *mut u8 {
+    // SAFETY: 関数の安全条件どおり。
+    let inner = unsafe { &mut *(*d).inner };
+    let w = inner.val_words;
+    inner.vals[e as usize * w..].as_mut_ptr() as *mut u8
+}
+
+/// エントリ `e` のキー（`str` ならポインタ）。
+///
+/// # Safety
+/// `d` は生存している辞書で、`e` は有効なエントリの番号でなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_dict_key(d: *const DictObj, e: i64) -> i64 {
+    // SAFETY: 関数の安全条件どおり。
+    unsafe { (&(*(*d).inner).keys)[e as usize] }
+}
+
+/// 反復: `pos` 以降の最初のエントリの番号。なければ -1。
+/// 反復の開始時のキーの数 `len0` と今の数が違えば、実行時エラー（ADR-0015）。
+///
+/// # Safety
+/// `d` は生存している辞書でなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_dict_iter_next(d: *const DictObj, pos: i64, len0: i64) -> i64 {
+    // SAFETY: 関数の安全条件どおり。
+    let (len, used) = unsafe { ((*d).len, (*(*d).inner).hashes.len() as i64) };
+    if len != len0 {
+        runtime_error("dict changed size during iteration");
+    }
+    if pos < used { pos } else { -1 }
+}
+
+/// `d[k]` でキーがなかった（実行時エラー）。
+///
+/// # Safety
+/// `d` は生存している辞書で、`key` はその種類のキーでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_dict_key_missing(d: *const DictObj, key: i64) -> ! {
+    // SAFETY: 関数の安全条件どおり。
+    let kind = unsafe { (*(*d).inner).kind };
+    let shown = match kind {
+        KEY_STR => {
+            // SAFETY: str のキーは生存している文字列オブジェクト。
+            let b = unsafe { bytes(key as *const Header) };
+            format!("{:?}", String::from_utf8_lossy(b))
+        }
+        KEY_BOOL => (if key != 0 { "True" } else { "False" }).to_string(),
+        _ => key.to_string(),
+    };
+    runtime_error(&format!("key not found: {shown}"));
+}
+
+/// 参照カウントが 0 になった辞書を解放する（キーと値の release は生成コードが先に行う）。
+///
+/// # Safety
+/// `d` は参照カウントが 0 になった辞書でなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_dict_free(d: *mut DictObj) {
+    // SAFETY: 関数の安全条件どおり。`wys_dict_new` が Box で確保した。
+    unsafe {
+        drop(Box::from_raw((*d).inner));
+        drop(Box::from_raw(d));
+    }
+    LIVE.fetch_sub(1, Ordering::Relaxed);
+}
+
 // ---------------------------------------------------------------- command line
 
 /// プログラムに渡されたコマンドライン引数（プログラム名を除く）。不死のオブジェクトとして持つ。
@@ -522,6 +749,46 @@ mod tests {
 
     /// 生存オブジェクト数（プロセス全体で共有）を使うテストは、並列に動かすと互いの確保を数えてしまうので順番に実行する。
     static LIVE_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn dicts_keep_insertion_order_and_grow() {
+        let _guard = LIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let before = LIVE.load(Ordering::Relaxed);
+        let d = wys_dict_new(KEY_INT, 8);
+        // SAFETY: d は生存している辞書。値の場所には i64 を書く。
+        unsafe {
+            for i in 0..1000i64 {
+                assert_eq!(wys_dict_find(d, i * 8), -1);
+                let e = wys_dict_push(d, i * 8);
+                *(wys_dict_val(d, e) as *mut i64) = i;
+            }
+            assert_eq!(wys_dict_len(d), 1000);
+            for i in 0..1000i64 {
+                let e = wys_dict_find(d, i * 8);
+                assert_eq!(e, i, "insertion order");
+                assert_eq!(*(wys_dict_val(d, e) as *mut i64), i);
+                assert_eq!(wys_dict_key(d, e), i * 8);
+            }
+            assert_eq!(wys_dict_find(d, 3), -1);
+            assert_eq!(wys_dict_iter_next(d, 999, 1000), 999);
+            assert_eq!(wys_dict_iter_next(d, 1000, 1000), -1);
+            wys_dict_free(d);
+        }
+        assert_eq!(LIVE.load(Ordering::Relaxed), before);
+        // str のキーは中身で比べる
+        let s = wys_dict_new(KEY_STR, 8);
+        let a1 = new_immortal(b"key");
+        let a2 = new_immortal(b"key");
+        let b = new_immortal(b"other");
+        // SAFETY: s は生存している辞書、キーは不死の文字列。
+        unsafe {
+            wys_dict_push(s, a1 as i64);
+            assert_eq!(wys_dict_find(s, a2 as i64), 0);
+            assert_eq!(wys_dict_find(s, b as i64), -1);
+            wys_dict_free(s);
+        }
+        assert_eq!(LIVE.load(Ordering::Relaxed), before);
+    }
 
     #[test]
     fn objects_are_counted_and_freed() {

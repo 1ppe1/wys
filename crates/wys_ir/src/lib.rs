@@ -22,6 +22,8 @@ pub enum Ty {
     Record(RecordId),
     /// `list[T]`（ヒープ上のリストへのポインタ1語、M3 T4a）
     List(ListId),
+    /// `dict[K, V]`（ヒープ上の辞書へのポインタ1語、M3 T6a、ADR-0015）
+    Dict(DictId),
 }
 
 impl Ty {
@@ -41,6 +43,7 @@ impl Ty {
             Ty::Union(u) => format!("u{}", u.0),
             Ty::Record(r) => format!("r{}", r.0),
             Ty::List(l) => format!("list{}", l.0),
+            Ty::Dict(d) => format!("dict{}", d.0),
         }
     }
 }
@@ -50,6 +53,9 @@ pub struct UnionId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ListId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DictId(pub u32);
 
 /// 不変のレコード（ADR-0009: 値型、受け渡しはコピー）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -82,6 +88,8 @@ pub struct Program {
     pub records: Vec<Vec<(String, Ty)>>,
     /// `list[T]` の要素の型。`Ty::List(ListId(i))` は `lists[i]` を指す。
     pub lists: Vec<Ty>,
+    /// `dict[K, V]` のキーと値の型。`Ty::Dict(DictId(i))` は `dicts[i]` を指す。キーは `int` / `bool` / `str`。
+    pub dicts: Vec<(Ty, Ty)>,
     pub funcs: Vec<Function>,
     /// エントリポイント（引数なし・戻り値なし）。
     pub entry: FuncId,
@@ -316,6 +324,48 @@ pub enum Inst {
         list: TempId,
         value: TempId,
     },
+    /// 辞書を作る（`keys` と `vals` を +1 で消費する。同じキーは後のものが勝つ）。
+    DictNew {
+        dst: TempId,
+        dict: DictId,
+        keys: Vec<TempId>,
+        vals: Vec<TempId>,
+    },
+    DictLen {
+        dst: TempId,
+        src: TempId,
+    },
+    /// キーがあるか（`bool`）。
+    DictContains {
+        dst: TempId,
+        src: TempId,
+        key: TempId,
+    },
+    /// 値の読み出し（借用。キーがなければパニック）。
+    DictGet {
+        dst: TempId,
+        src: TempId,
+        key: TempId,
+    },
+    /// 追加または置き換え（`key` と `value` を +1 で消費する。既存のキーなら、新しいキーと古い値を release する）。
+    DictSet {
+        dict: TempId,
+        key: TempId,
+        value: TempId,
+    },
+    /// エントリ `index` のキー（借用）。
+    DictKeyAt {
+        dst: TempId,
+        src: TempId,
+        index: TempId,
+    },
+    /// 反復: `pos` 以降の最初のエントリの番号、なければ -1。開始時のキーの数 `len0` と違えばパニック。
+    DictIterNext {
+        dst: TempId,
+        src: TempId,
+        pos: TempId,
+        len0: TempId,
+    },
     /// レコード値を作る。`fields` はレコードのフィールドの順。
     MakeRecord {
         dst: TempId,
@@ -395,6 +445,13 @@ fn union_member(p: &Program, u: UnionId, variant: u32) -> Result<Member, String>
         .ok_or_else(|| format!("union u{} has no variant {variant}", u.0))
 }
 
+fn dict_types(p: &Program, d: DictId) -> Result<(Ty, Ty), String> {
+    p.dicts
+        .get(d.0 as usize)
+        .copied()
+        .ok_or_else(|| format!("unknown dict type dict{}", d.0))
+}
+
 fn list_elem(p: &Program, l: ListId) -> Result<Ty, String> {
     p.lists
         .get(l.0 as usize)
@@ -413,6 +470,9 @@ fn verify_types(p: &Program, f: &Function) -> Result<(), String> {
             }
             Ty::List(l) if l.0 as usize >= p.lists.len() => {
                 return Err(format!("unknown list type list{}", l.0));
+            }
+            Ty::Dict(d) if d.0 as usize >= p.dicts.len() => {
+                return Err(format!("unknown dict type dict{}", d.0));
             }
             _ => {}
         }
@@ -587,6 +647,74 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                         list_elem(p, l)?,
                     )?;
                 }
+                Inst::DictNew {
+                    dst,
+                    dict,
+                    keys,
+                    vals,
+                } => {
+                    let (kt, vt) = dict_types(p, *dict)?;
+                    if keys.len() != vals.len() {
+                        return Err(format!("bb{bi}: dict_new key / value count mismatch"));
+                    }
+                    for (k, v) in keys.iter().zip(vals) {
+                        expect("dict key", use_(*k, &defined_in)?, kt)?;
+                        expect("dict value", use_(*v, &defined_in)?, vt)?;
+                    }
+                    expect("dict_new result", temp_ty(*dst)?, Ty::Dict(*dict))?;
+                    define(*dst, &mut defined_in)?;
+                }
+                Inst::DictLen { dst, src } => {
+                    let Ty::Dict(_) = use_(*src, &defined_in)? else {
+                        return Err(format!("bb{bi}: dict_len on a non-dict value"));
+                    };
+                    expect("dict_len result", temp_ty(*dst)?, Ty::Int)?;
+                    define(*dst, &mut defined_in)?;
+                }
+                Inst::DictContains { dst, src, key } | Inst::DictGet { dst, src, key } => {
+                    let Ty::Dict(d) = use_(*src, &defined_in)? else {
+                        return Err(format!("bb{bi}: dict lookup on a non-dict value"));
+                    };
+                    let (kt, vt) = dict_types(p, d)?;
+                    expect("dict key", use_(*key, &defined_in)?, kt)?;
+                    let want = if matches!(inst, Inst::DictGet { .. }) {
+                        vt
+                    } else {
+                        Ty::Bool
+                    };
+                    expect("dict lookup result", temp_ty(*dst)?, want)?;
+                    define(*dst, &mut defined_in)?;
+                }
+                Inst::DictSet { dict, key, value } => {
+                    let Ty::Dict(d) = use_(*dict, &defined_in)? else {
+                        return Err(format!("bb{bi}: dict_set on a non-dict value"));
+                    };
+                    let (kt, vt) = dict_types(p, d)?;
+                    expect("dict key", use_(*key, &defined_in)?, kt)?;
+                    expect("dict value", use_(*value, &defined_in)?, vt)?;
+                }
+                Inst::DictKeyAt { dst, src, index } => {
+                    let Ty::Dict(d) = use_(*src, &defined_in)? else {
+                        return Err(format!("bb{bi}: dict_key_at on a non-dict value"));
+                    };
+                    expect("dict entry index", use_(*index, &defined_in)?, Ty::Int)?;
+                    expect("dict_key_at result", temp_ty(*dst)?, dict_types(p, d)?.0)?;
+                    define(*dst, &mut defined_in)?;
+                }
+                Inst::DictIterNext {
+                    dst,
+                    src,
+                    pos,
+                    len0,
+                } => {
+                    let Ty::Dict(_) = use_(*src, &defined_in)? else {
+                        return Err(format!("bb{bi}: dict_iter_next on a non-dict value"));
+                    };
+                    expect("dict position", use_(*pos, &defined_in)?, Ty::Int)?;
+                    expect("dict length", use_(*len0, &defined_in)?, Ty::Int)?;
+                    expect("dict_iter_next result", temp_ty(*dst)?, Ty::Int)?;
+                    define(*dst, &mut defined_in)?;
+                }
                 Inst::MakeRecord {
                     dst,
                     record,
@@ -714,6 +842,9 @@ impl fmt::Display for Program {
             let names: Vec<String> = members.iter().map(|m| member_name(*m)).collect();
             writeln!(f, "union u{i} = {}", names.join(" | "))?;
         }
+        for (i, (k, v)) in self.dicts.iter().enumerate() {
+            writeln!(f, "dict dict{i} = dict[{}, {}]", k.name(), v.name())?;
+        }
         writeln!(f, "entry f{}", self.entry.0)?;
         for (i, func) in self.funcs.iter().enumerate() {
             writeln!(f)?;
@@ -790,6 +921,50 @@ impl fmt::Display for Program {
                             writeln!(f, "list_push t{}, t{}", list.0, value.0)?
                         }
                         Inst::Release { src } => writeln!(f, "release t{}", src.0)?,
+                        Inst::DictNew {
+                            dst,
+                            dict,
+                            keys,
+                            vals,
+                        } => {
+                            let xs: Vec<String> = keys
+                                .iter()
+                                .zip(vals)
+                                .map(|(k, v)| format!("t{}: t{}", k.0, v.0))
+                                .collect();
+                            writeln!(
+                                f,
+                                "t{} = dict_new dict{}{{{}}}",
+                                dst.0,
+                                dict.0,
+                                xs.join(", ")
+                            )?
+                        }
+                        Inst::DictLen { dst, src } => {
+                            writeln!(f, "t{} = dict_len t{}", dst.0, src.0)?
+                        }
+                        Inst::DictContains { dst, src, key } => {
+                            writeln!(f, "t{} = dict_contains t{}, t{}", dst.0, src.0, key.0)?
+                        }
+                        Inst::DictGet { dst, src, key } => {
+                            writeln!(f, "t{} = dict_get t{}, t{}", dst.0, src.0, key.0)?
+                        }
+                        Inst::DictSet { dict, key, value } => {
+                            writeln!(f, "dict_set t{}, t{}, t{}", dict.0, key.0, value.0)?
+                        }
+                        Inst::DictKeyAt { dst, src, index } => {
+                            writeln!(f, "t{} = dict_key_at t{}, t{}", dst.0, src.0, index.0)?
+                        }
+                        Inst::DictIterNext {
+                            dst,
+                            src,
+                            pos,
+                            len0,
+                        } => writeln!(
+                            f,
+                            "t{} = dict_iter_next t{}, t{}, t{}",
+                            dst.0, src.0, pos.0, len0.0
+                        )?,
                         Inst::MakeRecord {
                             dst,
                             record,
@@ -861,6 +1036,7 @@ mod tests {
             unions: vec![],
             records: vec![],
             lists: vec![],
+            dicts: vec![],
             entry: FuncId(0),
             funcs: vec![Function {
                 name: "main".into(),

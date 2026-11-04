@@ -1,0 +1,6 @@
+# expect-error: E0907 2:18
+def f[K](d: dict[K, int]) -> None:
+    pass
+
+def main() -> None:
+    pass

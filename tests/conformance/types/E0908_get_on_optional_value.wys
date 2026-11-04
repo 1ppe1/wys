@@ -1,0 +1,4 @@
+# expect-error: E0908 4:9
+def main() -> None:
+    d: dict[str, int | None] = {"a": None}
+    v = d.get("a")
