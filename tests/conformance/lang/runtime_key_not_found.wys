@@ -1,0 +1,8 @@
+# 存在しないキーの d[k] はパニック（ADR-0015）
+# expect-stdout: 1
+# expect-exit: 101
+# expect-stderr-contains: runtime error: key not found: "zz"
+def main() -> None:
+    d = {"a": 1}
+    print(d["a"])
+    print(d["z" + "z"])

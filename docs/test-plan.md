@@ -48,6 +48,7 @@ CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は 
 | `Result[T, E]` と束縛パターン（M3 T5a、ADR-0013） | `lang/result_*`・`generic_result_match`、`types/E100x_*`・`E0303_result_missing_err`、e2e の `result_values_run_and_missing_types_are_hinted`。参照型の中身を持つ `Result` も3つのモードで生存オブジェクト 0 |
 | `?` による伝搬（M3 T5b、ADR-0013） | `lang/try_*`（式の途中（`try_mid_expression`）・ループの中・Generics・エラー型の Union への詰め直し）、`types/E1010`〜`E1012`、`syntax/E0101_try_then_field`、e2e の `try_propagates_and_reports_uncovered_errors`。途中で返す経路も3つのモードで生存オブジェクト 0 |
 | パニックの仕様と `panic(msg)`（M3 T5c、NFR-007、ADR-0013） | `lang/panic_builtin.wys`（stdout を書き出してから stderr に `runtime error: … at 場所`、終了コード 101）、`lang/panic_noreturn.wys`（戻らない文）、e2e の `panic_flushes_stdout_and_exits_with_101`。ASan モードでは LeakSanitizer を無効にする（リークの判定は生存オブジェクト数 102） |
+| `dict[K, V]`（M3 T6a、ADR-0015） | `lang/dict_*`（リテラル、`in`、`.get`、キーの種類、1000 個の伸長と挿入順、参照型の値、借用の安全条件）、`for_dict_update_value`、`runtime_key_not_found`・`runtime_dict_changed_during_iteration`、`types/E0906`〜`E0909`・`E0201_dict_key_mismatch`、ランタイムの単体テスト `dicts_keep_insertion_order_and_grow`、e2e の `dict_counts_words_in_insertion_order`。3つのモードで生存オブジェクト 0 |
 | LANG-001（モジュール） | **合格（M2 T6）**。`tests/conformance/modules/<ケース名>/main.wys`（import するファイルを同じディレクトリに置く）。名前解決の単体テストは `wys_resolve` |
 | AC-003（`Unknown` の検証） | **合格（M2 T5）**。拒否: `types/E0601_*`・`E0602_*`。検証後の利用: `lang/unknown_from_args.wys`（コマンドライン引数を `# expect-args:` で渡す） |
 | Linux x86_64 での CI | **M2 T0 で追加済み** |

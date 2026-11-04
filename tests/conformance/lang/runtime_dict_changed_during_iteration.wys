@@ -1,0 +1,9 @@
+# 反復中にキーの数が変わるとパニック（ADR-0015）
+# expect-stdout: a
+# expect-exit: 101
+# expect-stderr-contains: runtime error: dict changed size during iteration
+def main() -> None:
+    d = {"a": 1}
+    for k in d:
+        print(k)
+        d[k + "x"] = 2

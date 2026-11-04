@@ -1,0 +1,11 @@
+# 借用の安全条件: d[k] の値を、d を書き換える関数の呼び出しと同じ式で使っても解放済みにならない（ASan で確かめる）
+# expect-stdout: ab!
+# expect-stdout: zz
+def replace(d: dict[str, str]) -> str:
+    d["a"] = "z" + "z"
+    return "!"
+
+def main() -> None:
+    d = {"a": "a" + "b"}
+    print(d["a"] + replace(d))
+    print(d["a"])

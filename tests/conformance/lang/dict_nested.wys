@@ -1,0 +1,30 @@
+# 参照型の値（str、list、record、dict）。上書きで古い値が解放され、終了時の生存オブジェクトは 0
+# expect-stdout: 3
+# expect-stdout: last9
+# expect-stdout: 2
+# expect-stdout: 7
+# expect-stdout: inner
+type Point = {x: int, y: int}
+
+def main() -> None:
+    groups: dict[str, list[int]] = {"a": [1, 2], "b": []}
+    b = groups["b"]
+    b.append(9)
+    xs = groups["a"]
+    xs.append(3)
+    print(len(groups["a"]))
+    names: dict[int, str] = {}
+    for i in range(10):
+        names[0] = "last" + digit(i)
+    print(names[0])
+    pts = {"p": Point(x=1, y=2), "q": Point(x=7, y=8)}
+    print(pts["p"].y)
+    print(pts["q"].x)
+    dd: dict[str, dict[str, str]] = {"o": {"i": "inner"}}
+    inner = dd["o"]
+    print(inner["i"])
+
+def digit(i: int) -> str:
+    if i == 9:
+        return "9"
+    return "?"

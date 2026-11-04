@@ -30,6 +30,8 @@ pub enum Ty {
     List(ListId),
     /// `Result[T, E]`（組み込みの名目的な Generic 型。構築子は `Ok` / `Err`。ADR-0013）
     Result(ResultId),
+    /// `dict[K, V]`（ヒープ上の可変な辞書、参照を共有する。キーは `int` / `bool` / `str`。ADR-0015）
+    Dict(DictId),
     /// 未検証の外部値（ADR-0011）。`int` / `bool` / `str` / `None` のどれかだが、開いた型として扱い、
     /// `match` で確かめるまで具体的な型として使えない。
     Unknown,
@@ -53,6 +55,9 @@ pub struct ListId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ResultId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DictId(pub u32);
 
 /// 型パラメータから具体的な型への対応。
 pub type Subst = HashMap<ParamId, Ty>;
@@ -96,6 +101,9 @@ pub struct Types {
     /// `Result[T, E]` の型引数（`ResultId` の順）
     results: Vec<(Ty, Ty)>,
     result_index: HashMap<(Ty, Ty), ResultId>,
+    /// `dict[K, V]` のキーと値の型（`DictId` の順）
+    dicts: Vec<(Ty, Ty)>,
+    dict_index: HashMap<(Ty, Ty), DictId>,
 }
 
 impl Types {
@@ -144,7 +152,12 @@ impl Types {
     }
 
     fn name_within(&self, t: Ty, depth: usize) -> String {
-        if depth == 0 && matches!(t, Ty::Union(_) | Ty::Record(_) | Ty::Result(_)) {
+        if depth == 0
+            && matches!(
+                t,
+                Ty::Union(_) | Ty::Record(_) | Ty::Result(_) | Ty::Dict(_)
+            )
+        {
             return "…".into();
         }
         let name = |t: Ty| self.name_within(t, depth.saturating_sub(1));
@@ -160,6 +173,10 @@ impl Types {
             Ty::Result(r) => {
                 let (ok, err) = self.results[r.0 as usize];
                 format!("Result[{}, {}]", name(ok), name(err))
+            }
+            Ty::Dict(d) => {
+                let (k, v) = self.dicts[d.0 as usize];
+                format!("dict[{}, {}]", name(k), name(v))
             }
             Ty::Record(r) => {
                 let def = &self.records[r.0 as usize];
@@ -298,6 +315,14 @@ impl Types {
                 let (ok, err) = (self.subst(ok, map), self.subst(err, map));
                 self.result(ok, err)
             }
+            Ty::Dict(d) => {
+                if !self.contains_param(t) {
+                    return t;
+                }
+                let (k, v) = self.dicts[d.0 as usize];
+                let (k, v) = (self.subst(k, map), self.subst(v, map));
+                self.dict(k, v)
+            }
             Ty::Union(_) => {
                 let ms: Vec<Ty> = self
                     .members(t)
@@ -335,6 +360,10 @@ impl Types {
                 let (ok, err) = self.results[r.0 as usize];
                 self.contains_param(ok) || self.contains_param(err)
             }
+            Ty::Dict(d) => {
+                let (k, v) = self.dicts[d.0 as usize];
+                self.contains_param(k) || self.contains_param(v)
+            }
             _ => false,
         }
     }
@@ -349,6 +378,10 @@ impl Types {
             Ty::Result(r) => {
                 let (ok, err) = self.results[r.0 as usize];
                 self.contains_unknown(ok) || self.contains_unknown(err)
+            }
+            Ty::Dict(d) => {
+                let (k, v) = self.dicts[d.0 as usize];
+                self.contains_unknown(k) || self.contains_unknown(v)
             }
             _ => false,
         }
@@ -387,6 +420,25 @@ impl Types {
         Ty::Result(id)
     }
 
+    /// `dict[k, v]` の型を作る（同じ型引数なら同じ ID）。
+    pub fn dict(&mut self, k: Ty, v: Ty) -> Ty {
+        if k == Ty::Error || v == Ty::Error {
+            return Ty::Error;
+        }
+        if let Some(&id) = self.dict_index.get(&(k, v)) {
+            return Ty::Dict(id);
+        }
+        let id = DictId(self.dicts.len() as u32);
+        self.dicts.push((k, v));
+        self.dict_index.insert((k, v), id);
+        Ty::Dict(id)
+    }
+
+    /// `dict[K, V]` のキーと値の型 `(K, V)`。
+    pub fn dict_args(&self, d: DictId) -> (Ty, Ty) {
+        self.dicts[d.0 as usize]
+    }
+
     /// `Result[T, E]` の型引数 `(T, E)`。
     pub fn result_args(&self, r: ResultId) -> (Ty, Ty) {
         self.results[r.0 as usize]
@@ -408,6 +460,10 @@ impl Types {
             Ty::Result(r) => {
                 let (ok, err) = self.results[r.0 as usize];
                 1 + self.depth(ok).max(self.depth(err))
+            }
+            Ty::Dict(d) => {
+                let (k, v) = self.dicts[d.0 as usize];
+                1 + self.depth(k).max(self.depth(v))
             }
             _ => 0,
         }
@@ -576,7 +632,7 @@ fn declare_types(cx: &mut Ctx, module: &Module) {
         let name = &t.name.name;
         if matches!(
             name.as_str(),
-            "int" | "bool" | "str" | "None" | "Result" | "list"
+            "int" | "bool" | "str" | "None" | "Result" | "list" | "dict"
         ) {
             cx.diags.push(Diagnostic::error(
                 "E0209",
@@ -714,6 +770,46 @@ impl Ctx {
                     return Ty::Error;
                 }
                 self.types.result(ok, err)
+            }
+            TypeExprKind::Apply(name, args) if name == "dict" => {
+                if args.len() != 2 {
+                    self.diags.push(Diagnostic::error(
+                        "E0402",
+                        format!(
+                            "`dict` takes 2 type arguments but {} were given",
+                            args.len()
+                        ),
+                        t.span,
+                    ));
+                    return Ty::Error;
+                }
+                let k = self.resolve(&args[0]);
+                let v = self.resolve(&args[1]);
+                if !valid_dict_key(k) {
+                    self.diags
+                        .push(dict_key_error(&self.types.name(k), args[0].span));
+                    return Ty::Error;
+                }
+                if v == Ty::None {
+                    self.diags.push(
+                        Diagnostic::error(
+                            "E0215",
+                            "a dict value cannot have type `None`",
+                            args[1].span,
+                        )
+                        .with_hint("use an optional type, e.g. `dict[str, int | None]`"),
+                    );
+                    return Ty::Error;
+                }
+                self.types.dict(k, v)
+            }
+            TypeExprKind::Name(name) if name == "dict" => {
+                self.diags.push(Diagnostic::error(
+                    "E0402",
+                    "`dict` needs its key and value types, e.g. `dict[str, int]`",
+                    t.span,
+                ));
+                Ty::Error
             }
             TypeExprKind::Name(name) if name == "Result" => {
                 self.diags.push(Diagnostic::error(
@@ -1223,6 +1319,18 @@ impl<'a> FnCk<'a> {
                     unreachable!("the parser only builds IndexAssign from an index expression")
                 };
                 let bt = self.expr(base, env);
+                if let Ty::Dict(d) = bt {
+                    // `d[k] = v`: 追加または置き換え（ADR-0015）
+                    let (k, v) = self.cx.types.dict_args(d);
+                    let it = self.expr_hint(index, env, Some(k));
+                    self.cx
+                        .require(it, k, index.span, "a key of the dict", None);
+                    let vt = self.expr_hint(value, env, Some(v));
+                    self.cx
+                        .require(vt, v, value.span, "a value of the dict", None);
+                    self.record(target, Ty::None);
+                    return false;
+                }
                 let it = self.expr(index, env);
                 self.cx.require(
                     it,
@@ -1721,6 +1829,10 @@ impl<'a> FnCk<'a> {
                 let t = self.list_literal(items, env, hint, e.span);
                 self.record(e, t)
             }
+            ExprKind::Dict(entries) => {
+                let t = self.dict_literal(entries, env, hint, e.span);
+                self.record(e, t)
+            }
             ExprKind::Call {
                 callee,
                 args,
@@ -1802,6 +1914,108 @@ impl<'a> FnCk<'a> {
             }
         }
         ok
+    }
+
+    /// `{k: v, ...}`: 手掛かりが `dict[K, V]`（か、それを1つだけ含む Union）なら各要素がそれに収まるかを確かめる。
+    /// なければキーと値それぞれの型の Union（キーは `int` / `bool` / `str` のどれか1つでなければ E0907）。
+    fn dict_literal(
+        &mut self,
+        entries: &[(Expr, Expr)],
+        env: &Env,
+        hint: Option<Ty>,
+        span: Span,
+    ) -> Ty {
+        let dict_hint = hint.and_then(|h| {
+            let ds: Vec<Ty> = self
+                .cx
+                .types
+                .members(h)
+                .into_iter()
+                .filter(|m| matches!(m, Ty::Dict(_)))
+                .collect();
+            (ds.len() == 1).then(|| ds[0])
+        });
+        let kv = match dict_hint {
+            Some(Ty::Dict(d)) => Some(self.cx.types.dict_args(d)),
+            _ => None,
+        };
+        let mut kts = Vec::new();
+        let mut vts = Vec::new();
+        for (k, v) in entries {
+            kts.push(self.expr_hint(k, env, kv.map(|p| p.0)));
+            vts.push(self.expr_hint(v, env, kv.map(|p| p.1)));
+        }
+        if let (Some(t), Some((k, v))) = (dict_hint, kv) {
+            for (i, (ke, ve)) in entries.iter().enumerate() {
+                self.cx
+                    .require(kts[i], k, ke.span, "a key of the dict", None);
+                self.cx
+                    .require(vts[i], v, ve.span, "a value of the dict", None);
+            }
+            return t;
+        }
+        if hint == Some(Ty::Error) {
+            return Ty::Error;
+        }
+        if entries.is_empty() {
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E0906",
+                    "cannot infer the key and value types of an empty dict",
+                    span,
+                )
+                .with_hint("annotate the variable, e.g. `d: dict[str, int] = {}`"),
+            );
+            return Ty::Error;
+        }
+        let k = self.cx.types.union(kts);
+        let v = self.cx.types.union(vts);
+        if k == Ty::Error || v == Ty::Error {
+            return Ty::Error;
+        }
+        if !valid_dict_key(k) {
+            let name = self.cx.name(k);
+            self.cx.diags.push(dict_key_error(&name, span));
+            return Ty::Error;
+        }
+        if v == Ty::None {
+            self.cx.diags.push(
+                Diagnostic::error("E0215", "a dict value cannot have type `None`", span)
+                    .with_hint("annotate the variable with an optional value type, e.g. `d: dict[str, int | None] = ...`"),
+            );
+            return Ty::Error;
+        }
+        self.cx.types.dict(k, v)
+    }
+
+    /// `k in d` / `k not in d`: 右辺は `dict`、左辺はそのキーの型（ADR-0015）。
+    fn in_expr(&mut self, lhs: &Expr, rhs: &Expr, env: &Env) -> Ty {
+        let rt = self.expr(rhs, env);
+        match rt {
+            Ty::Dict(d) => {
+                let (k, _) = self.cx.types.dict_args(d);
+                let lt = self.expr_hint(lhs, env, Some(k));
+                self.cx.require(lt, k, lhs.span, "a key of the dict", None);
+                Ty::Bool
+            }
+            Ty::Error => {
+                self.expr(lhs, env);
+                Ty::Error
+            }
+            other => {
+                self.expr(lhs, env);
+                let msg = format!(
+                    "`in` needs a `dict` on the right, but this value has type `{}`",
+                    self.cx.name(other)
+                );
+                self.cx.diags.push(
+                    Diagnostic::error("E0909", msg, rhs.span)
+                        .with_cause("`in` checks whether a key exists in a `dict` (ADR-0015)")
+                        .with_hint("for a list, loop over it and compare each element"),
+                );
+                Ty::Error
+            }
+        }
     }
 
     /// `Ok(v)` / `Err(e)`: もう一方の型引数は手掛かり（期待型）から決める（ADR-0013）。
@@ -1934,7 +2148,9 @@ impl<'a> FnCk<'a> {
             }
             t => {
                 let rest = self.cx.types.without_none(t);
-                let msg = if self.cx.types.contains_none(t) && matches!(rest, Ty::List(_)) {
+                let msg = if self.cx.types.contains_none(t)
+                    && matches!(rest, Ty::List(_) | Ty::Dict(_))
+                {
                     Diagnostic::error(
                         "E0301",
                         format!(
@@ -1950,7 +2166,7 @@ impl<'a> FnCk<'a> {
                         format!("`{}` cannot be indexed", self.cx.name(t)),
                         span,
                     )
-                    .with_cause("only `list` values can be indexed")
+                    .with_cause("only `list` and `dict` values can be indexed")
                 };
                 self.cx.diags.push(msg);
                 None
@@ -1989,13 +2205,16 @@ impl<'a> FnCk<'a> {
         let t = self.expr(iter, env);
         match t {
             Ty::List(l) => self.cx.types.list_elem(l),
+            // `for k in d:` はキーを挿入順に反復する（ADR-0015）
+            Ty::Dict(d) => self.cx.types.dict_args(d).0,
             Ty::Error => Ty::Error,
             other => {
                 let msg = format!("cannot iterate over `{}`", self.cx.name(other));
-                self.cx.diags.push(
-                    Diagnostic::error("E0903", msg, iter.span)
-                        .with_hint("iterate over a `list[T]` or `range(n)`"),
-                );
+                self.cx
+                    .diags
+                    .push(Diagnostic::error("E0903", msg, iter.span).with_hint(
+                        "iterate over a `list[T]`, a `dict[K, V]` (its keys) or `range(n)`",
+                    ));
                 Ty::Error
             }
         }
@@ -2034,6 +2253,36 @@ impl<'a> FnCk<'a> {
                     .require(vt, elem, args[0].span, "an element of the list", None);
                 Ty::None
             }
+            (Ty::Dict(d), "get") => {
+                let (k, v) = self.cx.types.dict_args(d);
+                if args.len() != 1 {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!("`get` takes 1 argument but {} were given", args.len()),
+                        span,
+                    ));
+                    for a in args {
+                        self.expr(a, env);
+                    }
+                    return Ty::Error;
+                }
+                let kt = self.expr_hint(&args[0], env, Some(k));
+                self.cx
+                    .require(kt, k, args[0].span, "a key of the dict", None);
+                if self.cx.types.contains_none(v) {
+                    let msg = format!(
+                        "`get` cannot be used on `{}`, whose values may be `None`",
+                        self.cx.name(rt)
+                    );
+                    self.cx.diags.push(
+                        Diagnostic::error("E0908", msg, span)
+                            .with_cause("`None` from `get` would mean both \"no key\" and \"the value is None\" (ADR-0015)")
+                            .with_hint(format!("check the key with `if k in {recv}:` and then read `{recv}[k]`")),
+                    );
+                    return Ty::Error;
+                }
+                self.cx.types.union([v, Ty::None])
+            }
             (Ty::Error, _) => Ty::Error,
             (t, m) => {
                 for a in args {
@@ -2041,8 +2290,9 @@ impl<'a> FnCk<'a> {
                 }
                 let msg = format!("`{}` has no method `{m}`", self.cx.name(t));
                 self.cx.diags.push(
-                    Diagnostic::error("E0905", msg, mspan)
-                        .with_cause("only `append` on `list` is supported in M3"),
+                    Diagnostic::error("E0905", msg, mspan).with_cause(
+                        "only `append` on `list` and `get` on `dict` are supported in M3",
+                    ),
                 );
                 Ty::Error
             }
@@ -2367,14 +2617,27 @@ impl<'a> FnCk<'a> {
                 let t = self.expr(operand, env);
                 self.unary_result(*op, t, e.span)
             }
+            ExprKind::Binary {
+                op: BinOp::In | BinOp::NotIn,
+                lhs,
+                rhs,
+            } => self.in_expr(lhs, rhs, env),
             ExprKind::Binary { op, lhs, rhs } => {
                 let lt = self.expr(lhs, env);
                 let rt = self.expr(rhs, env);
                 self.binary(*op, lt, rt, e.span)
             }
             ExprKind::List(items) => self.list_literal(items, env, None, e.span),
+            ExprKind::Dict(entries) => self.dict_literal(entries, env, None, e.span),
             ExprKind::Index { base, index } => {
                 let bt = self.expr(base, env);
+                if let Ty::Dict(d) = bt {
+                    let (k, v) = self.cx.types.dict_args(d);
+                    let it = self.expr_hint(index, env, Some(k));
+                    self.cx
+                        .require(it, k, index.span, "a key of the dict", None);
+                    return v;
+                }
                 let it = self.expr(index, env);
                 self.cx.require(
                     it,
@@ -2520,6 +2783,8 @@ impl<'a> FnCk<'a> {
                 }
                 BinOp::And | BinOp::Or => (l == Ty::Bool && r == Ty::Bool).then_some(Ty::Bool),
                 BinOp::Div => None,
+                // `in` は `in_expr` で検査する
+                BinOp::In | BinOp::NotIn => None,
             }
         };
         if let Some(t) = rule(&[lt, rt]) {
@@ -2763,6 +3028,14 @@ impl<'a> FnCk<'a> {
                     self.unify(pe, ae, own, map);
                 }
             }
+            Ty::Dict(pd) => {
+                if let Ty::Dict(ad) = actual {
+                    let (pk, pv) = self.cx.types.dict_args(pd);
+                    let (ak, av) = self.cx.types.dict_args(ad);
+                    self.unify(pk, ak, own, map);
+                    self.unify(pv, av, own, map);
+                }
+            }
             Ty::Result(pr) => {
                 if let Ty::Result(ar) = actual {
                     let (po, pe) = self.cx.types.result_args(pr);
@@ -2833,7 +3106,10 @@ impl<'a> FnCk<'a> {
             );
             return Ty::Error;
         }
-        if callee.name == "len" && args.len() == 1 && matches!(arg_tys[0], Ty::List(_)) {
+        if callee.name == "len"
+            && args.len() == 1
+            && matches!(arg_tys[0], Ty::List(_) | Ty::Dict(_))
+        {
             return Ty::Int;
         }
         match callee.name.as_str() {
@@ -2995,6 +3271,21 @@ impl<'a> FnCk<'a> {
         }
         ret
     }
+}
+
+/// `dict` のキーに使える型（ADR-0015）。
+fn valid_dict_key(k: Ty) -> bool {
+    matches!(k, Ty::Int | Ty::Bool | Ty::Str | Ty::Error)
+}
+
+fn dict_key_error(name: &str, span: Span) -> Diagnostic {
+    Diagnostic::error(
+        "E0907",
+        format!("`{name}` cannot be used as a dict key"),
+        span,
+    )
+    .with_cause("dict keys must be `int`, `bool` or `str` (ADR-0015)")
+    .with_hint("use a `str` or `int` key, e.g. by building a string from the parts")
 }
 
 fn is_result_ctor(name: &str) -> bool {

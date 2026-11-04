@@ -65,7 +65,11 @@
 | E0902 | コレクション | `range` を `for` の外で使っている |
 | E0903 | コレクション | `for` で反復できない値（`list[T]` か `range(...)` だけ） |
 | E0904 | コレクション | `list` 以外に添字を付けている |
-| E0905 | コレクション | その型にないメソッド（M3 では `list` の `append` だけ） |
+| E0905 | コレクション | その型にないメソッド（M3 では `list` の `append` と `dict` の `get` だけ） |
+| E0906 | コレクション | 空の `{}` のキーと値の型が決まらない（`d: dict[str, int] = {}` のように注釈する） |
+| E0907 | コレクション | `dict` のキーに使えない型（キーは `int` / `bool` / `str`。ADR-0015） |
+| E0908 | コレクション | 値の型が `None` を含む `dict` に `.get` を使っている（「キーがない」と区別できない。`in` と `d[k]` を使う） |
+| E0909 | コレクション | `in` の右辺が `dict` ではない |
 | E1001 | Result | `Ok` / `Err` の、もう一方の型が期待型から決まらない（`r: Result[int, str] = Ok(1)` のように注釈する。ADR-0013） |
 | E1002 | Result | `Result` の型引数の制約違反（エラー型が `None` や `Unknown`、1つの Union に `Result` が2つ） |
 | E1003 | Result | `case Ok(x):` / `case Err(e):` を、型がちょうど `Result` ではない被検査値に使っている（先に `case Result():` や `is None` で絞り込む） |
@@ -90,6 +94,8 @@
 | assertion failed at ファイル:行:列 | `assert(cond)` の条件が偽 |
 | <msg> at ファイル:行:列 | `panic(msg)` を呼んだ |
 | index out of range: index i, length n | リストの添字が範囲外（負の添字は末尾から数える） |
+| key not found: キー | `d[k]` のキーがない（`str` のキーは引用符付きで表示する） |
+| dict changed size during iteration | `for k in d:` の途中で `d` のキーの数が変わった |
 
 プログラムの終了時に解放されていないオブジェクトが残っていた場合は、`runtime error: N object(s) were not freed (this is a compiler bug)` を出して終了コード 102 で終わる（ARC の誤りを検出するための検査、ADR-0012）。
 
@@ -101,6 +107,6 @@
 | `arg(i)` | `str \| None` | `i` 番目（0始まり）の引数。範囲外なら `None` |
 | `panic(msg)` | `None` | `msg`（`str`）を出して実行時エラーで終了する。戻らない文として扱う（値を返す関数の最後に書いてよい）。`unwrap` の代わりに `case Err(e): panic(e)` と書く（ADR-0013） |
 | `assert(cond)` | `None` | `cond` が偽なら実行時エラーで終了する。文として書くと、以降は `cond` が真の場合として絞り込む（`assert(x is not None)`） |
-| `len(x)` | `int` | 文字列の長さ（文字数 = Unicode のコードポイント数。Python の `len` と同じ）、またはリストの要素数 |
+| `len(x)` | `int` | 文字列の長さ（文字数 = Unicode のコードポイント数。Python の `len` と同じ）、リストの要素数、または辞書のキーの数 |
 | `range(n)` / `range(a, b)` | — | `for` の中だけで使える整数の範囲 |
 | `parse_scalar(s)` | `Unknown` | 10進の整数 → `int`、`true` / `false` → `bool`、`null` → `None`、それ以外 → `str` |

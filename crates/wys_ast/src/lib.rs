@@ -196,6 +196,8 @@ pub enum ExprKind {
     },
     /// `[a, b, c]`（リストのリテラル、M3 T4a）
     List(Vec<Expr>),
+    /// `{k: v, ...}`（辞書のリテラル、M3 T6a）
+    Dict(Vec<(Expr, Expr)>),
     /// `base[index]`
     Index {
         base: Box<Expr>,
@@ -238,6 +240,10 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    /// `k in d`（`dict` のキーの存在、ADR-0015）
+    In,
+    /// `k not in d`
+    NotIn,
 }
 
 impl BinOp {
@@ -257,6 +263,8 @@ impl BinOp {
             BinOp::Ge => ">=",
             BinOp::And => "and",
             BinOp::Or => "or",
+            BinOp::In => "in",
+            BinOp::NotIn => "not in",
         }
     }
 }

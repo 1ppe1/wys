@@ -1,0 +1,21 @@
+# d.get(k) は V | None を返し、is None で絞り込む。空の dict は型注釈で作る
+# expect-stdout: 10
+# expect-stdout: missing
+# expect-stdout: 0
+# expect-stdout: 1
+def lookup(d: dict[int, int], k: int) -> None:
+    v = d.get(k)
+    if v is None:
+        print("missing")
+    else:
+        print(v * 10)
+
+def main() -> None:
+    d: dict[int, int] = {}
+    d[7] = 1
+    lookup(d, 7)
+    lookup(d, 8)
+    e: dict[str, str] = {}
+    print(len(e))
+    e["k"] = "v"
+    print(len(e))

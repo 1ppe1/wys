@@ -459,3 +459,17 @@ fn panic_flushes_stdout_and_exits_with_101() {
     );
     assert!(stderr.trim_end().ends_with(":3:5"), "{stderr}");
 }
+
+#[test]
+fn dict_counts_words_in_insertion_order() {
+    let path = scratch(
+        "dict_count",
+        "def main() -> None:\n    counts: dict[str, int] = {}\n    for w in [\"b\", \"a\", \"b\", \"c\", \"b\"]:\n        n = counts.get(w)\n        if n is None:\n            counts[w] = 1\n        else:\n            counts[w] = n + 1\n    for w in counts:\n        print(w)\n        print(counts[w])\n    print(\"z\" in counts)\n",
+    );
+    let run = cli(&["run", path.to_str().unwrap()]);
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8(run.stdout).unwrap(),
+        "b\n3\na\n1\nc\n1\nFalse\n"
+    );
+}
