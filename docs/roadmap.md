@@ -8,7 +8,8 @@
 | 週2（PoC1: ソース → Native 実行） | 完了。ADR-0004/0008 Accepted |
 | 週3（Conformance 48ケース・AI ループ・PoC2 実験・ADR-0005〜0007 草案） | 完了。ADR-0005〜0007 は設計レビュー（Fable）を経て Accepted |
 | 週4（文法 v0.1・用語集・ベンチ骨格・出口判定） | 完了。**Phase 0 の出口条件（ADR-0002〜0008 が Accepted、PoC1 が CI で動く）を満たした** |
-| 次 | M1（最小サブセットの仕上げ）。`cargo check` の編集後フックはユーザーが導入するか判断する |
+| M1（最小サブセット） | **完了**。AC-001 / AC-004 / AC-005 を確認（`docs/test-plan.md`）。CLI 名は `wys` |
+| 次 | M2（Union/None、Generics、match、レコード、Unknown、モジュール、fmt/test、Linux CI） |
 
 ## Context
 
