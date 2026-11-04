@@ -1,0 +1,11 @@
+[package]
+name = "wys_typeck"
+description = "型検査・型推論"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -34,7 +34,7 @@ Pythonの簡潔さ、TypeScriptの型表現力、Nim/Codon/Mojoのネイティ�
 ├── .claude/           # Claude Code のプロジェクト設定
 ├── Cargo.toml         # Rust ワークスペース
 ├── rust-toolchain.toml
-├── crates/sg_*/       # コンパイラ・ランタイム・CLI（sg は内部コードネーム）
+├── crates/wys_*/      # コンパイラ・ランタイム・CLI（wys は内部コードネーム）
 └── docs/
     ├── README.md      # ドキュメント索引
     ├── ai_native_language_requirements.md

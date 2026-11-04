@@ -636,60 +636,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sg_ast"
-version = "0.0.0"
-
-[[package]]
-name = "sg_backend"
-version = "0.0.0"
-
-[[package]]
-name = "sg_cli"
-version = "0.0.0"
-
-[[package]]
-name = "sg_diagnostics"
-version = "0.0.0"
-dependencies = [
- "jsonschema",
- "serde",
- "serde_json",
- "sg_span",
-]
-
-[[package]]
-name = "sg_driver"
-version = "0.0.0"
-
-[[package]]
-name = "sg_ir"
-version = "0.0.0"
-
-[[package]]
-name = "sg_lexer"
-version = "0.0.0"
-
-[[package]]
-name = "sg_parser"
-version = "0.0.0"
-
-[[package]]
-name = "sg_runtime"
-version = "0.0.0"
-
-[[package]]
-name = "sg_span"
-version = "0.0.0"
-
-[[package]]
-name = "sg_testharness"
-version = "0.0.0"
-
-[[package]]
-name = "sg_typeck"
-version = "0.0.0"
-
-[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -874,6 +820,60 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
+name = "wys_ast"
+version = "0.0.0"
+
+[[package]]
+name = "wys_backend"
+version = "0.0.0"
+
+[[package]]
+name = "wys_cli"
+version = "0.0.0"
+
+[[package]]
+name = "wys_diagnostics"
+version = "0.0.0"
+dependencies = [
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "wys_span",
+]
+
+[[package]]
+name = "wys_driver"
+version = "0.0.0"
+
+[[package]]
+name = "wys_ir"
+version = "0.0.0"
+
+[[package]]
+name = "wys_lexer"
+version = "0.0.0"
+
+[[package]]
+name = "wys_parser"
+version = "0.0.0"
+
+[[package]]
+name = "wys_runtime"
+version = "0.0.0"
+
+[[package]]
+name = "wys_span"
+version = "0.0.0"
+
+[[package]]
+name = "wys_testharness"
+version = "0.0.0"
+
+[[package]]
+name = "wys_typeck"
+version = "0.0.0"
 
 [[package]]
 name = "yoke"

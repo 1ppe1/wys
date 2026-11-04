@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://sg.invalid/schemas/diagnostics/v0.json",
-  "title": "sg diagnostics report",
+  "$id": "https://wys.invalid/schemas/diagnostics/v0.json",
+  "title": "wys diagnostics report",
   "description": "`check --format json` が出力する構造化診断（DX-002, AC-005）。v0 は M0 時点の草案で、破壊的変更がありうる。",
   "type": "object",
   "required": ["schema_version", "diagnostics"],

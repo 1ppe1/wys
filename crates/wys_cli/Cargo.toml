@@ -1,0 +1,11 @@
+[package]
+name = "wys_cli"
+description = "コマンドラインインターフェース（build/run/check）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
