@@ -1,0 +1,8 @@
+# `uses pure` の関数で `print`（io）を呼ぶ
+# expect-error: E1102 4:5
+def f(x: int) -> int uses pure:
+    print(x)
+    return x
+
+def main() -> None:
+    print(f(1))

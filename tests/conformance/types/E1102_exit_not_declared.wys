@@ -1,0 +1,9 @@
+# `uses io` の関数で `exit`（exit）を呼ぶ
+# expect-error: E1102 5:9
+def check(x: int) -> None uses io:
+    if x < 0:
+        exit(1)
+    print(x)
+
+def main() -> None:
+    check(1)

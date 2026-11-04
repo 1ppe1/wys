@@ -93,7 +93,17 @@ pub struct FuncDef {
     pub type_params: Vec<Ident>,
     pub params: Vec<Param>,
     pub ret: TypeExpr,
+    /// `uses io, exit` 節（ADR-0014）。書かれていなければ `None`。
+    pub effects: Option<EffectClause>,
     pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+/// 関数の `uses` 節（ADR-0014）。名前の検査（未知の名前、重複）は型検査で行う。
+#[derive(Debug, Clone)]
+pub struct EffectClause {
+    pub names: Vec<Ident>,
+    /// `uses` から最後の名前の終わりまで。
     pub span: Span,
 }
 

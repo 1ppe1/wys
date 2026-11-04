@@ -1,0 +1,7 @@
+# 同じ Effect の重複
+# expect-error: E1104 3:32
+def f(x: int) -> None uses io, io:
+    print(x)
+
+def main() -> None:
+    f(1)

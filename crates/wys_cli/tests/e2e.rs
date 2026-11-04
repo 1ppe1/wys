@@ -558,3 +558,25 @@ fn explain_looks_up_error_codes() {
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(err.contains("unknown error code `E9999`"), "{err}");
 }
+
+#[test]
+fn effects_are_checked_and_do_not_change_the_program() {
+    // 注釈のある関数が宣言にない Effect を使うと E1102。修正案は `uses` 節を書き換える
+    let bad = scratch(
+        "effects_bad",
+        "def log(x: int) -> None uses pure:\n    print(x)\n\ndef main() -> None:\n    log(1)\n",
+    );
+    let out = cli(&["check", "--format", "json", bad.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let d = &v["diagnostics"][0];
+    assert_eq!(d["code"], "E1102");
+    assert_eq!(d["hints"][0]["replacement"]["text"], "io");
+    // 注釈を正しく書けば、注釈のないプログラムと同じように動く
+    let (code, stdout, _) = run(
+        "effects_ok",
+        "def log(x: int) -> None uses io:\n    print(x)\n\ndef main() -> None uses io:\n    log(1)\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1\n");
+}

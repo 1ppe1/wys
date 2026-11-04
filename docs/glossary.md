@@ -17,7 +17,8 @@
 | ARC / ORC | 参照カウントによる自動メモリ管理。ORCは循環参照の回収を加えた方式（Nimの用語） | MEM-003, 未決定事項 4 |
 | 説明レポート（explain） | `wys explain <file>` が出す JSON。関数ごとのシグネチャ、ローカル変数の型、絞り込み、ARC 操作とその理由。静的な事実だけを含む（DX-004） | ADR-0017, docs/spec/explain-schema.json |
 | ARC 操作の理由 | ARC パスが `retain` / `release` を挿入した理由の識別子（`borrow_from_mutable_place` など7種類）。IR の命令が持ち、`dump-ir` と `wys explain` に出す | ADR-0017, docs/design/ir.md |
-| Effect | 関数が持つ副作用（ネットワーク、ファイル操作など）の種類。静的診断とRuntime強制の両方に使う | AI-009, 未決定事項 5 |
+| Effect | 関数が持つ副作用（ネットワーク、ファイル操作など）の種類。静的診断とRuntime強制の両方に使う。Phase 1 は `io`（`print`、`arg`）と `exit`（`exit`）の2つで、注釈だけを検査する（パニックは Effect にしない） | AI-009, 未決定事項 5, ADR-0014 |
+| `uses` 節 | 関数の戻り値の型の後ろに書く Effect の宣言（`def f() -> None uses io:`）。Effect がなければ `uses pure`。書いた関数だけを検査し、書かない関数は検査しない | ADR-0014 |
 | Capability | エージェントやコードが使ってよい能力（ファイル、ネットワーク、外部サービスなど）を表す権限。Runtimeが強制する | AI-004, P-05 |
 | 承認フロー | 高リスク操作の実行前に人間などの承認を求め、Runtimeが強制する仕組み | AI-005 |
 | 予算（Budget） | タイムアウト、実行回数、トークン数、費用の上限 | AI-006 |

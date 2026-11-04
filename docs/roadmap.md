@@ -10,7 +10,7 @@
 | 週4（文法 v0.1・用語集・ベンチ骨格・出口判定） | 完了。**Phase 0 の出口条件（ADR-0002〜0008 が Accepted、PoC1 が CI で動く）を満たした** |
 | M1（最小サブセット） | **完了**。AC-001 / AC-004 / AC-005 を確認（`docs/test-plan.md`）。CLI 名は `wys` |
 | M2（型拡張・モジュール） | **完了**（出口判定は [docs/plans/m2.md](plans/m2.md)）。AC-002 / AC-003、LANG-001・003〜006、DX-001 合格。DX-005 は計測の仕組みまで（計測はユーザー） |
-| M3 | 計画承認済み（[docs/plans/m3.md](plans/m3.md)）。T0・T1（ADR-0012 Accepted）・T2a（ヒープと ARC の基盤）・T2b（文字列の操作）・T3（ASan と Debug / Release の CI）・T4a（`list[T]` と `for`）完了、T4b（参照型の要素と入れ子、借用の安全条件）完了、ADR-0013 Accepted、T5a（`Result` の型・構築子・束縛パターン）完了、T5b（`?`）完了、T5c（パニックの仕様と `panic()`）完了、ADR-0015 Accepted、T6a（`dict` の型・リテラル・`d[k]`・`in`・`.get`・`len`・`for`）完了、T6b（`.pop`）完了、T7（ベンチ基盤の拡充）完了、ADR-0017 Accepted、T8a（ARC 操作の理由）完了、T8b（`wys explain`）PR 中 |
+| M3 | 計画承認済み（[docs/plans/m3.md](plans/m3.md)）。T0・T1（ADR-0012 Accepted）・T2a（ヒープと ARC の基盤）・T2b（文字列の操作）・T3（ASan と Debug / Release の CI）・T4a（`list[T]` と `for`）完了、T4b（参照型の要素と入れ子、借用の安全条件）完了、ADR-0013 Accepted、T5a（`Result` の型・構築子・束縛パターン）完了、T5b（`?`）完了、T5c（パニックの仕様と `panic()`）完了、ADR-0015 Accepted、T6a（`dict` の型・リテラル・`d[k]`・`in`・`.get`・`len`・`for`）完了、T6b（`.pop`）完了、T7（ベンチ基盤の拡充）完了、ADR-0017 Accepted、T8a（ARC 操作の理由）完了、T8b（`wys explain`）完了、ADR-0014 Accepted、T9a（Effect の注釈と検査）PR 中 |
 
 ## Context
 

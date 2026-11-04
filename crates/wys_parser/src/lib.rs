@@ -438,6 +438,20 @@ impl Parser<'_> {
             return Err(Reported);
         }
         let ret = self.type_expr()?;
+        // `uses` 節（ADR-0014）。`uses` はこの位置でだけ意味を持つソフトキーワード
+        let effects = if matches!(self.peek(), TokenKind::Ident(n) if n == "uses") {
+            let uses = self.bump().span;
+            let mut names = vec![self.ident("an effect name")?];
+            while self.eat(&TokenKind::Comma) {
+                names.push(self.ident("an effect name")?);
+            }
+            Some(EffectClause {
+                names,
+                span: Span::new(uses.start, self.prev_end()),
+            })
+        } else {
+            None
+        };
         self.expect(&TokenKind::Colon, "`:`")?;
         let body = self.block()?;
         Ok(FuncDef {
@@ -446,6 +460,7 @@ impl Parser<'_> {
             type_params,
             params,
             ret,
+            effects,
             body,
             span: Span::new(start, self.prev_end()),
         })

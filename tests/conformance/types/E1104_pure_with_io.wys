@@ -1,0 +1,8 @@
+# `pure` とほかの Effect は併記できない
+# expect-error: E1104 3:31
+def f(x: int) -> int uses io, pure:
+    print(x)
+    return x
+
+def main() -> None:
+    print(f(1))

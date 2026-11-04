@@ -1,0 +1,9 @@
+# モジュールをまたぐ呼び出しにも同じ規則を使う（ADR-0014）
+# expect-error: E1102 6:5
+import log
+
+def quiet(msg: str) -> None uses pure:
+    log.info(msg)
+
+def main() -> None:
+    quiet("x")

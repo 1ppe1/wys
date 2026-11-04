@@ -1,0 +1,7 @@
+# `uses` はソフトキーワード: `-> uses:` は型名 `uses` として読む（ADR-0014）
+# expect-error: E0203 3:12
+def f() -> uses:
+    return 1
+
+def main() -> None:
+    f()

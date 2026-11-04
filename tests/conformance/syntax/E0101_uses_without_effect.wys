@@ -1,0 +1,7 @@
+# `uses` の後に Effect の名前がない（ADR-0014）
+# expect-error: E0101 3:20
+def f() -> int uses:
+    return 1
+
+def main() -> None:
+    print(f())

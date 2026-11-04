@@ -3,7 +3,7 @@
 コンパイラが出す診断のコード。`check --format json` の `code` フィールドに入る（[diagnostics-schema.json](diagnostics-schema.json)）。
 
 - 一度割り当てたコードの意味は変えない。使わなくなったら「廃止」と書いて残す（要件IDと同じ運用）。
-- 範囲: `E00xx` 字句解析、`E01xx` 構文解析、`E02xx` 型検査、`E03xx` 絞り込み・`match`、`E04xx` Generics、`E05xx` レコード、`E06xx` `Unknown`、`E07xx` モジュール（ADR-0010）、`E09xx` コレクション（`list` / `for` / 添字）、`E10xx` `Result` と `?`（ADR-0013）、`E08xx` テスト（`wys test`）、`W03xx` 警告（M2 計画、`docs/plans/m2.md`）。
+- 範囲: `E00xx` 字句解析、`E01xx` 構文解析、`E02xx` 型検査、`E03xx` 絞り込み・`match`、`E04xx` Generics、`E05xx` レコード、`E06xx` `Unknown`、`E07xx` モジュール（ADR-0010）、`E09xx` コレクション（`list` / `for` / 添字）、`E10xx` `Result` と `?`（ADR-0013）、`E11xx` Effect（ADR-0014）、`E08xx` テスト（`wys test`）、`W03xx` 警告（M2 計画、`docs/plans/m2.md`）。
 - メッセージは英語。コードと範囲で機械的に判別できるようにする。
 - `wys explain E0201` で、下の表の行（段階と意味）を JSON で引ける（ADR-0017）。表の形式（`| コード | 段階 | 意味 |`）はツールの入力でもあるので、列を変えるときは `crates/wys_explain` も直す。
 
@@ -79,6 +79,10 @@
 | E1010 | Result | `?` を `Result` 以外に使っている（`T \| None` には使えない。ADR-0006） |
 | E1011 | Result | `Result` を返さない関数（`main` を含む）で `?` を使っている |
 | E1012 | Result | `?` の被演算子のエラー型が、関数が宣言したエラー型に収まらない（収まらない構成要素を列挙する） |
+| E1101 | Effect | 未知の Effect 名（Phase 1 は `io` / `exit` / `pure` だけ。ADR-0014） |
+| E1102 | Effect | 呼び出し先の Effect を、呼び出し元の `uses` が宣言していない（修正案で `uses` 節を書き換える） |
+| E1103 | Effect | `uses` を書いた関数から、`uses` のない関数を呼んでいる |
+| E1104 | Effect | `uses` の並びが正しくない（同じ名前の重複、`pure` とほかの名前の併記） |
 | W0301 | match（警告） | それより前の `case` ですでに網羅されているため、到達しない `case`。警告だけならビルドできる |
 
 欠番（未割り当て）: E0212、E0506、E0507。廃止: E0405（`list` はまだ使えない。M3 T4a で `list` に対応したため廃止）。一度割り当てたコードは再利用しない。
