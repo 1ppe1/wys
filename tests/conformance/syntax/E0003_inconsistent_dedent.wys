@@ -1,0 +1,5 @@
+# expect-error: E0003 5:1
+def main() -> None:
+    if True:
+        pass
+      pass

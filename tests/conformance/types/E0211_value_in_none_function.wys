@@ -1,0 +1,3 @@
+# expect-error: E0211 3:12
+def main() -> None:
+    return 1

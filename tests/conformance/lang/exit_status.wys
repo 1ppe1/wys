@@ -1,0 +1,7 @@
+# exit() は直ちに終了し、後続の文は実行しない
+# expect-stdout: before
+# expect-exit: 3
+def main() -> None:
+    print("before")
+    exit(3)
+    print("after")

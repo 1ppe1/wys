@@ -1,0 +1,6 @@
+# expect-error: E0204 6:11
+def main() -> None:
+    c = True
+    if c:
+        x = 1
+    print(x)

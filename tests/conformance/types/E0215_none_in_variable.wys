@@ -1,0 +1,3 @@
+# expect-error: E0215 3:9
+def main() -> None:
+    x = print("hi")

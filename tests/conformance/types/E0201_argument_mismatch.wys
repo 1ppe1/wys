@@ -1,0 +1,7 @@
+# AC-001: 型の合わない値を関数に渡す
+# expect-error: E0201 7:18
+def double(x: int) -> int:
+    return x * 2
+
+def main() -> None:
+    print(double("ten"))

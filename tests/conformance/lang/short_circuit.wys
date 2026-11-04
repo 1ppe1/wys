@@ -1,0 +1,13 @@
+# 右辺は必要なときだけ評価される
+# expect-stdout: False
+# expect-stdout: True
+# expect-stdout: evaluated
+# expect-stdout: True
+def loud() -> bool:
+    print("evaluated")
+    return True
+
+def main() -> None:
+    print(False and loud())
+    print(True or loud())
+    print(True and loud())

@@ -1,0 +1,7 @@
+# expect-stdout: 1
+def f() -> int:
+    return 1
+    print(2)
+
+def main() -> None:
+    print(f())

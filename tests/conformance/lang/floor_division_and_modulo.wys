@@ -1,0 +1,16 @@
+# Python と同じ丸め: 商は負の無限大方向、剰余の符号は除数と同じ
+# expect-stdout: 3
+# expect-stdout: -4
+# expect-stdout: -4
+# expect-stdout: 3
+# expect-stdout: 1
+# expect-stdout: 2
+# expect-stdout: -2
+def main() -> None:
+    print(7 // 2)
+    print(-7 // 2)
+    print(7 // -2)
+    print(-7 // -2)
+    print(7 % 3)
+    print(-7 % 3)
+    print(7 % -3)

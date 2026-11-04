@@ -1,0 +1,3 @@
+# expect-error: E0006 3:11
+def main() -> None:
+    x = "a\q"

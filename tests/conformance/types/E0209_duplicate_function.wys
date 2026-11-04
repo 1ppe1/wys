@@ -1,0 +1,9 @@
+# expect-error: E0209 5:5
+def f() -> None:
+    pass
+
+def f() -> None:
+    pass
+
+def main() -> None:
+    pass

@@ -1,0 +1,4 @@
+# expect-error: E0201 4:9
+def main() -> None:
+    x = 1
+    x = "one"

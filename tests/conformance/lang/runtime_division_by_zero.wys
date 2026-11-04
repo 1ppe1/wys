@@ -1,0 +1,5 @@
+# expect-exit: 101
+# expect-stderr-contains: integer division by zero
+def main() -> None:
+    z = 0
+    print(1 // z)

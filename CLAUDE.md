@@ -14,7 +14,7 @@
 - 文書は日本語で書く。技術用語は `docs/glossary.md` の表記に揃え、新しい用語を導入したら用語集にも追加する。
 - **要件ID（LANG-001, AI-004, AC-001 など）は採番済みのものを変更・再利用しない。** 廃止する場合は「廃止」と明記して残す。新規要件は各カテゴリの末尾の番号に続けて追加する。
 - 要件定義書の「12. 構文イメージ」は**非規範的**。確定構文として扱ったり、それを前提に仕様を書いたりしない。
-- 設計判断は `docs/adr/` にADRとして記録する。AIは `Proposed` で起草するだけで、`Accepted` にするのはユーザー（手順は `docs/adr/README.md`）。要件定義書「10. 未決定事項」の項目を決めたら、ADRを作成し、ADR一覧の対応欄を更新する。
+- 設計判断は `docs/adr/` にADRとして記録する（手順は `docs/adr/README.md`。下の「レビューゲート」も参照）。要件定義書「10. 未決定事項」の項目を決めたら、ADRを作成し、ADR一覧の対応欄を更新する。
 - 新しい文書を追加したら `docs/README.md` の索引を更新する。
 - 性能について根拠のない倍率（「Python比○倍」など）を書かない（要件定義書 5.1 の方針）。
 
@@ -39,6 +39,23 @@ target/debug/wys_cli dump-ir examples/fib.wys
 
 - 新しいエラーコードを追加したら `docs/spec/error-codes.md` に追記する。コードは再利用しない。
 - 言語機能を追加したら、`crates/wys_cli/tests/e2e.rs` に実行結果のテストを追加する。
+
+## 開発の進め方（テスト先行の閉ループ）
+
+1. **テストを先に書く。** 言語の挙動は `tests/conformance/` に `.wys` ケースとして追加する（書き方は `crates/wys_testharness/src/lib.rs` の先頭コメント）。
+   - 実行結果: `lang/`。`# expect-stdout:` `# expect-exit:` `# expect-stderr-contains:`
+   - 構文エラー: `syntax/`、型エラー: `types/`。`# expect-error: CODE 行:列`
+   - 診断 JSON の形も固定したいもの: `diagnostics/`（insta スナップショット）
+2. 新しいケースが**失敗することを確認してから**実装する。
+3. `.wys` の挙動は `scripts/ai-loop.sh <file>` で確かめる。診断があれば JSON が返るので、`code`・`span`・`hints` を読んで直す。
+4. `./scripts/ci.sh` が通るまで作業を終えない。
+5. スナップショットを意図して変えたときは `INSTA_UPDATE=always cargo test -p wys_testharness` で更新し、差分を確認してからコミットする。
+6. 新しいエラーコードは `docs/spec/error-codes.md` に追記し、対応するケースを必ず作る（`every_error_code_has_a_case` テストが検査する）。
+
+## レビューゲート
+
+- ADR は AI が `Proposed` で起草し、`Accepted` にするのはユーザー。
+- 作業はブランチで行い、`main` へのマージ・push・リポジトリ設定の変更はユーザーの指示を受けてから行う。
 
 ## 設計上の前提（要件定義書より）
 

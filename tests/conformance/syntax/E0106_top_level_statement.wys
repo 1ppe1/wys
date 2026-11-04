@@ -1,0 +1,5 @@
+# expect-error: E0106 2:1
+x = 1
+
+def main() -> None:
+    pass

@@ -1,0 +1,6 @@
+# int の最小値の符号反転はオーバーフローする
+# expect-exit: 101
+# expect-stderr-contains: integer overflow
+def main() -> None:
+    m = -9223372036854775807 - 1
+    print(-m)

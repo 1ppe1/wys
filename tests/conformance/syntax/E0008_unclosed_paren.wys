@@ -1,0 +1,5 @@
+# ファイル末尾まで括弧が閉じないと、構文エラー（E0101）も続いて出る
+# expect-error: E0008 6:1
+# expect-error: E0101 6:1
+def main() -> None:
+    print(1

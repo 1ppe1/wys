@@ -1,0 +1,3 @@
+# expect-error: E0001 3:11
+def main() -> None:
+    x = 1 $

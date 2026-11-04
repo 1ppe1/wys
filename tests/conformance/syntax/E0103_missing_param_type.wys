@@ -1,0 +1,6 @@
+# expect-error: E0103 2:7
+def f(x) -> None:
+    pass
+
+def main() -> None:
+    pass
