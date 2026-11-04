@@ -495,6 +495,8 @@ pub struct FuncSig {
     pub params: Vec<Ty>,
     pub ret: Ty,
     pub span: Span,
+    /// `uses` 節で宣言した Effect（ADR-0014）。注釈がなければ `None`（検査しない）。
+    pub effects: Option<EffectSet>,
 }
 
 /// 変数の参照で、その地点の型が宣言型と異なる（絞り込まれている）こと。
@@ -515,6 +517,8 @@ pub struct FuncInfo {
     pub local_spans: Vec<Span>,
     /// 変数の参照のうち、型が宣言型から絞り込まれていたもの（位置の順。`wys explain` 用）。
     pub narrowings: Vec<Narrowing>,
+    /// 関数の呼び出しと、呼び出し先の Effect（位置の順。`wys explain` 用）。
+    pub effect_sites: Vec<EffectSite>,
 }
 
 #[derive(Debug, Clone)]
@@ -533,6 +537,98 @@ impl TypeckResult {
     pub fn ty(&self, e: &Expr) -> Ty {
         self.expr_types[e.id.0 as usize]
     }
+}
+
+/// Effect（ADR-0014）。Phase 1 は2種類だけ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Effect {
+    /// 外界との入出力（`print`、`arg` / `arg_count`）
+    Io,
+    /// プロセスの終了（`exit`）
+    Exit,
+}
+
+impl Effect {
+    pub const ALL: [Effect; 2] = [Effect::Io, Effect::Exit];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Effect::Io => "io",
+            Effect::Exit => "exit",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Effect> {
+        Effect::ALL.into_iter().find(|e| e.name() == s)
+    }
+
+    fn bit(self) -> u8 {
+        match self {
+            Effect::Io => 1,
+            Effect::Exit => 2,
+        }
+    }
+}
+
+/// Effect の集合。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct EffectSet(u8);
+
+impl EffectSet {
+    pub fn insert(&mut self, e: Effect) {
+        self.0 |= e.bit();
+    }
+
+    pub fn contains(self, e: Effect) -> bool {
+        self.0 & e.bit() != 0
+    }
+
+    pub fn union(self, other: EffectSet) -> EffectSet {
+        EffectSet(self.0 | other.0)
+    }
+
+    /// 宣言の順（`io`, `exit`）の一覧。
+    pub fn iter(self) -> Vec<Effect> {
+        Effect::ALL
+            .into_iter()
+            .filter(|e| self.contains(*e))
+            .collect()
+    }
+
+    /// `self` にあって `other` にないもの。
+    pub fn missing_from(self, other: EffectSet) -> Vec<Effect> {
+        self.iter()
+            .into_iter()
+            .filter(|e| !other.contains(*e))
+            .collect()
+    }
+
+    pub fn names(self) -> Vec<&'static str> {
+        self.iter().into_iter().map(Effect::name).collect()
+    }
+}
+
+/// 組み込み関数の Effect（ADR-0014 論点 6）。組み込み関数でなければ `None`。
+pub fn builtin_effects(name: &str) -> Option<EffectSet> {
+    if !BUILTINS.contains(&name) {
+        return None;
+    }
+    let mut s = EffectSet::default();
+    match name {
+        "print" | "arg" | "arg_count" => s.insert(Effect::Io),
+        "exit" => s.insert(Effect::Exit),
+        _ => {}
+    }
+    Some(s)
+}
+
+/// 関数の呼び出しと、呼び出し先の Effect（`wys explain` 用）。
+#[derive(Debug, Clone)]
+pub struct EffectSite {
+    pub callee: String,
+    pub span: Span,
+    /// 呼び出し先の Effect。注釈のない関数なら `None`。
+    pub effects: Option<EffectSet>,
 }
 
 const BUILTINS: &[&str] = &[
@@ -600,12 +696,14 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
         } else {
             cx.sig_index.insert(f.name.name.clone(), cx.sigs.len());
         }
+        let effects = f.effects.as_ref().map(|c| effect_clause(&mut cx, c));
         cx.sigs.push(FuncSig {
             name: f.name.name.clone(),
             type_params,
             params,
             ret,
             span: f.name.span,
+            effects,
         });
     }
     if require_main || cx.sig_index.contains_key("main") {
@@ -672,6 +770,53 @@ fn declare_types(cx: &mut Ctx, module: &Module) {
             cx.resolve_alias(&t.name.name);
         }
     }
+}
+
+/// `uses` 節を Effect の集合にする。未知の名前（E1101）と、重複や `pure` の併記（E1104）を報告する。
+fn effect_clause(cx: &mut Ctx, c: &EffectClause) -> EffectSet {
+    let mut set = EffectSet::default();
+    let mut seen: Vec<&str> = Vec::new();
+    for n in &c.names {
+        if seen.contains(&n.name.as_str()) {
+            cx.diags.push(
+                Diagnostic::error(
+                    "E1104",
+                    format!("effect `{}` is listed more than once", n.name),
+                    n.span,
+                )
+                .with_hint("remove the duplicate"),
+            );
+            continue;
+        }
+        seen.push(&n.name);
+        if n.name == "pure" {
+            continue;
+        }
+        if let Some(e) = Effect::parse(&n.name) {
+            set.insert(e);
+        } else {
+            cx.diags.push(
+                Diagnostic::error("E1101", format!("unknown effect `{}`", n.name), n.span)
+                    .with_hint("the effects are `io` and `exit`; write `uses pure` for none"),
+            );
+        }
+    }
+    if let Some(pure) = c.names.iter().find(|p| p.name == "pure")
+        && c.names.len() > 1
+        && c.names.iter().any(|n| n.name != "pure")
+    {
+        cx.diags.push(
+            Diagnostic::error(
+                "E1104",
+                "`pure` cannot be combined with other effects",
+                pure.span,
+            )
+            .with_hint(
+                "`uses pure` means the function has no effects; remove `pure` or the other names",
+            ),
+        );
+    }
+    set
 }
 
 fn check_main(cx: &mut Ctx, module: &Module) {
@@ -1120,6 +1265,10 @@ struct FnCk<'a> {
     local_spans: Vec<Span>,
     /// 式ごとの絞り込み（ループで同じ式を検査し直したら上書きする）。
     narrowings: HashMap<ExprId, Narrowing>,
+    /// 検査している関数の名前と `uses` 節（ADR-0014）。
+    fn_name: String,
+    effects: Option<(EffectSet, EffectClause)>,
+    effect_sites: Vec<EffectSite>,
 }
 
 impl<'a> FnCk<'a> {
@@ -1132,6 +1281,9 @@ impl<'a> FnCk<'a> {
             locals: Vec::new(),
             local_spans: Vec::new(),
             narrowings: HashMap::new(),
+            fn_name: f.name.name.clone(),
+            effects: sig.effects.zip(f.effects.clone()),
+            effect_sites: Vec::new(),
         };
         ck.cx.push_type_scope(&f.type_params, &sig.type_params);
         let mut env = Env::new();
@@ -1173,10 +1325,13 @@ impl<'a> FnCk<'a> {
         }
         let mut narrowings: Vec<Narrowing> = ck.narrowings.into_values().collect();
         narrowings.sort_by_key(|n| (n.span.start, n.span.end));
+        let mut effect_sites = ck.effect_sites;
+        effect_sites.sort_by_key(|s| (s.span.start, s.span.end));
         FuncInfo {
             locals: ck.locals,
             local_spans: ck.local_spans,
             narrowings,
+            effect_sites,
         }
     }
 
@@ -3142,7 +3297,96 @@ impl<'a> FnCk<'a> {
         }
     }
 
+    /// 呼び出しの Effect を記録し、呼び出し元に `uses` があれば検査する（ADR-0014 論点 5）。
+    fn check_effects(&mut self, callee: &Ident) {
+        let effects = match builtin_effects(&callee.name) {
+            Some(e) => Some(e),
+            None => match self.cx.sig_index.get(&callee.name) {
+                Some(&i) => self.cx.sigs[i].effects,
+                // 未定義の関数は E0208 で報告済み
+                None => return,
+            },
+        };
+        self.effect_sites.push(EffectSite {
+            callee: callee.name.clone(),
+            span: callee.span,
+            effects,
+        });
+        let Some((declared, clause)) = &self.effects else {
+            return;
+        };
+        if callee.name == self.fn_name {
+            return;
+        }
+        let callee_span = self
+            .cx
+            .sig_index
+            .get(&callee.name)
+            .map(|&i| self.cx.sigs[i].span);
+        let Some(effects) = effects else {
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E1103",
+                    format!(
+                        "`{}` declares its effects but calls `{}`, which does not",
+                        self.fn_name, callee.name
+                    ),
+                    callee.span,
+                )
+                .with_cause("only built-in functions and functions with a `uses` clause can be called from a function with a `uses` clause")
+                .with_hint(format!(
+                    "add `uses ...` to `{}` (or `uses pure` if it has no effects)",
+                    callee.name
+                ))
+                .with_related(RelatedKind::Function, &callee.name, callee_span),
+            );
+            return;
+        };
+        let missing = effects.missing_from(*declared);
+        if missing.is_empty() {
+            return;
+        }
+        let names: Vec<&str> = missing.iter().map(|e| e.name()).collect();
+        let declared_text = if declared.iter().is_empty() {
+            "pure".to_string()
+        } else {
+            declared.names().join(", ")
+        };
+        let mut d = Diagnostic::error(
+            "E1102",
+            format!(
+                "`{}` calls `{}`, which has effect {}, but declares only `uses {declared_text}`",
+                self.fn_name,
+                callee.name,
+                names
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            callee.span,
+        );
+        // `uses pure` なら `pure` を置き換え、そうでなければ節の末尾に足す
+        d = match clause.names.iter().find(|n| n.name == "pure") {
+            Some(p) => d.with_fix(
+                format!("declare `uses {}`", names.join(", ")),
+                p.span,
+                names.join(", "),
+            ),
+            None => d.with_fix(
+                format!("add {} to the `uses` clause", names.join(", ")),
+                Span::new(clause.span.end, clause.span.end),
+                format!(", {}", names.join(", ")),
+            ),
+        };
+        if callee_span.is_some() {
+            d = d.with_related(RelatedKind::Function, &callee.name, callee_span);
+        }
+        self.cx.diags.push(d);
+    }
+
     fn call(&mut self, callee: &Ident, args: &[Expr], span: Span, id: ExprId, env: &Env) -> Ty {
+        self.check_effects(callee);
         // Generic でない関数なら、仮引数の型を手掛かりとして渡す（`f([])` のため）
         let hints: Vec<Option<Ty>> = match self.cx.sig_index.get(&callee.name) {
             Some(&i)
@@ -3425,6 +3669,46 @@ mod tests {
 
     fn main_with(body: &str) -> String {
         format!("def main() -> None:\n{body}")
+    }
+
+    #[test]
+    fn builtin_effects_follow_adr_0014() {
+        assert_eq!(builtin_effects("print").unwrap().names(), vec!["io"]);
+        assert_eq!(builtin_effects("arg").unwrap().names(), vec!["io"]);
+        assert_eq!(builtin_effects("exit").unwrap().names(), vec!["exit"]);
+        assert!(builtin_effects("panic").unwrap().names().is_empty());
+        assert!(builtin_effects("len").unwrap().names().is_empty());
+        assert!(builtin_effects("main").is_none());
+    }
+
+    #[test]
+    fn effects_are_checked_only_in_annotated_functions() {
+        // 注釈のない関数は何でも呼べる。自己再帰は常に通る
+        let free = "def f(n: int) -> int:\n    print(n)\n    return n\n\ndef g(n: int) -> int uses pure:\n    if n < 1:\n        return 0\n    return g(n - 1)\n";
+        assert_eq!(run(&with_main(free)), Vec::<&str>::new());
+        let wider = "def f() -> None uses io, exit:\n    print(1)\n    exit(1)\n";
+        assert_eq!(run(&with_main(wider)), Vec::<&str>::new());
+        let panics = "def f() -> None uses pure:\n    panic(\"x\")\n";
+        assert_eq!(run(&with_main(panics)), Vec::<&str>::new());
+        let both_missing = "def f() -> None uses pure:\n    print(1)\n    exit(1)\n";
+        assert_eq!(run(&with_main(both_missing)), vec!["E1102", "E1102"]);
+    }
+
+    #[test]
+    fn effect_sites_are_recorded_for_every_function() {
+        let src = "def f() -> None uses io:\n    print(1)\n\ndef main() -> None:\n    f()\n    g()\n\ndef g() -> None:\n    pass\n";
+        let (m, d) = wys_parser::parse_source(src);
+        assert!(d.is_empty());
+        let (tc, diags) = check(&m);
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(tc.sigs[0].effects.map(|e| e.names()), Some(vec!["io"]));
+        assert_eq!(tc.sigs[2].effects, None);
+        let main: Vec<(&str, Option<Vec<&str>>)> = tc.funcs[1]
+            .effect_sites
+            .iter()
+            .map(|s| (s.callee.as_str(), s.effects.map(|e| e.names())))
+            .collect();
+        assert_eq!(main, vec![("f", Some(vec!["io"])), ("g", None)]);
     }
 
     #[test]

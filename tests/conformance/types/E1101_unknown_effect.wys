@@ -1,0 +1,7 @@
+# Phase 1 の Effect は io / exit / pure だけ（ADR-0014）
+# expect-error: E1101 3:21
+def f() -> int uses net:
+    return 1
+
+def main() -> None:
+    print(f())

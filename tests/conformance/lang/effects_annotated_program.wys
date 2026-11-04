@@ -1,0 +1,36 @@
+# Effect の注釈（ADR-0014）: 注釈は実行結果を変えない
+# expect-stdout: 120
+# expect-stdout: 2
+# expect-stdout: 7
+# expect-stdout: done
+def fact(n: int) -> int uses pure:
+    if n <= 1:
+        return 1
+    return n * fact(n - 1)
+
+def first[T](xs: list[T]) -> T uses pure:
+    return xs[0]
+
+def show(x: int) -> None uses io:
+    print(x)
+
+def argc() -> int uses io:
+    return arg_count() + 1
+
+def safe_div(a: int, b: int) -> int uses exit:
+    if b == 0:
+        exit(2)
+    return a // b
+
+def report(x: int) -> None uses io, exit:
+    show(x)
+
+def run() -> None uses io, exit:
+    show(first([fact(5), 0]))
+    show(argc() + 1)
+    report(safe_div(14, 2))
+
+def main() -> None:
+    # 注釈のない関数からは何でも呼べる
+    run()
+    print("done")

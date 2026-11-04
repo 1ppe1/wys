@@ -1,0 +1,2 @@
+pub def info(msg: str) -> None uses io:
+    print(msg)

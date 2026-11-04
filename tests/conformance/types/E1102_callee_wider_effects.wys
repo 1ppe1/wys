@@ -1,0 +1,11 @@
+# 呼び出し先の Effect（io, exit）が、呼び出し元の宣言（io）に収まらない
+# expect-error: E1102 8:5
+def stop(x: int) -> None uses io, exit:
+    print(x)
+    exit(x)
+
+def run() -> None uses io:
+    stop(0)
+
+def main() -> None:
+    run()
