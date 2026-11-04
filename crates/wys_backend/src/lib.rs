@@ -446,8 +446,140 @@ fn emit_dict_glue(out: &mut String, p: &Program, drops: &DropInfo) {
     }
 }
 
+/// 型の値を比べる命令（`{dst} = ...`、結果は i1）。`int` / `bool` はその場で、ほかは型ごとの関数を呼ぶ（ADR-0016）。
+fn eq_inst(t: Ty, dst: &str, a: &str, b: &str) -> String {
+    match t {
+        Ty::Int | Ty::Bool => format!("  {dst} = icmp eq {} {a}, {b}", llty(t)),
+        Ty::Str => format!("  {dst} = call zeroext i1 @wys_str_eq(ptr {a}, ptr {b})"),
+        Ty::List(l) => format!("  {dst} = call i1 @wys_eq_list{}(ptr {a}, ptr {b})", l.0),
+        Ty::Dict(d) => format!("  {dst} = call i1 @wys_eq_dict{}(ptr {a}, ptr {b})", d.0),
+        Ty::Union(u) => format!(
+            "  {dst} = call i1 @wys_eq_u{}({u} {a}, {u} {b})",
+            u.0,
+            u = llty(t)
+        ),
+        Ty::Record(r) => format!(
+            "  {dst} = call i1 @wys_eq_r{}({r} {a}, {r} {b})",
+            r.0,
+            r = llty(t)
+        ),
+    }
+}
+
+/// `==` / `!=` で比べる型と、その構成要素の型（比較関数を作る必要があるもの）。
+fn eq_types(p: &Program) -> Vec<Ty> {
+    let mut work: Vec<Ty> = Vec::new();
+    for f in &p.funcs {
+        for b in &f.blocks {
+            for inst in &b.insts {
+                if let Inst::Binary {
+                    op: BinOp::Eq | BinOp::Ne,
+                    lhs,
+                    ..
+                } = inst
+                {
+                    work.push(f.temps[lhs.0 as usize]);
+                }
+            }
+        }
+    }
+    let mut seen: Vec<Ty> = Vec::new();
+    while let Some(t) = work.pop() {
+        if matches!(t, Ty::Int | Ty::Bool | Ty::Str) || seen.contains(&t) {
+            continue;
+        }
+        seen.push(t);
+        match t {
+            Ty::List(l) => work.push(p.lists[l.0 as usize]),
+            Ty::Dict(d) => work.push(p.dicts[d.0 as usize].1),
+            Ty::Union(u) => work.extend(p.unions[u.0 as usize].iter().flatten()),
+            Ty::Record(r) => work.extend(p.records[r.0 as usize].iter().map(|(_, t)| *t)),
+            Ty::Int | Ty::Bool | Ty::Str => {}
+        }
+    }
+    seen
+}
+
+/// 構造を持つ値の型ごとの比較関数（ADR-0016 論点 12・14）。被演算子は借用で読み、参照カウントは変えない。
+fn emit_eq_glue(out: &mut String, p: &Program) {
+    for t in eq_types(p) {
+        match t {
+            Ty::List(l) => {
+                let elem = p.lists[l.0 as usize];
+                let (size, lt) = (elem_size(p, elem), llty(elem));
+                let _ = writeln!(
+                    out,
+                    "\ndefine private i1 @wys_eq_list{i}(ptr %a, ptr %b) {{\nentry:\n  %la = call i64 @wys_list_len(ptr %a)\n  %lb = call i64 @wys_list_len(ptr %b)\n  %same = icmp eq i64 %la, %lb\n  br i1 %same, label %loop, label %no\nloop:\n  %i = phi i64 [0, %entry], [%i2, %next]\n  %more = icmp slt i64 %i, %la\n  br i1 %more, label %body, label %yes\nbody:\n  %sa = call ptr @wys_list_slot(ptr %a, i64 %i, i64 {size})\n  %sb = call ptr @wys_list_slot(ptr %b, i64 %i, i64 {size})\n  %xa = load {lt}, ptr %sa\n  %xb = load {lt}, ptr %sb\n{eq}\n  br i1 %e, label %next, label %no\nnext:\n  %i2 = add i64 %i, 1\n  br label %loop\nyes:\n  ret i1 1\nno:\n  ret i1 0\n}}",
+                    i = l.0,
+                    eq = eq_inst(elem, "%e", "%xa", "%xb")
+                );
+            }
+            Ty::Dict(d) => {
+                let v = p.dicts[d.0 as usize].1;
+                let vt = llty(v);
+                // 同じ数のキーを持ち、a の各キーが b にあって値が等しい（順序は問わない）
+                let _ = writeln!(
+                    out,
+                    "\ndefine private i1 @wys_eq_dict{i}(ptr %a, ptr %b) {{\nentry:\n  %la = call i64 @wys_dict_len(ptr %a)\n  %lb = call i64 @wys_dict_len(ptr %b)\n  %same = icmp eq i64 %la, %lb\n  br i1 %same, label %loop, label %no\nloop:\n  %pos = phi i64 [0, %entry], [%pos2, %next]\n  %ea = call i64 @wys_dict_iter_next(ptr %a, i64 %pos, i64 %la)\n  %more = icmp sge i64 %ea, 0\n  br i1 %more, label %body, label %yes\nbody:\n  %kr = call i64 @wys_dict_key(ptr %a, i64 %ea)\n  %eb = call i64 @wys_dict_find(ptr %b, i64 %kr)\n  %found = icmp sge i64 %eb, 0\n  br i1 %found, label %cmp, label %no\ncmp:\n  %sa = call ptr @wys_dict_val(ptr %a, i64 %ea)\n  %sb = call ptr @wys_dict_val(ptr %b, i64 %eb)\n  %xa = load {vt}, ptr %sa\n  %xb = load {vt}, ptr %sb\n{eq}\n  br i1 %e, label %next, label %no\nnext:\n  %pos2 = add i64 %ea, 1\n  br label %loop\nyes:\n  ret i1 1\nno:\n  ret i1 0\n}}",
+                    i = d.0,
+                    eq = eq_inst(v, "%e", "%xa", "%xb")
+                );
+            }
+            Ty::Union(u) => {
+                let ut = llty(t);
+                let _ = writeln!(
+                    out,
+                    "\ndefine private i1 @wys_eq_u{i}({ut} %a, {ut} %b) {{\nentry:\n  %sa = alloca {ut}\n  store {ut} %a, ptr %sa\n  %sb = alloca {ut}\n  store {ut} %b, ptr %sb\n  %tpa = getelementptr inbounds {ut}, ptr %sa, i32 0, i32 0\n  %ta = load i8, ptr %tpa\n  %tpb = getelementptr inbounds {ut}, ptr %sb, i32 0, i32 0\n  %tb = load i8, ptr %tpb\n  %pa = getelementptr inbounds {ut}, ptr %sa, i32 0, i32 1\n  %pb = getelementptr inbounds {ut}, ptr %sb, i32 0, i32 1\n  %same = icmp eq i8 %ta, %tb\n  br i1 %same, label %c0, label %no",
+                    i = u.0
+                );
+                // 同じタグなら payload を比べる（`None` の構成要素は payload がないので等しい）
+                let cases: Vec<(usize, Ty)> = p.unions[u.0 as usize]
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(j, m)| m.map(|t| (j, t)))
+                    .collect();
+                for (k, (j, mt)) in cases.iter().enumerate() {
+                    let lt = llty(*mt);
+                    let _ = writeln!(
+                        out,
+                        "c{k}:\n  %m{k} = icmp eq i8 %ta, {j}\n  br i1 %m{k}, label %d{k}, label %c{n}\nd{k}:\n  %xa{k} = load {lt}, ptr %pa\n  %xb{k} = load {lt}, ptr %pb\n{eq}\n  ret i1 %e{k}",
+                        n = k + 1,
+                        eq = eq_inst(
+                            *mt,
+                            &format!("%e{k}"),
+                            &format!("%xa{k}"),
+                            &format!("%xb{k}")
+                        )
+                    );
+                }
+                let _ = writeln!(out, "c{}:\n  ret i1 1\nno:\n  ret i1 0\n}}", cases.len());
+            }
+            Ty::Record(r) => {
+                let rt = llty(t);
+                let _ = writeln!(
+                    out,
+                    "\ndefine private i1 @wys_eq_r{i}({rt} %a, {rt} %b) {{\nentry:",
+                    i = r.0
+                );
+                let mut acc = "1".to_string();
+                for (k, (_, ft)) in p.records[r.0 as usize].iter().enumerate() {
+                    let _ = writeln!(
+                        out,
+                        "  %a{k} = extractvalue {rt} %a, {k}\n  %b{k} = extractvalue {rt} %b, {k}\n{eq}\n  %acc{k} = and i1 {acc}, %e{k}",
+                        eq = eq_inst(*ft, &format!("%e{k}"), &format!("%a{k}"), &format!("%b{k}"))
+                    );
+                    acc = format!("%acc{k}");
+                }
+                let _ = writeln!(out, "  ret i1 {acc}\n}}");
+            }
+            Ty::Int | Ty::Bool | Ty::Str => {}
+        }
+    }
+}
+
 fn emit_glue(out: &mut String, p: &Program, drops: &DropInfo) {
     emit_dict_glue(out, p, drops);
+    emit_eq_glue(out, p);
     // リストの release: 参照カウントが 0 になったら、要素を release してからバッファを返す
     for (i, elem) in p.lists.iter().enumerate() {
         let size = elem_size(p, *elem);
@@ -885,6 +1017,18 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                 Inst::Binary { dst, op, lhs, rhs } => {
                     let (d, a, bb) = (t(*dst), t(*lhs), t(*rhs));
                     let ty = tty(*lhs);
+                    let ir_ty = f.temps[lhs.0 as usize];
+                    if matches!(op, BinOp::Eq | BinOp::Ne) && !matches!(ir_ty, Ty::Int | Ty::Bool) {
+                        // 構造を持つ値（と str）の比較は型ごとの関数で（ADR-0016）
+                        if *op == BinOp::Eq {
+                            let _ = writeln!(out, "{}", eq_inst(ir_ty, &d, &a, &bb));
+                        } else {
+                            let _ =
+                                writeln!(out, "{}", eq_inst(ir_ty, &format!("{d}.eq"), &a, &bb));
+                            let _ = writeln!(out, "  {d} = xor i1 {d}.eq, true");
+                        }
+                        continue;
+                    }
                     match op {
                         BinOp::Add | BinOp::Sub | BinOp::Mul => {
                             uses_overflow = true;

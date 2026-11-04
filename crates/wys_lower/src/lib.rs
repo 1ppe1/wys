@@ -2165,6 +2165,32 @@ impl<'s, 't> FnLower<'s, 't> {
             }
             return c;
         }
+        if matches!(op, A::Eq | A::Ne) && !matches!(self.ty(lhs), TTy::Int | TTy::Bool | TTy::Str) {
+            // 構造を持つ値の比較（ADR-0016）。型が違えば（`o == 1`）、広い方の Union に揃える
+            let (lt, rt) = (self.ty(lhs), self.ty(rhs));
+            let wide = if self.sh.types.members(lt).len() >= self.sh.types.members(rt).len() {
+                lt
+            } else {
+                rt
+            };
+            let l = self.expr(lhs);
+            let l = self.coerce(l, lt, wide).expect("compared values exist");
+            let l_block = self.cur;
+            let r = self.expr(rhs);
+            let r = self.coerce(r, rt, wide).expect("compared values exist");
+            let l = self.materialize(l, l_block);
+            let (iop, dst) = (
+                if op == A::Eq { BinOp::Eq } else { BinOp::Ne },
+                self.temp(Ty::Bool),
+            );
+            self.emit(Inst::Binary {
+                dst,
+                op: iop,
+                lhs: l,
+                rhs: r,
+            });
+            return dst;
+        }
         let l = self.expr(lhs).expect("operands have values");
         let l_block = self.cur;
         let r = self.expr(rhs).expect("operands have values");

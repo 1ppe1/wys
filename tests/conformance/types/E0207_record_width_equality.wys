@@ -1,0 +1,7 @@
+# 定義の違うレコードどうしは比べない（幅部分型で変換しない。ADR-0016 論点 13）
+# expect-error: E0207 7:11
+type A = {x: int}
+type B = {x: int, y: int}
+
+def main() -> None:
+    print(A(x=1) == B(x=1, y=2))

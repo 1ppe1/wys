@@ -594,7 +594,8 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                     let rt = use_(*rhs, &defined_in)?;
                     expect("binary operands", rt, lt)?;
                     let operand_ok = match op {
-                        BinOp::Eq | BinOp::Ne => matches!(lt, Ty::Int | Ty::Bool),
+                        // 構造を持つ値の比較は、バックエンドが型ごとの関数で行う（ADR-0016）
+                        BinOp::Eq | BinOp::Ne => true,
                         _ => lt == Ty::Int,
                     };
                     if !operand_ok {

@@ -1,0 +1,4 @@
+# `Unknown` を含む値は、検査してからでないと比べられない
+# expect-error: E0601 4:11
+def main() -> None:
+    print(parse_scalar("1") == parse_scalar("1"))

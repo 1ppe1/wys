@@ -611,3 +611,13 @@ fn record_fields_are_narrowed_until_the_root_is_reassigned() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["diagnostics"][0]["code"], "E0301");
 }
+
+#[test]
+fn structural_values_compare_by_content() {
+    let (code, stdout, stderr) = run(
+        "structural_eq",
+        "type P = {x: int, tags: list[str]}\n\ndef main() -> None:\n    a = P(x=1, tags=[\"t\"])\n    print(a == P(x=1, tags=[\"t\"]))\n    print({\"a\": 1, \"b\": 2} == {\"b\": 2, \"a\": 1})\n    o: int | None = 1\n    print(o != 1)\n",
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "True\nTrue\nFalse\n");
+}
