@@ -12,7 +12,7 @@ pub mod experimental;
 
 use std::collections::{HashMap, HashSet};
 use wys_ast::*;
-use wys_diagnostics::{Diagnostic, RelatedKind};
+use wys_diagnostics::{Diagnostic, Hint, RelatedKind};
 use wys_span::Span;
 
 /// 型。`Union` は `Types` に登録した構成要素の集合を指す。
@@ -1269,6 +1269,8 @@ struct FnCk<'a> {
     fn_name: String,
     effects: Option<(EffectSet, EffectClause)>,
     effect_sites: Vec<EffectSite>,
+    /// E1102 の診断の位置（`cx.diags` の添字）と、関数全体で足りない Effect（修正案を1つにまとめるため）。
+    missing_effects: (Vec<usize>, EffectSet),
 }
 
 impl<'a> FnCk<'a> {
@@ -1282,8 +1284,14 @@ impl<'a> FnCk<'a> {
             local_spans: Vec::new(),
             narrowings: HashMap::new(),
             fn_name: f.name.name.clone(),
-            effects: sig.effects.zip(f.effects.clone()),
+            // 未知の名前（E1101）がある `uses` 節では本体を検査しない（E1102 を連鎖させない）
+            effects: sig.effects.zip(f.effects.clone()).filter(|(_, c)| {
+                c.names
+                    .iter()
+                    .all(|n| n.name == "pure" || Effect::parse(&n.name).is_some())
+            }),
             effect_sites: Vec::new(),
+            missing_effects: (Vec::new(), EffectSet::default()),
         };
         ck.cx.push_type_scope(&f.type_params, &sig.type_params);
         let mut env = Env::new();
@@ -1323,6 +1331,7 @@ impl<'a> FnCk<'a> {
                 .with_hint("add a `return` at the end of the function"),
             );
         }
+        ck.attach_effect_fix();
         let mut narrowings: Vec<Narrowing> = ck.narrowings.into_values().collect();
         narrowings.sort_by_key(|n| (n.span.start, n.span.end));
         let mut effect_sites = ck.effect_sites;
@@ -1397,6 +1406,7 @@ impl<'a> FnCk<'a> {
                     ..
                 },
             ) if callee.name == "assert" && args.len() == 1 && kwargs.is_empty() => {
+                self.check_effects(callee);
                 let (t, t_env, _) = self.cond(&args[0], env);
                 self.require_condition(t, args[0].span);
                 *env = t_env;
@@ -2886,6 +2896,7 @@ impl<'a> FnCk<'a> {
                 if self.cx.aliases.contains_key(&callee.name) {
                     self.construct(callee, args, kwargs, e.span, env)
                 } else if !kwargs.is_empty() {
+                    self.check_effects(callee);
                     for a in args {
                         self.expr(a, env);
                     }
@@ -3312,7 +3323,7 @@ impl<'a> FnCk<'a> {
             span: callee.span,
             effects,
         });
-        let Some((declared, clause)) = &self.effects else {
+        let Some((declared, _)) = &self.effects else {
             return;
         };
         if callee.name == self.fn_name {
@@ -3346,7 +3357,7 @@ impl<'a> FnCk<'a> {
         if missing.is_empty() {
             return;
         }
-        let names: Vec<&str> = missing.iter().map(|e| e.name()).collect();
+        let names: Vec<String> = missing.iter().map(|e| format!("`{}`", e.name())).collect();
         let declared_text = if declared.iter().is_empty() {
             "pure".to_string()
         } else {
@@ -3355,34 +3366,56 @@ impl<'a> FnCk<'a> {
         let mut d = Diagnostic::error(
             "E1102",
             format!(
-                "`{}` calls `{}`, which has effect {}, but declares only `uses {declared_text}`",
+                "`{}` calls `{}`, which has {} {}, but declares only `uses {declared_text}`",
                 self.fn_name,
                 callee.name,
-                names
-                    .iter()
-                    .map(|n| format!("`{n}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                if names.len() == 1 {
+                    "effect"
+                } else {
+                    "effects"
+                },
+                names.join(", ")
             ),
             callee.span,
         );
-        // `uses pure` なら `pure` を置き換え、そうでなければ節の末尾に足す
-        d = match clause.names.iter().find(|n| n.name == "pure") {
-            Some(p) => d.with_fix(
-                format!("declare `uses {}`", names.join(", ")),
-                p.span,
-                names.join(", "),
-            ),
-            None => d.with_fix(
-                format!("add {} to the `uses` clause", names.join(", ")),
-                Span::new(clause.span.end, clause.span.end),
-                format!(", {}", names.join(", ")),
-            ),
-        };
         if callee_span.is_some() {
             d = d.with_related(RelatedKind::Function, &callee.name, callee_span);
         }
+        // 修正案は関数の検査を終えてから、足りない Effect の和集合で付ける（attach_effect_fix）
+        self.missing_effects.0.push(self.cx.diags.len());
+        for e in missing {
+            self.missing_effects.1.insert(e);
+        }
         self.cx.diags.push(d);
+    }
+
+    /// 関数の E1102 すべてに、同じ修正案（足りない Effect の和集合を `uses` 節に足す）を付ける。
+    /// どれを適用しても結果が同じになり、1回で全部の E1102 が消える。
+    fn attach_effect_fix(&mut self) {
+        let (indices, missing) = std::mem::take(&mut self.missing_effects);
+        let Some((_, clause)) = &self.effects else {
+            return;
+        };
+        if indices.is_empty() {
+            return;
+        }
+        let names = missing.names().join(", ");
+        let hint = match clause.names.iter().find(|n| n.name == "pure") {
+            Some(p) => Hint {
+                message: format!("declare `uses {names}`"),
+                replacement: Some((p.span, names.clone())),
+            },
+            None => Hint {
+                message: format!("add {names} to the `uses` clause"),
+                replacement: Some((
+                    Span::new(clause.span.end, clause.span.end),
+                    format!(", {names}"),
+                )),
+            },
+        };
+        for i in indices {
+            self.cx.diags[i].hints.push(hint.clone());
+        }
     }
 
     fn call(&mut self, callee: &Ident, args: &[Expr], span: Span, id: ExprId, env: &Env) -> Ty {
@@ -3692,6 +3725,30 @@ mod tests {
         assert_eq!(run(&with_main(panics)), Vec::<&str>::new());
         let both_missing = "def f() -> None uses pure:\n    print(1)\n    exit(1)\n";
         assert_eq!(run(&with_main(both_missing)), vec!["E1102", "E1102"]);
+        // 未知の名前があれば本体は検査しない（E1102 を連鎖させない）
+        let unknown = "def f() -> None uses foo:\n    print(1)\n";
+        assert_eq!(run(&with_main(unknown)), vec!["E1101"]);
+    }
+
+    #[test]
+    fn missing_effects_share_one_fix() {
+        // どの E1102 の修正案を適用しても、足りない Effect がすべて宣言される
+        let src = with_main("def f() -> None uses pure:\n    print(1)\n    exit(1)\n");
+        let (m, _) = wys_parser::parse_source(&src);
+        let diags = check(&m).1;
+        assert_eq!(diags.len(), 2);
+        for d in &diags {
+            let (_, text) = d.hints[0].replacement.clone().unwrap();
+            assert_eq!(text, "io, exit");
+        }
+        let src = with_main("def f() -> None uses io:\n    exit(1)\n    exit(2)\n");
+        let (m, _) = wys_parser::parse_source(&src);
+        let diags = check(&m).1;
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.hints[0].replacement.as_ref().unwrap().1 == ", exit")
+        );
     }
 
     #[test]
