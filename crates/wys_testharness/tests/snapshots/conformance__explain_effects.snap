@@ -1,0 +1,287 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: json
+---
+{
+  "schema_version": "0",
+  "kind": "file",
+  "file": "tests/conformance/explain/effects.wys",
+  "functions": [
+    {
+      "name": "log",
+      "span": {
+        "file": "tests/conformance/explain/effects.wys",
+        "start": {
+          "line": 3,
+          "column": 5,
+          "byte": 179
+        },
+        "end": {
+          "line": 3,
+          "column": 8,
+          "byte": 182
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [
+          {
+            "name": "x",
+            "type": "int"
+          }
+        ],
+        "return": "None"
+      },
+      "locals": [
+        {
+          "name": "x",
+          "type": "int",
+          "kind": "param",
+          "span": {
+            "file": "tests/conformance/explain/effects.wys",
+            "start": {
+              "line": 3,
+              "column": 9,
+              "byte": 183
+            },
+            "end": {
+              "line": 3,
+              "column": 10,
+              "byte": 184
+            }
+          }
+        }
+      ],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "log",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ],
+      "effects": {
+        "declared": [
+          "io"
+        ],
+        "required": [
+          "io"
+        ],
+        "sites": [
+          {
+            "callee": "print",
+            "span": {
+              "file": "tests/conformance/explain/effects.wys",
+              "start": {
+                "line": 4,
+                "column": 5,
+                "byte": 212
+              },
+              "end": {
+                "line": 4,
+                "column": 10,
+                "byte": 217
+              }
+            },
+            "effects": [
+              "io"
+            ],
+            "annotated": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "double",
+      "span": {
+        "file": "tests/conformance/explain/effects.wys",
+        "start": {
+          "line": 6,
+          "column": 5,
+          "byte": 226
+        },
+        "end": {
+          "line": 6,
+          "column": 11,
+          "byte": 232
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [
+          {
+            "name": "x",
+            "type": "int"
+          }
+        ],
+        "return": "int"
+      },
+      "locals": [
+        {
+          "name": "x",
+          "type": "int",
+          "kind": "param",
+          "span": {
+            "file": "tests/conformance/explain/effects.wys",
+            "start": {
+              "line": 6,
+              "column": 12,
+              "byte": 233
+            },
+            "end": {
+              "line": 6,
+              "column": 13,
+              "byte": 234
+            }
+          }
+        }
+      ],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "double",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ],
+      "effects": {
+        "declared": [],
+        "required": [],
+        "sites": []
+      }
+    },
+    {
+      "name": "helper",
+      "span": {
+        "file": "tests/conformance/explain/effects.wys",
+        "start": {
+          "line": 9,
+          "column": 5,
+          "byte": 281
+        },
+        "end": {
+          "line": 9,
+          "column": 11,
+          "byte": 287
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [],
+        "return": "None"
+      },
+      "locals": [],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "helper",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ],
+      "effects": {
+        "declared": null,
+        "required": [],
+        "sites": []
+      }
+    },
+    {
+      "name": "main",
+      "span": {
+        "file": "tests/conformance/explain/effects.wys",
+        "start": {
+          "line": 12,
+          "column": 5,
+          "byte": 313
+        },
+        "end": {
+          "line": 12,
+          "column": 9,
+          "byte": 317
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [],
+        "return": "None"
+      },
+      "locals": [],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "main",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ],
+      "effects": {
+        "declared": null,
+        "required": [
+          "io"
+        ],
+        "sites": [
+          {
+            "callee": "helper",
+            "span": {
+              "file": "tests/conformance/explain/effects.wys",
+              "start": {
+                "line": 13,
+                "column": 5,
+                "byte": 333
+              },
+              "end": {
+                "line": 13,
+                "column": 11,
+                "byte": 339
+              }
+            },
+            "effects": [],
+            "annotated": false
+          },
+          {
+            "callee": "log",
+            "span": {
+              "file": "tests/conformance/explain/effects.wys",
+              "start": {
+                "line": 14,
+                "column": 5,
+                "byte": 346
+              },
+              "end": {
+                "line": 14,
+                "column": 8,
+                "byte": 349
+              }
+            },
+            "effects": [
+              "io"
+            ],
+            "annotated": true
+          },
+          {
+            "callee": "double",
+            "span": {
+              "file": "tests/conformance/explain/effects.wys",
+              "start": {
+                "line": 14,
+                "column": 9,
+                "byte": 350
+              },
+              "end": {
+                "line": 14,
+                "column": 15,
+                "byte": 356
+              }
+            },
+            "effects": [],
+            "annotated": true
+          }
+        ]
+      }
+    }
+  ]
+}

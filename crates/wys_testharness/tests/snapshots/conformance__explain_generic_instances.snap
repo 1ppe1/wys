@@ -97,7 +97,12 @@ expression: json
             }
           ]
         }
-      ]
+      ],
+      "effects": {
+        "declared": null,
+        "required": [],
+        "sites": []
+      }
     },
     {
       "name": "main",
@@ -137,7 +142,91 @@ expression: json
             }
           ]
         }
-      ]
+      ],
+      "effects": {
+        "declared": null,
+        "required": [
+          "io"
+        ],
+        "sites": [
+          {
+            "callee": "print",
+            "span": {
+              "file": "tests/conformance/explain/generic_instances.wys",
+              "start": {
+                "line": 8,
+                "column": 5,
+                "byte": 228
+              },
+              "end": {
+                "line": 8,
+                "column": 10,
+                "byte": 233
+              }
+            },
+            "effects": [
+              "io"
+            ],
+            "annotated": true
+          },
+          {
+            "callee": "same",
+            "span": {
+              "file": "tests/conformance/explain/generic_instances.wys",
+              "start": {
+                "line": 8,
+                "column": 11,
+                "byte": 234
+              },
+              "end": {
+                "line": 8,
+                "column": 15,
+                "byte": 238
+              }
+            },
+            "effects": [],
+            "annotated": false
+          },
+          {
+            "callee": "print",
+            "span": {
+              "file": "tests/conformance/explain/generic_instances.wys",
+              "start": {
+                "line": 9,
+                "column": 5,
+                "byte": 247
+              },
+              "end": {
+                "line": 9,
+                "column": 10,
+                "byte": 252
+              }
+            },
+            "effects": [
+              "io"
+            ],
+            "annotated": true
+          },
+          {
+            "callee": "same",
+            "span": {
+              "file": "tests/conformance/explain/generic_instances.wys",
+              "start": {
+                "line": 9,
+                "column": 11,
+                "byte": 253
+              },
+              "end": {
+                "line": 9,
+                "column": 15,
+                "byte": 257
+              }
+            },
+            "effects": [],
+            "annotated": false
+          }
+        ]
+      }
     }
   ]
 }

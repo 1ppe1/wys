@@ -102,7 +102,8 @@ bb0:
 - 解放が必要かどうか（`DropInfo`）は Union / レコードごとにメモ化して計算する。バックエンドは、解放が必要な Union とレコードについて型ごとの `@wys_retain_*` / `@wys_release_*`（drop glue）を生成する。
 - 解放が必要なローカルは入口でゼロ（null）に初期化する。生成した `main` は最後に `wys_runtime_finish` を呼び、解放されていないオブジェクトが残っていれば終了コード 102 で知らせる（コンパイラのバグ）。
 
-## 今後（M2 以降）
+## Effect（M3 T9b、ADR-0014）
 
-- Effect の置き場所（関数シグネチャの属性）を確保する。
-- ARC 導入時（M3）に、retain/release 命令とヒープ型を追加する。
+- 関数は `uses` 節で宣言した Effect を属性 `Function.effects` に持つ。注釈がなければ `None`、`uses pure` なら空。Generic 関数のインスタンスは、宣言した Effect を引き継ぐ。
+- IR テキストでは `fn f0 log(l0: str) uses io {` のように、戻り値の型の後に出す（`uses pure` も同じ）。
+- バックエンドは読まないので、生成コードは変わらない。M5 の Capability Runtime や M6 の推論が、この属性を使う。

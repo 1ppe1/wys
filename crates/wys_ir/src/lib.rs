@@ -104,6 +104,25 @@ pub struct Function {
     pub ret: Option<Ty>,
     pub temps: Vec<Ty>,
     pub blocks: Vec<Block>,
+    /// `uses` 節で宣言した Effect（ADR-0014）。注釈がなければ `None`、`uses pure` なら空。
+    /// バックエンドは読まない（生成コードは変わらない）。
+    pub effects: Option<Vec<Effect>>,
+}
+
+/// 関数の Effect（ADR-0014）。型検査の `Effect` と同じ種類を持つ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Effect {
+    Io,
+    Exit,
+}
+
+impl Effect {
+    pub fn name(self) -> &'static str {
+        match self {
+            Effect::Io => "io",
+            Effect::Exit => "exit",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -871,6 +890,14 @@ impl fmt::Display for Program {
             if let Some(r) = func.ret {
                 write!(f, " -> {}", r.name())?;
             }
+            match &func.effects {
+                Some(es) if es.is_empty() => write!(f, " uses pure")?,
+                Some(es) => {
+                    let names: Vec<&str> = es.iter().map(|e| e.name()).collect();
+                    write!(f, " uses {}", names.join(", "))?
+                }
+                None => {}
+            }
             writeln!(f, " {{")?;
             for (l, ty) in func
                 .locals
@@ -1077,6 +1104,7 @@ mod tests {
                     ],
                     term: Terminator::Return(None),
                 }],
+                effects: None,
             }],
         }
     }

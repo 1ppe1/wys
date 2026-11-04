@@ -395,6 +395,7 @@ fn test_dispatcher(tests: &[FuncId]) -> Function {
         ret: None,
         temps,
         blocks,
+        effects: None,
     }
 }
 
@@ -486,6 +487,15 @@ impl<'s, 't> FnLower<'s, 't> {
             ret,
             temps: l.temps,
             blocks,
+            effects: sig.effects.map(|es| {
+                es.iter()
+                    .into_iter()
+                    .map(|e| match e {
+                        wys_typeck::Effect::Io => Effect::Io,
+                        wys_typeck::Effect::Exit => Effect::Exit,
+                    })
+                    .collect()
+            }),
         }
     }
 

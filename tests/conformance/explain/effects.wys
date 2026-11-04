@@ -1,0 +1,14 @@
+# `wys explain` のスナップショット: 宣言した Effect、本体の呼び出しから分かる Effect、呼び出しごとの Effect（ADR-0014）
+# expect-stdout: 3
+def log(x: int) -> None uses io:
+    print(x)
+
+def double(x: int) -> int uses pure:
+    return x * 2
+
+def helper() -> None:
+    pass
+
+def main() -> None:
+    helper()
+    log(double(1) + 1)
