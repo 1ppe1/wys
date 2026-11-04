@@ -88,6 +88,17 @@ bb0:
 - `str` はヒープオブジェクト `{ 参照カウント, 長さ, バイト列 }` へのポインタ。文字列リテラルは参照カウント −1 の不死の定数、コマンドライン引数も起動時に不死オブジェクトにする。
 - 命令 `retain t` / `release t` は、lowering の後に `wys_ir::arc::insert` が挿入する。規則はモジュールの先頭コメント（memory-model 2.2 のとおり）。
 - `wys_ir::arc::verify` が、ブロックごとに参照カウントの釣り合いを検査する（driver が毎回実行する）。
+- 各 `retain` / `release` は、挿入した理由（`RcReason`、ADR-0017）を持つ。バックエンドは理由を読まないので、生成コードは変わらない。IR テキストでは `retain t3 ; borrow_from_mutable_place` のように末尾に出す（消費の理由は `consume_borrowed:store` のように消費する地点を付ける）。命令を動かしたり消したりする後続のパス（M3b の Move 最適化）は、理由を保つ。
+
+  | 命令 | 理由 | 挿入する地点 |
+  |---|---|---|
+  | retain | `param_slot_entry` | 関数の入口で、引数をスロットに所有させる |
+  | retain | `consume_borrowed:<地点>` | 借用した値（ローカルからの読み出し、リテラル、取り出した値、不死の文字列）を +1 で消費する。地点は `store` / `return` / `make_union` / `make_record` / `list_new` / `list_set` / `list_push` / `dict_new` / `dict_set` |
+  | retain | `consume_shared_owned:<地点>` | すでに消費した +1 所有の値を、もう一度消費する |
+  | retain | `borrow_from_mutable_place` | `list_get` / `dict_get` / `dict_key_at` の直後（借用の安全条件） |
+  | release | `store_overwrites_slot` | `store` で、スロットの古い値を手放す |
+  | release | `unconsumed_owned_at_block_end` | ブロックの終わりまで消費されなかった +1 所有の値 |
+  | release | `slot_at_function_exit` | 関数を抜けるときに、スロットが持つ値を手放す |
 - 解放が必要かどうか（`DropInfo`）は Union / レコードごとにメモ化して計算する。バックエンドは、解放が必要な Union とレコードについて型ごとの `@wys_retain_*` / `@wys_release_*`（drop glue）を生成する。
 - 解放が必要なローカルは入口でゼロ（null）に初期化する。生成した `main` は最後に `wys_runtime_finish` を呼び、解放されていないオブジェクトが残っていれば終了コード 102 で知らせる（コンパイラのバグ）。
 

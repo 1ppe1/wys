@@ -28,6 +28,7 @@
 | [0012](0012-heap-objects-and-arc-pass.md) | ヒープオブジェクトと、IR パスによる ARC | Accepted | 2026-11-04 |
 | [0013](0013-result-binding-patterns-try-panic.md) | `Result[T, E]`、束縛パターン、`?`、パニックの仕様 | Accepted | 2026-11-04 |
 | [0015](0015-dict-keys-order-mutation.md) | `dict[K, V]` のキー、反復の順序、反復中の変更 | Accepted | 2026-11-04 |
+| [0017](0017-explain-report-and-arc-reasons.md) | `wys explain` の報告と、ARC 操作の理由 | Accepted | 2026-11-04 |
 
 ## 未決定事項との対応
 

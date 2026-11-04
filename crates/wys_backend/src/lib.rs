@@ -810,7 +810,7 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                         t(*value)
                     );
                 }
-                Inst::Retain { src } | Inst::Release { src } => {
+                Inst::Retain { src, .. } | Inst::Release { src, .. } => {
                     let ty = f.temps[src.0 as usize];
                     if drops.get(ty) {
                         let kind = if matches!(inst, Inst::Retain { .. }) {
@@ -1092,5 +1092,43 @@ mod tests {
             ll.contains("call void @wys_runtime_init(i32 %argc, ptr %argv)"),
             "{ll}"
         );
+    }
+
+    #[test]
+    fn arc_reasons_do_not_change_the_generated_code() {
+        // def f(s: str) -> str: return s（ARC パスが retain / release を挿入する）
+        let mut p = Program {
+            strings: vec![],
+            unions: vec![],
+            records: vec![],
+            lists: vec![],
+            dicts: vec![],
+            entry: FuncId(0),
+            funcs: vec![Function {
+                name: "f".into(),
+                param_count: 1,
+                locals: vec![Ty::Str],
+                ret: Some(Ty::Str),
+                temps: vec![Ty::Str],
+                blocks: vec![Block {
+                    insts: vec![Inst::Load {
+                        dst: TempId(0),
+                        src: LocalId(0),
+                    }],
+                    term: Terminator::Return(Some(TempId(0))),
+                }],
+            }],
+        };
+        wys_ir::arc::insert(&mut p);
+        let before = emit_llvm_ir(&p);
+        assert!(before.contains("@wys_rc_"), "{before}");
+        for b in &mut p.funcs[0].blocks {
+            for i in &mut b.insts {
+                if let Inst::Retain { reason, .. } | Inst::Release { reason, .. } = i {
+                    *reason = RcReason::UnconsumedOwnedAtBlockEnd;
+                }
+            }
+        }
+        assert_eq!(before, emit_llvm_ir(&p));
     }
 }
