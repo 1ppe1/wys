@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 cargo build -q --release -p wys_cli -p wys_runtime
-cli=target/release/wys_cli
+cli=target/release/wys
 export WYS_RUNTIME_LIB="$PWD/target/release/libwys_runtime.a"
 
 out_dir=benches/results
