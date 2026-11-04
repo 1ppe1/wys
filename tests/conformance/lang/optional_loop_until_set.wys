@@ -1,0 +1,14 @@
+# while の条件での絞り込み: ループを抜けた後の x は int
+# expect-stdout: 3
+def next_value(i: int) -> int | None:
+    if i < 3:
+        return None
+    return i
+
+def main() -> None:
+    i = 0
+    x: int | None = None
+    while x is None:
+        x = next_value(i)
+        i = i + 1
+    print(x + 0)

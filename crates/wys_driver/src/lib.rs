@@ -48,18 +48,6 @@ pub fn frontend(name: &str, text: &str) -> Frontend {
             unsupported: None,
         };
     }
-    if let Some(i) = tc.first_function_using_unions() {
-        let p = file.position(module.funcs[i].name.span.start);
-        return Frontend {
-            unsupported: Some(format!(
-                "{}:{}:{}: function `{}` uses union types (`A | B`), which the code generator does not support yet (planned for M2 T1b); `check` accepts this program",
-                file.name, p.line, p.column, module.funcs[i].name.name
-            )),
-            file,
-            diagnostics,
-            program: None,
-        };
-    }
     let program = wys_lower::lower(&module, &tc);
     if let Err(e) = wys_ir::verify(&program) {
         panic!("internal compiler error: IR verification failed: {e}\n{program}");
@@ -229,14 +217,14 @@ mod tests {
     }
 
     #[test]
-    fn unions_pass_check_but_are_not_built_yet() {
+    fn unions_produce_verified_ir() {
         let fe = frontend(
             "t.wys",
             "def f(x: int | None) -> int:\n    if x is None:\n        return 0\n    return x\n\ndef main() -> None:\n    print(f(None))\n",
         );
         assert!(!fe.has_errors());
-        assert!(fe.program.is_none());
-        assert!(fe.unsupported.unwrap().contains("M2 T1b"));
+        assert!(fe.unsupported.is_none());
+        assert!(!fe.program.unwrap().unions.is_empty());
     }
 
     #[test]

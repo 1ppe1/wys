@@ -1,6 +1,10 @@
 //! AST から共通IRへの変換
 //!
 //! 型検査でエラーがなかったモジュールだけを受け取る前提。
+//!
+//! Union（ADR-0009）: 型が変わる地点（代入、引数、戻り値、絞り込まれた変数の読み出し）で
+//! `coerce` が値を変換する。基本型 → Union は `MakeUnion`、Union → 基本型は `UnionPayload`、
+//! Union → Union はタグで分岐して詰め直す。
 
 use std::collections::HashMap;
 use wys_ast::{self as ast, ExprKind, StmtKind, UnaryOp};
@@ -14,9 +18,7 @@ fn ir_ty(t: TTy) -> Option<Ty> {
         TTy::Str => Some(Ty::Str),
         TTy::None => None,
         TTy::Error => panic!("lowering received a type error; run the type checker first"),
-        TTy::Union(_) => {
-            panic!("union types are not lowered yet (M2 T1b); the driver must reject them first")
-        }
+        TTy::Union(u) => Some(Ty::Union(UnionId(u.0))),
     }
 }
 
@@ -27,6 +29,12 @@ pub fn lower(module: &ast::Module, tc: &TypeckResult) -> Program {
         .enumerate()
         .map(|(i, f)| (f.name.name.as_str(), FuncId(i as u32)))
         .collect();
+    let unions = tc
+        .types
+        .unions()
+        .iter()
+        .map(|members| members.iter().map(|m| ir_ty(*m)).collect())
+        .collect();
     let mut strings = Vec::new();
     let funcs = module
         .funcs
@@ -36,6 +44,7 @@ pub fn lower(module: &ast::Module, tc: &TypeckResult) -> Program {
         .collect();
     Program {
         strings,
+        unions,
         funcs,
         entry: func_ids["main"],
     }
@@ -48,10 +57,13 @@ struct Bb {
 
 struct FnLower<'a> {
     tc: &'a TypeckResult,
+    ret: TTy,
     func_ids: &'a HashMap<&'a str, FuncId>,
     strings: &'a mut Vec<String>,
     locals: Vec<Ty>,
     local_ids: HashMap<String, LocalId>,
+    /// ローカル変数の宣言された型（絞り込み前）。
+    local_decl: HashMap<String, TTy>,
     temps: Vec<Ty>,
     blocks: Vec<Bb>,
     cur: usize,
@@ -69,10 +81,12 @@ impl<'a> FnLower<'a> {
         let sig = &tc.sigs[index];
         let mut l = FnLower {
             tc,
+            ret: sig.ret,
             func_ids,
             strings,
             locals: Vec::new(),
             local_ids: HashMap::new(),
+            local_decl: HashMap::new(),
             temps: Vec::new(),
             blocks: vec![Bb {
                 insts: Vec::new(),
@@ -85,6 +99,7 @@ impl<'a> FnLower<'a> {
             l.locals
                 .push(ir_ty(*ty).expect("locals never have type None"));
             l.local_ids.insert(name.clone(), id);
+            l.local_decl.insert(name.clone(), *ty);
         }
         l.stmts(&f.body);
         let ret = ir_ty(sig.ret);
@@ -174,12 +189,23 @@ impl<'a> FnLower<'a> {
                 self.expr(e);
             }
             StmtKind::Assign { target, value, .. } => {
-                let v = self.expr(value).expect("assigned values are never None");
+                let v = self.expr(value);
+                let decl = self.local_decl[&target.name];
+                let v = self
+                    .coerce(v, self.tc.ty(value), decl)
+                    .expect("variables never have type None");
                 let dst = self.local_ids[&target.name];
                 self.emit(Inst::Store { dst, src: v });
             }
             StmtKind::Return(value) => {
-                let v = value.as_ref().and_then(|e| self.expr(e));
+                let v = value.as_ref().and_then(|e| {
+                    let v = self.expr(e);
+                    if self.ret == TTy::None {
+                        None
+                    } else {
+                        self.coerce(v, self.tc.ty(e), self.ret)
+                    }
+                });
                 self.terminate(Terminator::Return(v));
             }
             StmtKind::If {
@@ -247,11 +273,40 @@ impl<'a> FnLower<'a> {
             }
             ExprKind::None => None,
             ExprKind::Name(name) => {
+                let narrowed = self.tc.ty(e);
+                if narrowed == TTy::None {
+                    return None; // 絞り込みで None と確定した変数
+                }
                 let src = self.local_ids[name];
                 let ty = self.locals[src.0 as usize];
                 let dst = self.temp(ty);
                 self.emit(Inst::Load { dst, src });
-                Some(dst)
+                self.coerce(Some(dst), self.local_decl[name], narrowed)
+            }
+            ExprKind::Is { lhs, negated, .. } => {
+                let lt = self.tc.ty(lhs);
+                let v = self.expr(lhs);
+                let is_none = match lt {
+                    TTy::None => self.konst(Const::Bool(true), Ty::Bool),
+                    TTy::Union(u) => {
+                        let dst = self.temp(Ty::Bool);
+                        let variant = self.variant(u, TTy::None);
+                        self.emit(Inst::UnionIs {
+                            dst,
+                            src: v.expect("union values exist"),
+                            variant,
+                        });
+                        dst
+                    }
+                    other => panic!("`is None` on {other:?} passed type checking"),
+                };
+                if *negated {
+                    let dst = self.temp(Ty::Bool);
+                    self.emit(Inst::Not { dst, src: is_none });
+                    Some(dst)
+                } else {
+                    Some(is_none)
+                }
             }
             ExprKind::Unary { op, operand } => {
                 let v = self.expr(operand).expect("unary operands have values");
@@ -275,26 +330,23 @@ impl<'a> FnLower<'a> {
                 })
             }
             ExprKind::Binary { op, lhs, rhs } => Some(self.binary(*op, lhs, rhs)),
-            ExprKind::Is { .. } => {
-                panic!(
-                    "`is` expressions are not lowered yet (M2 T1b); the driver must reject them first"
-                )
-            }
             ExprKind::Call { callee, args } => {
-                let arg_vals: Vec<TempId> = args
-                    .iter()
-                    .map(|a| self.expr(a).expect("arguments have values"))
-                    .collect();
+                if callee.name == "print" {
+                    let v = self.expr(&args[0]).expect("print arguments have values");
+                    self.print(v, self.tc.ty(&args[0]));
+                    return None;
+                }
+                let params: Vec<TTy> = match callee.name.as_str() {
+                    "exit" => vec![TTy::Int],
+                    name => self.tc.sigs[self.func_ids[name].0 as usize].params.clone(),
+                };
+                let mut arg_vals = Vec::new();
+                for (a, pt) in args.iter().zip(params) {
+                    let v = self.expr(a);
+                    let v = self.coerce(v, self.tc.ty(a), pt);
+                    arg_vals.push(v.expect("arguments have values"));
+                }
                 let (callee, ret) = match callee.name.as_str() {
-                    "print" => {
-                        let b = match self.tc.ty(&args[0]) {
-                            TTy::Int => Builtin::PrintInt,
-                            TTy::Bool => Builtin::PrintBool,
-                            TTy::Str => Builtin::PrintStr,
-                            other => panic!("print of {other:?} passed type checking"),
-                        };
-                        (Callee::Builtin(b), None)
-                    }
                     "exit" => (Callee::Builtin(Builtin::Exit), None),
                     name => {
                         let id = self.func_ids[name];
@@ -309,6 +361,165 @@ impl<'a> FnLower<'a> {
                 });
                 dst
             }
+        }
+    }
+
+    // ---- unions ----
+
+    fn members(&self, u: wys_typeck::UnionId) -> Vec<TTy> {
+        self.tc.types.members(TTy::Union(u))
+    }
+
+    fn variant(&self, u: wys_typeck::UnionId, m: TTy) -> u32 {
+        self.members(u)
+            .iter()
+            .position(|x| *x == m)
+            .unwrap_or_else(|| panic!("{m:?} is not a member of union {u:?}")) as u32
+    }
+
+    fn make_union(&mut self, u: wys_typeck::UnionId, m: TTy, payload: Option<TempId>) -> TempId {
+        let dst = self.temp(Ty::Union(UnionId(u.0)));
+        let variant = self.variant(u, m);
+        self.emit(Inst::MakeUnion {
+            dst,
+            union: UnionId(u.0),
+            variant,
+            payload,
+        });
+        dst
+    }
+
+    fn payload(&mut self, v: TempId, u: wys_typeck::UnionId, m: TTy) -> Option<TempId> {
+        let ty = ir_ty(m)?;
+        let dst = self.temp(ty);
+        let variant = self.variant(u, m);
+        self.emit(Inst::UnionPayload {
+            dst,
+            src: v,
+            variant,
+        });
+        Some(dst)
+    }
+
+    /// 値 `v`（型 `from`）を型 `to` の値に変換する。型検査で `from` の値が `to` に収まることは保証済み
+    /// （絞り込みの結果、`to` が `from` より狭い場合を含む）。
+    fn coerce(&mut self, v: Option<TempId>, from: TTy, to: TTy) -> Option<TempId> {
+        if from == to {
+            return v;
+        }
+        match (from, to) {
+            (TTy::Union(fu), TTy::Union(tu)) => {
+                let v = v.expect("union values exist");
+                Some(self.union_to_union(v, fu, tu))
+            }
+            (TTy::Union(fu), base) => self.payload(v.expect("union values exist"), fu, base),
+            (base, TTy::Union(tu)) => Some(self.make_union(tu, base, v)),
+            _ => panic!("no conversion from {from:?} to {to:?}"),
+        }
+    }
+
+    /// Union から Union へ: タグで分岐し、共通の構成要素ごとに詰め直す。
+    fn union_to_union(
+        &mut self,
+        v: TempId,
+        fu: wys_typeck::UnionId,
+        tu: wys_typeck::UnionId,
+    ) -> TempId {
+        let target = self.members(tu);
+        let common: Vec<TTy> = self
+            .members(fu)
+            .into_iter()
+            .filter(|m| target.contains(m))
+            .collect();
+        let src = self.hidden_local(Ty::Union(UnionId(fu.0)));
+        self.emit(Inst::Store { dst: src, src: v });
+        let out = self.hidden_local(Ty::Union(UnionId(tu.0)));
+        self.for_each_variant(src, fu, &common, |l, val, m| {
+            let p = l.payload(val, fu, m);
+            let u = l.make_union(tu, m, p);
+            l.emit(Inst::Store { dst: out, src: u });
+        });
+        let dst = self.temp(Ty::Union(UnionId(tu.0)));
+        self.emit(Inst::Load { dst, src: out });
+        dst
+    }
+
+    /// ローカル `src` に入った Union 値について、`variants` のどれに当たるかで分岐し、それぞれで `f` を実行する。
+    /// 最後の構成要素は検査せずに実行する（型検査で、値がこのどれかであることは保証済み）。
+    fn for_each_variant(
+        &mut self,
+        src: LocalId,
+        u: wys_typeck::UnionId,
+        variants: &[TTy],
+        mut f: impl FnMut(&mut Self, TempId, TTy),
+    ) {
+        let src_ty = self.locals[src.0 as usize];
+        let join = self.new_block();
+        for (i, &m) in variants.iter().enumerate() {
+            let last = i + 1 == variants.len();
+            let next = if last {
+                None
+            } else {
+                let val = self.temp(src_ty);
+                self.emit(Inst::Load { dst: val, src });
+                let c = self.temp(Ty::Bool);
+                let variant = self.variant(u, m);
+                self.emit(Inst::UnionIs {
+                    dst: c,
+                    src: val,
+                    variant,
+                });
+                let then_b = self.new_block();
+                let next_b = self.new_block();
+                self.terminate(Terminator::Branch {
+                    cond: c,
+                    then_block: then_b,
+                    else_block: next_b,
+                });
+                self.switch_to(then_b);
+                Some(next_b)
+            };
+            let val = self.temp(src_ty);
+            self.emit(Inst::Load { dst: val, src });
+            f(self, val, m);
+            self.terminate(Terminator::Jump(join));
+            if let Some(n) = next {
+                self.switch_to(n);
+            }
+        }
+        self.switch_to(join);
+    }
+
+    fn print(&mut self, v: TempId, ty: TTy) {
+        fn builtin(t: TTy) -> Builtin {
+            match t {
+                TTy::Int => Builtin::PrintInt,
+                TTy::Bool => Builtin::PrintBool,
+                TTy::Str => Builtin::PrintStr,
+                other => panic!("print of {other:?} passed type checking"),
+            }
+        }
+        match ty {
+            TTy::Union(u) => {
+                let src = self.hidden_local(Ty::Union(UnionId(u.0)));
+                self.emit(Inst::Store { dst: src, src: v });
+                let members = self.members(u);
+                self.for_each_variant(src, u, &members, |l, val, m| {
+                    let p = l
+                        .payload(val, u, m)
+                        .expect("printable members have payloads");
+                    l.emit(Inst::Call {
+                        dst: None,
+                        callee: Callee::Builtin(builtin(m)),
+                        args: vec![p],
+                    });
+                });
+            }
+            base => self.emit(Inst::Call {
+                dst: None,
+                callee: Callee::Builtin(builtin(base)),
+                args: vec![v],
+            }),
         }
     }
 
