@@ -1,0 +1,4 @@
+# parse_scalar の結果が int なら +1、それ以外は 0 を返す
+pub def plus_one(text: str) -> int:
+    v = parse_scalar(text)
+    return v + 1

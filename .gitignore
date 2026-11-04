@@ -23,3 +23,6 @@
 
 # Benchmark results (machine-specific; commit selectively)
 /benches/results/
+
+# PoC5 raw results (summarize into docs/poc/poc5-results.md)
+/scripts/poc5/results/

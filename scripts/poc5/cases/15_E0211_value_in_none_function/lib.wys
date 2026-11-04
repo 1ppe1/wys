@@ -1,0 +1,3 @@
+pub def remember(n: int) -> None:
+    print(n)
+    return n

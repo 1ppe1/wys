@@ -1,0 +1,6 @@
+from lib import code
+
+def test_code() -> None:
+    assert(code(5) == 1)
+    assert(code("a") == 2)
+    assert(code(None) == 0)

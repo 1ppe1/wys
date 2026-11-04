@@ -1,0 +1,5 @@
+from lib import origin
+
+def test_origin() -> None:
+    p = origin()
+    assert(p.x == 0 and p.y == 0)

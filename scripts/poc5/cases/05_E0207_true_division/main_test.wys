@@ -1,0 +1,4 @@
+from lib import half
+
+def test_half() -> None:
+    assert(half(7) == 3)

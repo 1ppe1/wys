@@ -1,0 +1,4 @@
+pub def pick(flag: bool) -> int:
+    if flag:
+        x = 1
+    return x

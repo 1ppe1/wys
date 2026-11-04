@@ -1,0 +1,4 @@
+pub def unwrap_or[T](x: T | None, default: T) -> T:
+    if x is not None:
+        return default
+    return default

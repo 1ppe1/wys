@@ -1,0 +1,5 @@
+from lib import pick
+
+def test_pick() -> None:
+    assert(pick(True) == 1)
+    assert(pick(False) == 0)

@@ -1,0 +1,11 @@
+pub def kind(text: str) -> int:
+    v = parse_scalar(text)
+    match v:
+        case int():
+            return 1
+        case bool():
+            return 2
+        case str():
+            return 3
+        case None:
+            return 4
