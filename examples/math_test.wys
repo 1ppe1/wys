@@ -1,0 +1,14 @@
+# `wys test examples/math_test.wys` で test_* 関数を実行する（main は不要）
+def clamp(n: int, low: int, high: int) -> int:
+    if n < low:
+        return low
+    elif n > high:
+        return high
+    return n
+
+def test_clamp_inside() -> None:
+    assert(clamp(5, 0, 10) == 5)
+
+def test_clamp_edges() -> None:
+    assert(clamp(-3, 0, 10) == 0)
+    assert(clamp(42, 0, 10) == 10)

@@ -245,3 +245,47 @@ fn run_passes_arguments_after_double_dash() {
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "2\nsecond\n");
 }
+
+#[test]
+fn wys_test_runs_each_test_in_isolation() {
+    let path = scratch(
+        "tests_mixed",
+        "def add(a: int, b: int) -> int:\n    return a + b\n\ndef test_add() -> None:\n    assert(add(1, 2) == 3)\n\ndef test_wrong() -> None:\n    print(\"before\")\n    assert(add(1, 1) == 3)\n\ndef test_optional() -> None:\n    x: int | None = 2\n    assert(x is not None)\n    assert(x + 1 == 3)\n",
+    );
+    let out = cli(&["test", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("test test_add ... ok"), "{stdout}");
+    assert!(stdout.contains("test test_wrong ... FAILED"), "{stdout}");
+    assert!(stdout.contains("test test_optional ... ok"), "{stdout}");
+    assert!(stdout.contains("assertion failed at"), "{stdout}");
+    assert!(stdout.contains(":9:5"), "{stdout}");
+    assert!(stdout.contains("before"), "{stdout}");
+    assert!(
+        stdout.contains("test result: FAILED. 2 passed; 1 failed"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn wys_test_passes_and_checks_signatures() {
+    let ok = scratch(
+        "tests_ok",
+        "def test_one() -> None:\n    assert(1 + 1 == 2)\n",
+    );
+    let out = cli(&["test", ok.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .contains("test result: ok. 1 passed; 0 failed")
+    );
+    let bad = scratch("tests_bad", "def test_args(n: int) -> None:\n    pass\n");
+    let out = cli(&["test", bad.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8(out.stderr)
+            .unwrap()
+            .contains("error[E0801]")
+    );
+}

@@ -24,6 +24,8 @@ struct Shared<'t> {
     /// (関数の番号, 型引数) → IR の関数。Generic でない関数は型引数が空。
     instances: HashMap<(usize, Vec<TTy>), FuncId>,
     queue: VecDeque<(usize, Vec<TTy>, FuncId)>,
+    /// ソース上の位置を「ファイル:行:列」にする（`assert` の失敗メッセージ用）
+    locate: &'t dyn Fn(u32) -> String,
 }
 
 impl Shared<'_> {
@@ -145,8 +147,26 @@ impl Shared<'_> {
     }
 }
 
+/// IR を作るときの指定。
+pub struct LowerOptions<'a> {
+    /// 空でなければ、`main` の代わりに、これらの関数（`module.funcs` の番号）を `wys test` 用に呼び分けるエントリを作る。
+    pub tests: Vec<usize>,
+    pub locate: &'a dyn Fn(u32) -> String,
+}
+
 /// AST と型検査の結果から IR を作る。Generic 関数は、使われた型引数ごとに単相化する（ADR-0006）。
 pub fn lower(module: &ast::Module, tc: &TypeckResult) -> Program {
+    lower_with(
+        module,
+        tc,
+        &LowerOptions {
+            tests: Vec::new(),
+            locate: &|b| format!("byte {b}"),
+        },
+    )
+}
+
+pub fn lower_with(module: &ast::Module, tc: &TypeckResult, opts: &LowerOptions<'_>) -> Program {
     let mut sh = Shared {
         tc,
         types: tc.types.clone(),
@@ -163,6 +183,7 @@ pub fn lower(module: &ast::Module, tc: &TypeckResult) -> Program {
             .collect(),
         instances: HashMap::new(),
         queue: VecDeque::new(),
+        locate: opts.locate,
     };
     // Generic でない関数を先に登録する（関数番号はソースの順になる）
     for (i, sig) in tc.sigs.iter().enumerate() {
@@ -178,16 +199,98 @@ pub fn lower(module: &ast::Module, tc: &TypeckResult) -> Program {
         }
         funcs[id.0 as usize] = Some(f);
     }
-    let entry = sh.instances[&(sh.func_index["main"], Vec::new())];
+    let mut funcs: Vec<Function> = funcs
+        .into_iter()
+        .map(|f| f.expect("every instance is lowered"))
+        .collect();
+    let entry = if opts.tests.is_empty() {
+        sh.instances[&(sh.func_index["main"], Vec::new())]
+    } else {
+        let ids: Vec<FuncId> = opts
+            .tests
+            .iter()
+            .map(|i| sh.instances[&(*i, Vec::new())])
+            .collect();
+        funcs.push(test_dispatcher(&ids));
+        FuncId(funcs.len() as u32 - 1)
+    };
     Program {
         strings: sh.strings,
         unions: sh.unions,
         records: sh.records,
-        funcs: funcs
-            .into_iter()
-            .map(|f| f.expect("every instance is lowered"))
-            .collect(),
+        funcs,
         entry,
+    }
+}
+
+/// `wys test` のエントリ: 環境変数 `WYS_TEST_INDEX` の番号のテスト関数を1つだけ呼ぶ。
+fn test_dispatcher(tests: &[FuncId]) -> Function {
+    let mut temps = vec![Ty::Int];
+    let mut blocks = vec![Block {
+        insts: vec![
+            Inst::Call {
+                dst: Some(TempId(0)),
+                callee: Callee::Builtin(Builtin::TestIndex),
+                args: vec![],
+            },
+            Inst::Store {
+                dst: LocalId(0),
+                src: TempId(0),
+            },
+        ],
+        term: Terminator::Jump(BlockId(1)),
+    }];
+    for (i, id) in tests.iter().enumerate() {
+        let check = blocks.len() as u32;
+        let (k, c, eq) = (
+            temps.len() as u32,
+            temps.len() as u32 + 1,
+            temps.len() as u32 + 2,
+        );
+        temps.extend([Ty::Int, Ty::Int, Ty::Bool]);
+        blocks.push(Block {
+            insts: vec![
+                Inst::Load {
+                    dst: TempId(k),
+                    src: LocalId(0),
+                },
+                Inst::Const {
+                    dst: TempId(c),
+                    value: Const::Int(i as i64),
+                },
+                Inst::Binary {
+                    dst: TempId(eq),
+                    op: BinOp::Eq,
+                    lhs: TempId(k),
+                    rhs: TempId(c),
+                },
+            ],
+            term: Terminator::Branch {
+                cond: TempId(eq),
+                then_block: BlockId(check + 1),
+                else_block: BlockId(check + 2),
+            },
+        });
+        blocks.push(Block {
+            insts: vec![Inst::Call {
+                dst: None,
+                callee: Callee::Func(*id),
+                args: vec![],
+            }],
+            term: Terminator::Return(None),
+        });
+    }
+    blocks.push(Block {
+        insts: vec![],
+        term: Terminator::Return(None),
+    });
+    Function {
+        name: "__wys_tests".into(),
+        param_count: 0,
+        locals: vec![Ty::Int],
+        ret: None,
+        temps,
+        blocks,
     }
 }
 
@@ -643,6 +746,28 @@ impl<'s, 't> FnLower<'s, 't> {
                     _ => self.lower_parse_scalar(&args[0], e),
                 })
             }
+            ExprKind::Call { callee, args, .. } if callee.name == "assert" => {
+                let c = self.expr(&args[0]).expect("conditions are bool");
+                let (ok, fail) = (self.new_block(), self.new_block());
+                self.terminate(Terminator::Branch {
+                    cond: c,
+                    then_block: ok,
+                    else_block: fail,
+                });
+                self.switch_to(fail);
+                let loc = (self.sh.locate)(e.span.start);
+                let id = StrId(self.sh.strings.len() as u32);
+                self.sh.strings.push(loc);
+                let s = self.konst(Const::Str(id), Ty::Str);
+                self.emit(Inst::Call {
+                    dst: None,
+                    callee: Callee::Builtin(Builtin::AssertFail),
+                    args: vec![s],
+                });
+                self.terminate(Terminator::Unreachable);
+                self.switch_to(ok);
+                None
+            }
             ExprKind::Call { callee, args, .. } => {
                 if callee.name == "print" {
                     let v = self.expr(&args[0]).expect("print arguments have values");
@@ -918,7 +1043,7 @@ impl<'s, 't> FnLower<'s, 't> {
         !self.sh.func_index.contains_key(name)
             && !matches!(
                 name,
-                "print" | "exit" | "arg_count" | "arg" | "parse_scalar"
+                "print" | "exit" | "arg_count" | "arg" | "parse_scalar" | "assert"
             )
     }
 

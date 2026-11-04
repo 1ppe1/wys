@@ -48,37 +48,118 @@ pub fn frontend_with(
     text: &str,
     read: &dyn Fn(&std::path::Path) -> Option<String>,
 ) -> Frontend {
+    run_frontend(name, text, read, false).0
+}
+
+/// `wys test` 用: `main` は不要。エントリファイルの `test_` で始まる関数を集め、それらを呼び分けるエントリで IR を作る。
+/// 戻り値の2つ目はテスト関数の名前（IR のエントリが使う番号の順）。
+pub fn frontend_tests(name: &str, text: &str) -> (Frontend, Vec<String>) {
+    run_frontend(name, text, &|p| std::fs::read_to_string(p).ok(), true)
+}
+
+/// `frontend_tests` の、import 先の読み方を指定する版。
+pub fn frontend_tests_with(
+    name: &str,
+    text: &str,
+    read: &dyn Fn(&std::path::Path) -> Option<String>,
+) -> (Frontend, Vec<String>) {
+    run_frontend(name, text, read, true)
+}
+
+fn run_frontend(
+    name: &str,
+    text: &str,
+    read: &dyn Fn(&std::path::Path) -> Option<String>,
+    test_mode: bool,
+) -> (Frontend, Vec<String>) {
     let loaded = wys_resolve::load_program(name, text, read);
     let file = loaded.sources;
     let module = loaded.module;
+    let failed = |file, diagnostics| {
+        (
+            Frontend {
+                file,
+                diagnostics,
+                program: None,
+                unsupported: None,
+            },
+            Vec::new(),
+        )
+    };
     if loaded.diagnostics.iter().any(Diagnostic::is_error) {
-        return Frontend {
-            file,
-            diagnostics: loaded.diagnostics,
-            program: None,
-            unsupported: None,
-        };
+        return failed(file, loaded.diagnostics);
     }
-    let (tc, mut diagnostics) = wys_typeck::check(&module);
+    let (tc, mut diagnostics) = wys_typeck::check_program(&module, !test_mode);
     diagnostics.splice(0..0, loaded.diagnostics);
-    if diagnostics.iter().any(Diagnostic::is_error) {
-        return Frontend {
-            file,
-            diagnostics,
-            program: None,
-            unsupported: None,
-        };
+    // テスト関数（エントリファイルの `test_*`）。引数なし・戻り値 None でなければ E0801
+    let mut tests = Vec::new();
+    if test_mode {
+        for (i, f) in module.funcs.iter().enumerate() {
+            if f.name.name.contains('.') || !f.name.name.starts_with("test_") {
+                continue;
+            }
+            if !f.params.is_empty()
+                || !f.type_params.is_empty()
+                || tc.sigs[i].ret != wys_typeck::Ty::None
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E0801",
+                        format!(
+                            "test function `{}` must take no parameters and return `None`",
+                            f.name.name
+                        ),
+                        f.name.span,
+                    )
+                    .with_hint(format!("declare it as `def {}() -> None:`", f.name.name)),
+                );
+                continue;
+            }
+            tests.push(i);
+        }
     }
-    let program = wys_lower::lower(&module, &tc);
+    if diagnostics.iter().any(Diagnostic::is_error) {
+        return failed(file, diagnostics);
+    }
+    let names = tests
+        .iter()
+        .map(|i| module.funcs[*i].name.name.clone())
+        .collect();
+    if test_mode && tests.is_empty() {
+        return (
+            Frontend {
+                file,
+                diagnostics,
+                program: None,
+                unsupported: None,
+            },
+            names,
+        );
+    }
+    let locate = |b: u32| {
+        let p = file.position(b);
+        format!("{}:{}:{}", file.file_name(b), p.line, p.column)
+    };
+    let program = wys_lower::lower_with(
+        &module,
+        &tc,
+        &wys_lower::LowerOptions {
+            tests,
+            locate: &locate,
+        },
+    );
     if let Err(e) = wys_ir::verify(&program) {
         panic!("internal compiler error: IR verification failed: {e}\n{program}");
     }
-    Frontend {
-        file,
-        diagnostics,
-        program: Some(program),
-        unsupported: None,
-    }
+    (
+        Frontend {
+            file,
+            diagnostics,
+            program: Some(program),
+            unsupported: None,
+        },
+        names,
+    )
 }
 
 #[derive(Debug, Default, Clone)]

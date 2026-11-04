@@ -3,7 +3,7 @@
 コンパイラが出す診断のコード。`check --format json` の `code` フィールドに入る（[diagnostics-schema.json](diagnostics-schema.json)）。
 
 - 一度割り当てたコードの意味は変えない。使わなくなったら「廃止」と書いて残す（要件IDと同じ運用）。
-- 範囲: `E00xx` 字句解析、`E01xx` 構文解析、`E02xx` 型検査、`E03xx` 絞り込み・`match`、`E04xx` Generics、`E05xx` レコード、`E06xx` `Unknown`、`E07xx` モジュール（ADR-0010）、`W03xx` 警告（M2 計画、`docs/plans/m2.md`）。
+- 範囲: `E00xx` 字句解析、`E01xx` 構文解析、`E02xx` 型検査、`E03xx` 絞り込み・`match`、`E04xx` Generics、`E05xx` レコード、`E06xx` `Unknown`、`E07xx` モジュール（ADR-0010）、`E08xx` テスト（`wys test`）、`W03xx` 警告（M2 計画、`docs/plans/m2.md`）。
 - メッセージは英語。コードと範囲で機械的に判別できるようにする。
 
 | コード | 段階 | 意味 |
@@ -62,6 +62,7 @@ E0212 は欠番（未割り当て）。
 | E0703 | モジュール | 循環 import（経路を示す） |
 | E0704 | モジュール | `from ... import` した名前が、モジュール内の定義と衝突している |
 | E0705 | モジュール | import したモジュールに、その名前の定義がない |
+| E0801 | テスト | `wys test` のテスト関数（`test_` で始まる関数）が、引数なし・戻り値 `None` になっていない |
 
 ## 実行時エラー（PoC1 時点の暫定）
 
@@ -72,11 +73,13 @@ E0212 は欠番（未割り当て）。
 | integer overflow | `+` `-` `*` 単項 `-` `//` の結果が 64 ビットに収まらない |
 | integer division by zero | `//` の除数が 0 |
 | integer modulo by zero | `%` の除数が 0 |
+| assertion failed at ファイル:行:列 | `assert(cond)` の条件が偽 |
 
-## 組み込みの外部入力（ADR-0011）
+## 組み込み関数（外部入力は ADR-0011）
 
 | 関数 | 型 | 内容 |
 |---|---|---|
 | `arg_count()` | `int` | コマンドライン引数の数（プログラム名を除く） |
 | `arg(i)` | `str \| None` | `i` 番目（0始まり）の引数。範囲外なら `None` |
+| `assert(cond)` | `None` | `cond` が偽なら実行時エラーで終了する。文として書くと、以降は `cond` が真の場合として絞り込む（`assert(x is not None)`） |
 | `parse_scalar(s)` | `Unknown` | 10進の整数 → `int`、`true` / `false` → `bool`、`null` → `None`、それ以外 → `str` |

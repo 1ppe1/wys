@@ -164,6 +164,29 @@ pub extern "C" fn wys_exit(code: i64) -> ! {
     std::process::exit(code as i32);
 }
 
+/// `wys test` が実行するテストの番号（環境変数 `WYS_TEST_INDEX`）。なければ -1。
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_test_index() -> i64 {
+    std::env::var("WYS_TEST_INDEX")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(-1)
+}
+
+/// `assert` の失敗。`ptr` / `len` は「ファイル:行:列」の定数文字列。
+///
+/// # Safety
+/// `ptr` は `len` バイト読み取り可能な UTF-8 データを指していなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_assert_fail(ptr: *const u8, len: i64) -> ! {
+    // SAFETY: コンパイラは定数文字列のアドレスと正確な長さだけを渡す。
+    let loc = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    runtime_error(&format!(
+        "assertion failed at {}",
+        String::from_utf8_lossy(loc)
+    ));
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_panic_overflow() -> ! {
     runtime_error("integer overflow");

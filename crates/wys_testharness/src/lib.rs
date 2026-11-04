@@ -9,6 +9,7 @@
 //! # expect-exit: 101                期待する終了コード（省略時は 0）
 //! # expect-stderr-contains: overflow 標準エラーに含まれるべき文字列
 //! # expect-args: 42 true hello      実行時にプログラムに渡すコマンドライン引数（空白区切り）
+//! # expect-mode: test               `wys test` と同じ検査（main 不要、test_* の検査）で診断だけを確かめる
 //! ```
 //!
 //! 診断（エラーと警告）は、ファイルに書いた順で過不足なく一致しなければならない。
@@ -26,6 +27,8 @@ pub struct Expectations {
     pub exit: i32,
     pub stderr_contains: Vec<String>,
     pub args: Vec<String>,
+    /// `# expect-mode: test`
+    pub test_mode: bool,
 }
 
 pub fn parse_expectations(src: &str) -> Result<Expectations, String> {
@@ -68,6 +71,7 @@ pub fn parse_expectations(src: &str) -> Result<Expectations, String> {
             }
             "stderr-contains" => e.stderr_contains.push(value.to_string()),
             "args" => e.args.extend(value.split_whitespace().map(str::to_string)),
+            "mode" if value.trim() == "test" => e.test_mode = true,
             other => return Err(format!("line {}: unknown expectation `{other}`", i + 1)),
         }
     }
@@ -125,9 +129,12 @@ pub fn frontend_for_case(path: &Path, display_name: &str, src: &str) -> wys_driv
         .nth(depth)
         .unwrap_or(Path::new(""))
         .to_path_buf();
-    wys_driver::frontend_with(display_name, src, &|p| {
-        std::fs::read_to_string(root.join(p)).ok()
-    })
+    let read = |p: &Path| std::fs::read_to_string(root.join(p)).ok();
+    if parse_expectations(src).is_ok_and(|e| e.test_mode) {
+        wys_driver::frontend_tests_with(display_name, src, &read).0
+    } else {
+        wys_driver::frontend_with(display_name, src, &read)
+    }
 }
 
 /// 1ケースを実行する。`display_name` は診断に入るファイル名（スナップショットを安定させるため相対パス）。
@@ -158,6 +165,9 @@ pub fn run_case(
     }
     if let Some(msg) = &fe.unsupported {
         return Err(format!("cannot build: {msg}"));
+    }
+    if exp.test_mode {
+        return Ok(()); // 診断だけを確かめる
     }
     let Some(program) = &fe.program else {
         return Ok(());

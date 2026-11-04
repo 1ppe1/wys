@@ -325,9 +325,21 @@ impl TypeckResult {
     }
 }
 
-const BUILTINS: &[&str] = &["print", "exit", "arg_count", "arg", "parse_scalar"];
+const BUILTINS: &[&str] = &[
+    "print",
+    "exit",
+    "arg_count",
+    "arg",
+    "parse_scalar",
+    "assert",
+];
 
 pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
+    check_program(module, true)
+}
+
+/// `require_main` が偽なら `main` がなくてもよい（`wys test` で使う）。
+pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<Diagnostic>) {
     let mut cx = Ctx {
         diags: Vec::new(),
         expr_types: vec![Ty::Error; module.expr_count as usize],
@@ -381,7 +393,9 @@ pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
             span: f.name.span,
         });
     }
-    check_main(&mut cx, module);
+    if require_main || cx.sig_index.contains_key("main") {
+        check_main(&mut cx, module);
+    }
     for t in &module.types {
         if BUILTINS.contains(&t.name.name.as_str()) || cx.sig_index.contains_key(&t.name.name) {
             cx.diags.push(Diagnostic::error(
@@ -859,6 +873,24 @@ impl<'a> FnCk<'a> {
     fn stmt(&mut self, s: &Stmt, env: &mut Env) -> bool {
         match &s.kind {
             StmtKind::Pass => false,
+            // `assert(cond)` の後では、条件が真の場合の環境（絞り込み）を引き継ぐ
+            StmtKind::Expr(
+                e @ Expr {
+                    kind:
+                        ExprKind::Call {
+                            callee,
+                            args,
+                            kwargs,
+                        },
+                    ..
+                },
+            ) if callee.name == "assert" && args.len() == 1 && kwargs.is_empty() => {
+                let (t, t_env, _) = self.cond(&args[0], env);
+                self.require_condition(t, args[0].span);
+                *env = t_env;
+                self.record(e, Ty::None);
+                false
+            }
             StmtKind::Expr(e) => {
                 self.expr(e, env);
                 false
@@ -1810,6 +1842,24 @@ impl<'a> FnCk<'a> {
                 }
                 return ret;
             }
+            "assert" => {
+                if args.len() != 1 {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!("`assert` takes 1 argument but {} were given", args.len()),
+                        span,
+                    ));
+                } else {
+                    self.cx.require(
+                        arg_tys[0],
+                        Ty::Bool,
+                        args[0].span,
+                        "`assert` needs a `bool` condition",
+                        None,
+                    );
+                }
+                return Ty::None;
+            }
             "exit" => {
                 if args.len() != 1 {
                     self.cx.diags.push(Diagnostic::error(
@@ -2302,5 +2352,21 @@ mod tests {
         for (src, code) in cases {
             assert_eq!(run(&with_main(src)), vec![code], "{src}");
         }
+    }
+
+    #[test]
+    fn assert_narrows_and_tests_need_no_main() {
+        let src = "def test_value() -> None:\n    x: int | None = 1\n    assert(x is not None)\n    print(x + 1)\n    assert(x == 1)\n";
+        let (m, d) = wys_parser::parse_source(src);
+        assert!(d.is_empty());
+        assert!(check_program(&m, false).1.is_empty());
+        assert_eq!(
+            check(&m).1.iter().map(|d| d.code).collect::<Vec<_>>(),
+            vec!["E0210"]
+        );
+        assert_eq!(
+            run(&with_main("def f(n: int) -> None:\n    assert(n)\n")),
+            vec!["E0201"]
+        );
     }
 }
