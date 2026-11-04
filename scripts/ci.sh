@@ -13,7 +13,9 @@ cargo test --workspace
 echo "==> conformance (release -O2)"
 WYS_OPT=2 cargo test -q -p wys_testharness --test conformance conformance_suite
 echo "==> conformance (AddressSanitizer)"
-WYS_SANITIZE=address cargo test -q -p wys_testharness --test conformance conformance_suite
+# リークの判定は終了時の生存オブジェクト数（102）で行う。パニックや exit() では解放せずに終わるので、
+# LeakSanitizer（Linux の ASan では既定で有効）は無効にする（ADR-0013）
+ASAN_OPTIONS=detect_leaks=0 WYS_SANITIZE=address cargo test -q -p wys_testharness --test conformance conformance_suite
 echo "==> wys fmt --check examples"
 for f in examples/*.wys; do
   ./target/debug/wys fmt --check "$f"

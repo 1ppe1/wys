@@ -442,3 +442,20 @@ fn try_propagates_and_reports_uncovered_errors() {
             .contains("int | str")
     );
 }
+
+#[test]
+fn panic_flushes_stdout_and_exits_with_101() {
+    let path = scratch(
+        "panic",
+        "def main() -> None:\n    print(\"partial\")\n    panic(\"stop \" + \"here\")\n",
+    );
+    let run = cli(&["run", path.to_str().unwrap()]);
+    assert_eq!(run.status.code(), Some(101));
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "partial\n");
+    let stderr = String::from_utf8(run.stderr).unwrap();
+    assert!(
+        stderr.starts_with("runtime error: stop here at "),
+        "{stderr}"
+    );
+    assert!(stderr.trim_end().ends_with(":3:5"), "{stderr}");
+}

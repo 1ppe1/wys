@@ -467,6 +467,19 @@ pub unsafe extern "C" fn wys_assert_fail(loc: *const Header) -> ! {
     runtime_error(&format!("assertion failed at {loc}"));
 }
 
+/// `panic(msg)`（ADR-0013）: `runtime error: <msg> at <場所>` を出して終了コード 101 で終わる。
+///
+/// # Safety
+/// `msg` と `loc` は有効な文字列オブジェクトでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_panic(msg: *const Header, loc: *const Header) -> ! {
+    // SAFETY: 関数の安全条件どおり。
+    let msg = String::from_utf8_lossy(unsafe { bytes(msg) }).into_owned();
+    // SAFETY: 関数の安全条件どおり。
+    let loc = String::from_utf8_lossy(unsafe { bytes(loc) }).into_owned();
+    runtime_error(&format!("{msg} at {loc}"));
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_panic_overflow() -> ! {
     runtime_error("integer overflow");
