@@ -122,6 +122,9 @@ pub fn run_case(
             wys_driver::to_text(&fe.file, &fe.diagnostics)
         ));
     }
+    if let Some(msg) = &fe.unsupported {
+        return Err(format!("cannot build: {msg}"));
+    }
     let Some(program) = &fe.program else {
         return Ok(());
     };

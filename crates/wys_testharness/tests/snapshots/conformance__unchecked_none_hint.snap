@@ -1,0 +1,34 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: "wys_driver::to_json(&fe.file, &fe.diagnostics)"
+---
+{
+  "schema_version": "0",
+  "diagnostics": [
+    {
+      "code": "E0301",
+      "severity": "error",
+      "message": "this value may be `None`: expected `str`, found `str | None`",
+      "span": {
+        "file": "tests/conformance/diagnostics/unchecked_none_hint.wys",
+        "start": {
+          "line": 6,
+          "column": 12,
+          "byte": 129
+        },
+        "end": {
+          "line": 6,
+          "column": 13,
+          "byte": 130
+        }
+      },
+      "cause": "the function's return type is `str`",
+      "hints": [
+        {
+          "message": "check it first, e.g. `if x is not None:` or `if x is None: return ...`"
+        }
+      ],
+      "related": []
+    }
+  ]
+}

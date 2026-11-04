@@ -11,11 +11,14 @@ use wys_span::SourceFile;
 
 pub use wys_diagnostics::{to_json, to_text};
 
-/// フロントエンドの結果。`program` はエラーがないときだけ `Some`。
+/// フロントエンドの結果。`program` はエラーがなく、コード生成もできるときだけ `Some`。
 pub struct Frontend {
     pub file: SourceFile,
     pub diagnostics: Vec<Diagnostic>,
     pub program: Option<Program>,
+    /// 型検査は通ったが、このコンパイラのコード生成がまだ対応していない機能を使っている場合の説明。
+    /// `check` はこのプログラムを受け付ける。`build` / `run` はこのメッセージで止まる。
+    pub unsupported: Option<String>,
 }
 
 impl Frontend {
@@ -33,11 +36,25 @@ pub fn frontend(name: &str, text: &str) -> Frontend {
             file,
             diagnostics,
             program: None,
+            unsupported: None,
         };
     }
     let (tc, diagnostics) = wys_typeck::check(&module);
     if !diagnostics.is_empty() {
         return Frontend {
+            file,
+            diagnostics,
+            program: None,
+            unsupported: None,
+        };
+    }
+    if let Some(i) = tc.first_function_using_unions() {
+        let p = file.position(module.funcs[i].name.span.start);
+        return Frontend {
+            unsupported: Some(format!(
+                "{}:{}:{}: function `{}` uses union types (`A | B`), which the code generator does not support yet (planned for M2 T1b); `check` accepts this program",
+                file.name, p.line, p.column, module.funcs[i].name.name
+            )),
             file,
             diagnostics,
             program: None,
@@ -51,6 +68,7 @@ pub fn frontend(name: &str, text: &str) -> Frontend {
         file,
         diagnostics,
         program: Some(program),
+        unsupported: None,
     }
 }
 
@@ -189,6 +207,9 @@ pub fn build_file(source: &Path, output: &Path, opts: &BuildOptions) -> Result<(
     let text = std::fs::read_to_string(source)
         .map_err(|e| BuildError::Io(format!("cannot read {}: {e}", source.display())))?;
     let fe = frontend(&source.display().to_string(), &text);
+    if let Some(msg) = &fe.unsupported {
+        return Err(BuildError::Tool(msg.clone()));
+    }
     let Some(program) = &fe.program else {
         return Err(BuildError::Diagnostics(Box::new(fe)));
     };
@@ -205,6 +226,17 @@ mod tests {
         let codes: Vec<_> = fe.diagnostics.iter().map(|d| d.code).collect();
         assert_eq!(codes, vec!["E0101"]);
         assert!(fe.program.is_none());
+    }
+
+    #[test]
+    fn unions_pass_check_but_are_not_built_yet() {
+        let fe = frontend(
+            "t.wys",
+            "def f(x: int | None) -> int:\n    if x is None:\n        return 0\n    return x\n\ndef main() -> None:\n    print(f(None))\n",
+        );
+        assert!(!fe.has_errors());
+        assert!(fe.program.is_none());
+        assert!(fe.unsupported.unwrap().contains("M2 T1b"));
     }
 
     #[test]

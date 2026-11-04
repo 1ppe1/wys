@@ -26,6 +26,7 @@ pub enum TokenKind {
     And,
     Or,
     Not,
+    Is,
     // operators / punctuation
     Plus,
     Minus,
@@ -45,6 +46,7 @@ pub enum TokenKind {
     Colon,
     Comma,
     Arrow,
+    Pipe,
     // layout
     Newline,
     Indent,
@@ -73,6 +75,7 @@ impl TokenKind {
             And => "`and`",
             Or => "`or`",
             Not => "`not`",
+            Is => "`is`",
             Plus => "`+`",
             Minus => "`-`",
             Star => "`*`",
@@ -91,6 +94,7 @@ impl TokenKind {
             Colon => "`:`",
             Comma => "`,`",
             Arrow => "`->`",
+            Pipe => "`|`",
             Newline => "end of line",
             Indent => "indent",
             Dedent => "dedent",
@@ -150,6 +154,7 @@ fn keyword(s: &str) -> Option<TokenKind> {
         "and" => And,
         "or" => Or,
         "not" => Not,
+        "is" => Is,
         _ => return Option::None,
     })
 }
@@ -415,6 +420,7 @@ impl Lexer<'_> {
             (b')', _) => (RParen, 1),
             (b':', _) => (Colon, 1),
             (b',', _) => (Comma, 1),
+            (b'|', _) => (Pipe, 1),
             _ => {
                 let ch = self.src[self.pos..].chars().next().expect("in bounds");
                 self.pos += ch.len_utf8();
@@ -532,6 +538,7 @@ mod tests {
         assert_eq!(codes("x = \"\\q\"\n"), vec!["E0006"]);
         assert_eq!(codes("x = 1.5\n"), vec!["E0007"]);
         assert_eq!(codes("x = $\n"), vec!["E0001"]);
+        assert_eq!(kinds("a is not b | c")[1..4], [Is, Not, Ident("b".into())]);
         assert_eq!(codes("f(1\n"), vec!["E0008"]);
     }
 }

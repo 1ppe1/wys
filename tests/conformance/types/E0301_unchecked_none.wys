@@ -1,0 +1,7 @@
+# AC-002: None の可能性がある値を未検証で使うと拒否される
+# expect-error: E0301 4:11
+def greet(name: str | None) -> None:
+    print(name)
+
+def main() -> None:
+    greet("wys")

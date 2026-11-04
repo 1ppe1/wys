@@ -1,0 +1,9 @@
+# expect-error: E0301 6:12
+def first_char_code(s: str | None) -> int:
+    return 0
+
+def length(s: str | None) -> str:
+    return s
+
+def main() -> None:
+    print(length("a"))

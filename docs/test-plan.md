@@ -34,8 +34,9 @@ CI（`.github/workflows/ci.yml`、macOS arm64）は `scripts/ci.sh`（fmt / clip
 
 | 内容 | 予定 |
 |---|---|
-| AC-002（`None` の可能性がある値の未検証利用を拒否）、AC-003（`Unknown` の検証） | M2（PoC2 の実験コードで方式は確認済み） |
-| Linux x86_64 での CI | M2（ADR-0003） |
+| AC-002（`None` の可能性がある値の未検証利用を拒否） | **型検査は M2 T1a で実装**（`types/E0301_*`、`wys_typeck` の絞り込みテスト）。実行は T1b |
+| AC-003（`Unknown` の検証） | M2 T5 |
+| Linux x86_64 での CI | **M2 T0 で追加済み** |
 | メモリ安全性の境界テスト（NFR-001）、AddressSanitizer での実行 | M3（ADR-0005） |
 | コンパイル時間・バイナリサイズの継続計測 | M3 |
 | AC-006〜AC-010（AI Runtime、Python 連携） | Phase 2 |
