@@ -1,0 +1,20 @@
+# 代入で絞り込まれた変数に対する `is None` と `match`（到達しない分岐は生成しない）
+# expect-stdout: 1
+# expect-stdout: int 2
+# expect-stdout: none
+# expect-error: W0301 16:14
+def main() -> None:
+    x: int | None = 1
+    if x is None:
+        print("unreachable")
+    else:
+        print(x)
+    x = 2
+    match x:
+        case int():
+            print("int " + "2")
+        case None:
+            print("unreachable")
+    x = None
+    if x is None:
+        print("none")

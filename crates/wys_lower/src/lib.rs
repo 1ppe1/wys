@@ -683,6 +683,15 @@ impl<'s, 't> FnLower<'s, 't> {
                 }),
             };
             let next = self.new_block();
+            // 一致しない `case`（絞り込みで被検査値の型から外れた型。型検査は W0301 を出す）は生成しない
+            let never = match (pattern_ty, st) {
+                (None, _) => false,
+                (Some(pt), TTy::Union(u)) => !self.members(u).contains(&pt),
+                (Some(pt), st) => pt != st,
+            };
+            if never {
+                continue;
+            }
             if let (Some(pt), TTy::Union(u), Some(slot)) = (pattern_ty, st, slot) {
                 let val = self.temp(self.locals[slot.0 as usize]);
                 self.emit(Inst::Load {
@@ -754,7 +763,8 @@ impl<'s, 't> FnLower<'s, 't> {
                         });
                         dst
                     }
-                    other => panic!("`is None` on {other:?} passed type checking"),
+                    // 絞り込みで None を含まなくなった値（宣言は Optional）。常に偽
+                    _ => self.konst(Const::Bool(false), Ty::Bool),
                 };
                 if *negated {
                     let dst = self.temp(Ty::Bool);

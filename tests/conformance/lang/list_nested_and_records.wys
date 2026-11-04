@@ -1,0 +1,31 @@
+# 参照型の要素と入れ子: list[list[int]]、str を持つレコードのリスト、リストを持つレコード、Generic な関数
+# expect-stdout: 3
+# expect-stdout: ab
+# expect-stdout: cd
+# expect-stdout: 2
+# expect-stdout: first
+# expect-stdout: 0
+type User = {name: str}
+type Bag = {items: list[int]}
+
+def first[T](xs: list[T]) -> T:
+    return xs[0]
+
+def main() -> None:
+    m = [[1, 2], [3]]
+    row = m[0]
+    row.append(9)
+    print(len(m[0]))
+    users = [User(name="a" + "b")]
+    users.append(User(name="c" + "d"))
+    for u in users:
+        print(u.name)
+    b = Bag(items=[1])
+    xs = b.items
+    xs.append(2)
+    print(len(b.items))
+    print(first(["fir" + "st", "second"]))
+    maybe: list[int] | None = None
+    if maybe is None:
+        maybe = []
+    print(len(maybe))
