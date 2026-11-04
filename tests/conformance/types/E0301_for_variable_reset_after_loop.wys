@@ -1,0 +1,7 @@
+# ループの後のループ変数は、宣言された型に戻る（最後に代入された値は分からない）
+# expect-error: E0301 7:11
+def main() -> None:
+    o: int | None = 1
+    for o in [5, None]:
+        pass
+    print(o + 1)

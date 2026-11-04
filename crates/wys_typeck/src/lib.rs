@@ -1498,6 +1498,8 @@ impl<'a> FnCk<'a> {
                 // while と同じく、本体で代入される変数（ループ変数を含む）の絞り込みを解除する
                 let mut assigned = HashSet::new();
                 assigned_vars(body, &mut assigned);
+                // ループ変数自身も毎回代入される: 入口とループの後では宣言された型に戻し、経路の絞り込みを捨てる
+                assigned.insert(var.name.clone());
                 for name in assigned {
                     if let (Some(slot), Some(v)) = (env.get_mut(&name), self.vars.get(&name)) {
                         *slot = v.ty;
@@ -1717,11 +1719,13 @@ impl<'a> FnCk<'a> {
                     },
                 );
                 b.insert(n.clone(), Ty::Error);
+                Self::forget_paths(&mut b, n);
             }
             let returns = self.block(&arm.body, &mut b);
             if let Some(n) = &error_binding {
                 self.vars.remove(n);
                 b.remove(n);
+                Self::forget_paths(&mut b, n);
             }
             if !returns {
                 live.push(b);
@@ -1924,6 +1928,8 @@ impl<'a> FnCk<'a> {
                         },
                     );
                     b.insert(ident.name.clone(), ty);
+                    // 束縛は新しい値: 同じ名前の以前の経路の絞り込みを引き継がない（ADR-0016 論点 4）
+                    Self::forget_paths(&mut b, &ident.name);
                     bound = Some(ident.name.clone());
                 }
             }
@@ -1931,6 +1937,8 @@ impl<'a> FnCk<'a> {
             if let Some(n) = bound {
                 self.vars.remove(&n);
                 b.remove(&n);
+                // 束縛のスコープ（case の本体）で付いた経路を、match の後に漏らさない
+                Self::forget_paths(&mut b, &n);
             }
             if !returns {
                 live.push(b);

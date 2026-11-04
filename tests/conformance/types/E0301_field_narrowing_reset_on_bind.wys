@@ -1,0 +1,18 @@
+# `case Ok(p):` の束縛は、以前の `p.x` の絞り込みを引き継がない（ADR-0016 論点 4）
+# expect-error: E0301 16:19
+type P = {x: int | None}
+
+def main() -> None:
+    r: Result[P, str] = Ok(P(x=1))
+    match r:
+        case Ok(p):
+            if p.x is None:
+                return
+        case Err(e):
+            return
+    r2: Result[P, str] = Ok(P(x=None))
+    match r2:
+        case Ok(p):
+            print(p.x + 1)
+        case Err(e):
+            return
