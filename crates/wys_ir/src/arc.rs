@@ -111,7 +111,10 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
         for l in &drop_locals {
             let t = new_temp(locals[l.0 as usize], temps);
             out.push(Inst::Load { dst: t, src: *l });
-            out.push(Inst::Release { src: t });
+            out.push(Inst::Release {
+                src: t,
+                reason: RcReason::SlotAtFunctionExit,
+            });
         }
     };
     let locals = f.locals.clone();
@@ -122,21 +125,30 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
             for l in drop_locals.iter().filter(|l| l.0 < f.param_count) {
                 let t = new_temp(locals[l.0 as usize], &mut temps);
                 out.push(Inst::Load { dst: t, src: *l });
-                out.push(Inst::Retain { src: t });
+                out.push(Inst::Retain {
+                    src: t,
+                    reason: RcReason::ParamSlotEntry,
+                });
             }
         }
         let mut own: std::collections::HashMap<TempId, (Own, bool)> = Default::default();
         let consume = |t: TempId,
+                       site: ConsumeSite,
                        out: &mut Vec<Inst>,
                        own: &mut std::collections::HashMap<TempId, (Own, bool)>,
                        temps: &Vec<Ty>| {
             if !drops.get(temps[t.0 as usize]) {
                 return;
             }
-            match own.get_mut(&t) {
-                Some((Own::Owned, consumed)) if !*consumed => *consumed = true,
-                _ => out.push(Inst::Retain { src: t }),
-            }
+            let reason = match own.get_mut(&t) {
+                Some((Own::Owned, consumed)) if !*consumed => {
+                    *consumed = true;
+                    return;
+                }
+                Some((Own::Owned, _)) => RcReason::ConsumeSharedOwned(site),
+                _ => RcReason::ConsumeBorrowed(site),
+            };
+            out.push(Inst::Retain { src: t, reason });
         };
         for inst in std::mem::take(&mut block.insts) {
             match &inst {
@@ -146,13 +158,18 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                 }
                 Inst::ListNew { dst, items, .. } => {
                     for it in items.clone() {
-                        consume(it, &mut out, &mut own, &temps);
+                        consume(it, ConsumeSite::ListNew, &mut out, &mut own, &temps);
                     }
                     own.insert(*dst, (Own::Owned, false));
                     out.push(inst);
                 }
                 Inst::ListSet { value, .. } | Inst::ListPush { value, .. } => {
-                    consume(*value, &mut out, &mut own, &temps);
+                    let site = if matches!(inst, Inst::ListSet { .. }) {
+                        ConsumeSite::ListSet
+                    } else {
+                        ConsumeSite::ListPush
+                    };
+                    consume(*value, site, &mut out, &mut own, &temps);
                     out.push(inst);
                 }
                 Inst::ListLen { .. }
@@ -163,7 +180,7 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                     dst, keys, vals, ..
                 } => {
                     for it in keys.iter().chain(vals).copied().collect::<Vec<_>>() {
-                        consume(it, &mut out, &mut own, &temps);
+                        consume(it, ConsumeSite::DictNew, &mut out, &mut own, &temps);
                     }
                     own.insert(*dst, (Own::Owned, false));
                     out.push(inst);
@@ -174,8 +191,8 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                     out.push(inst);
                 }
                 Inst::DictSet { key, value, .. } => {
-                    consume(*key, &mut out, &mut own, &temps);
-                    consume(*value, &mut out, &mut own, &temps);
+                    consume(*key, ConsumeSite::DictSet, &mut out, &mut own, &temps);
+                    consume(*value, ConsumeSite::DictSet, &mut out, &mut own, &temps);
                     out.push(inst);
                 }
                 Inst::UnionPayload { dst, .. } | Inst::Field { dst, .. } => {
@@ -191,7 +208,10 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                     let d = *dst;
                     out.push(inst);
                     if drops.get(temps[d.0 as usize]) {
-                        out.push(Inst::Retain { src: d });
+                        out.push(Inst::Retain {
+                            src: d,
+                            reason: RcReason::BorrowFromMutablePlace,
+                        });
                         own.insert(d, (Own::Owned, false));
                     } else {
                         own.insert(d, (Own::Borrowed, false));
@@ -211,27 +231,30 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                 }
                 Inst::MakeUnion { dst, payload, .. } => {
                     if let Some(p) = payload {
-                        consume(*p, &mut out, &mut own, &temps);
+                        consume(*p, ConsumeSite::MakeUnion, &mut out, &mut own, &temps);
                     }
                     own.insert(*dst, (Own::Owned, false));
                     out.push(inst);
                 }
                 Inst::MakeRecord { dst, fields, .. } => {
                     for fld in fields.clone() {
-                        consume(fld, &mut out, &mut own, &temps);
+                        consume(fld, ConsumeSite::MakeRecord, &mut out, &mut own, &temps);
                     }
                     own.insert(*dst, (Own::Owned, false));
                     out.push(inst);
                 }
                 Inst::Store { dst, src } => {
                     if drops.get(locals[dst.0 as usize]) {
-                        consume(*src, &mut out, &mut own, &temps);
+                        consume(*src, ConsumeSite::Store, &mut out, &mut own, &temps);
                         let old = new_temp(locals[dst.0 as usize], &mut temps);
                         out.push(Inst::Load {
                             dst: old,
                             src: *dst,
                         });
-                        out.push(Inst::Release { src: old });
+                        out.push(Inst::Release {
+                            src: old,
+                            reason: RcReason::StoreOverwritesSlot,
+                        });
                     }
                     out.push(inst);
                 }
@@ -240,7 +263,7 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
             }
         }
         if let Terminator::Return(Some(t)) = &block.term {
-            consume(*t, &mut out, &mut own, &temps);
+            consume(*t, ConsumeSite::Return, &mut out, &mut own, &temps);
         }
         // 消費されなかった +1 所有の値を解放する（定義の順）
         let mut leftovers: Vec<TempId> = own
@@ -252,7 +275,10 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
             .collect();
         leftovers.sort_by_key(|t| t.0);
         for t in leftovers {
-            out.push(Inst::Release { src: t });
+            out.push(Inst::Release {
+                src: t,
+                reason: RcReason::UnconsumedOwnedAtBlockEnd,
+            });
         }
         if matches!(block.term, Terminator::Return(_)) {
             release_locals(&mut out, &mut temps, &mut new_temp, &locals);
@@ -329,8 +355,8 @@ pub fn verify(p: &Program) -> Result<(), String> {
                         add(*key, -1, &mut bal);
                         add(*value, -1, &mut bal);
                     }
-                    Inst::Retain { src } => add(*src, 1, &mut bal),
-                    Inst::Release { src } if !loaded.contains(src) => add(*src, -1, &mut bal),
+                    Inst::Retain { src, .. } => add(*src, 1, &mut bal),
+                    Inst::Release { src, .. } if !loaded.contains(src) => add(*src, -1, &mut bal),
                     Inst::Store { dst, src } if drops.get(f.locals[dst.0 as usize]) => {
                         add(*src, -1, &mut bal)
                     }
@@ -406,9 +432,18 @@ mod tests {
         );
         insert(&mut p);
         let text = p.to_string();
-        assert!(text.contains("retain t0"), "{text}");
-        assert!(text.contains("release t1"), "{text}"); // 古い値（null）
-        assert!(text.contains("release t2"), "{text}"); // 関数を抜けるときのローカル
+        assert!(
+            text.contains("retain t0 ; consume_borrowed:store"),
+            "{text}"
+        );
+        assert!(
+            text.contains("release t1 ; store_overwrites_slot"),
+            "{text}"
+        ); // 古い値（null）
+        assert!(
+            text.contains("release t2 ; slot_at_function_exit"),
+            "{text}"
+        ); // 関数を抜けるときのローカル
         verify(&p).unwrap();
     }
 
@@ -432,6 +467,83 @@ mod tests {
         // 入口で引数を retain、戻り値を retain、出口でローカルを release
         assert_eq!(text.matches("retain").count(), 2, "{text}");
         assert_eq!(text.matches("release").count(), 1, "{text}");
+        assert!(text.contains("; param_slot_entry"), "{text}");
+        assert!(text.contains("; consume_borrowed:return"), "{text}");
+        assert!(text.contains("; slot_at_function_exit"), "{text}");
+    }
+
+    #[test]
+    fn list_element_reads_are_held_and_released_with_reasons() {
+        // xs = [] の要素を読むだけで使わない: retain（借用の安全条件）と、ブロック末尾の release が対になる
+        let mut p = str_fn(
+            vec![
+                Inst::Load {
+                    dst: TempId(0),
+                    src: LocalId(0),
+                },
+                Inst::Const {
+                    dst: TempId(1),
+                    value: Const::Int(0),
+                },
+                Inst::ListGet {
+                    dst: TempId(2),
+                    src: TempId(0),
+                    index: TempId(1),
+                },
+            ],
+            vec![Ty::List(ListId(0)), Ty::Int, Ty::Str],
+            vec![Ty::List(ListId(0))],
+            1,
+            None,
+            Terminator::Return(None),
+        );
+        p.lists.push(Ty::Str);
+        insert(&mut p);
+        verify(&p).unwrap();
+        let reasons: Vec<RcReason> = p.funcs[0].blocks[0]
+            .insts
+            .iter()
+            .filter_map(|i| match i {
+                Inst::Retain { reason, .. } | Inst::Release { reason, .. } => Some(*reason),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reasons,
+            vec![
+                RcReason::ParamSlotEntry,
+                RcReason::BorrowFromMutablePlace,
+                RcReason::UnconsumedOwnedAtBlockEnd,
+                RcReason::SlotAtFunctionExit,
+            ]
+        );
+    }
+
+    #[test]
+    fn consuming_an_owned_value_twice_retains_the_second_use() {
+        // r = f(); return make_union(r) と r の2回消費
+        let mut p = str_fn(
+            vec![
+                Inst::Call {
+                    dst: Some(TempId(0)),
+                    callee: Callee::Func(FuncId(0)),
+                    args: vec![],
+                },
+                Inst::Store {
+                    dst: LocalId(0),
+                    src: TempId(0),
+                },
+            ],
+            vec![Ty::Str],
+            vec![Ty::Str],
+            0,
+            Some(Ty::Str),
+            Terminator::Return(Some(TempId(0))),
+        );
+        insert(&mut p);
+        verify(&p).unwrap();
+        let text = p.to_string();
+        assert!(text.contains("; consume_shared_owned:return"), "{text}");
     }
 
     #[test]

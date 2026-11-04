@@ -292,10 +292,14 @@ pub enum Inst {
     /// 参照カウントを1増やす（`str` はオブジェクト、Union / レコードは中の参照型すべて）。ARC パスが挿入する。
     Retain {
         src: TempId,
+        /// 挿入した理由（ADR-0017）。バックエンドは読まない。
+        reason: RcReason,
     },
     /// 参照カウントを1減らし、0 になったら解放する。ARC パスが挿入する。
     Release {
         src: TempId,
+        /// 挿入した理由（ADR-0017）。バックエンドは読まない。
+        reason: RcReason,
     },
     /// リストを作る（`items` を +1 で消費する）。
     ListNew {
@@ -606,7 +610,7 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                     expect("make_union result", temp_ty(*dst)?, Ty::Union(*union))?;
                     define(*dst, &mut defined_in)?;
                 }
-                Inst::Retain { src } | Inst::Release { src } => {
+                Inst::Retain { src, .. } | Inst::Release { src, .. } => {
                     use_(*src, &defined_in)?;
                 }
                 Inst::ListNew { dst, list, items } => {
@@ -910,7 +914,9 @@ impl fmt::Display for Program {
                         Inst::UnionIs { dst, src, variant } => {
                             writeln!(f, "t{} = union_is t{}, {variant}", dst.0, src.0)?
                         }
-                        Inst::Retain { src } => writeln!(f, "retain t{}", src.0)?,
+                        Inst::Retain { src, reason } => {
+                            writeln!(f, "retain t{} ; {reason}", src.0)?
+                        }
                         Inst::ListNew { dst, list, items } => {
                             let xs: Vec<String> =
                                 items.iter().map(|t| format!("t{}", t.0)).collect();
@@ -928,7 +934,9 @@ impl fmt::Display for Program {
                         Inst::ListPush { list, value } => {
                             writeln!(f, "list_push t{}, t{}", list.0, value.0)?
                         }
-                        Inst::Release { src } => writeln!(f, "release t{}", src.0)?,
+                        Inst::Release { src, reason } => {
+                            writeln!(f, "release t{} ; {reason}", src.0)?
+                        }
                         Inst::DictNew {
                             dst,
                             dict,
@@ -1153,5 +1161,116 @@ mod tests {
             args: vec![TempId(0)],
         };
         assert!(verify(&p).is_err());
+    }
+}
+
+/// 値を +1 で消費する地点（ARC パスの `consume`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConsumeSite {
+    Store,
+    Return,
+    MakeUnion,
+    MakeRecord,
+    ListNew,
+    ListSet,
+    ListPush,
+    DictNew,
+    DictSet,
+}
+
+impl ConsumeSite {
+    /// 安定した識別子（`wys explain` の JSON に出す）。
+    pub fn id(self) -> &'static str {
+        match self {
+            ConsumeSite::Store => "store",
+            ConsumeSite::Return => "return",
+            ConsumeSite::MakeUnion => "make_union",
+            ConsumeSite::MakeRecord => "make_record",
+            ConsumeSite::ListNew => "list_new",
+            ConsumeSite::ListSet => "list_set",
+            ConsumeSite::ListPush => "list_push",
+            ConsumeSite::DictNew => "dict_new",
+            ConsumeSite::DictSet => "dict_set",
+        }
+    }
+}
+
+/// ARC パスが `Retain` / `Release` を挿入した理由（ADR-0017）。ARC パスの挿入地点と1対1に対応する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RcReason {
+    /// retain: 関数の入口で、引数をスロットに所有させる。
+    ParamSlotEntry,
+    /// retain: 借用した値（ローカルからの読み出し、リテラル、取り出した値、不死の文字列）を +1 で消費する。
+    ConsumeBorrowed(ConsumeSite),
+    /// retain: すでに消費した +1 所有の値を、もう一度消費する。
+    ConsumeSharedOwned(ConsumeSite),
+    /// retain: 可変な場所（リストの要素、`dict` の値やキー）から読んだ値を、使い終わるまで保持する（借用の安全条件）。
+    BorrowFromMutablePlace,
+    /// release: `Store` で、スロットの古い値を手放す。
+    StoreOverwritesSlot,
+    /// release: ブロックの終わりまで消費されなかった +1 所有の値を手放す。
+    UnconsumedOwnedAtBlockEnd,
+    /// release: 関数を抜けるときに、スロットが持つ値を手放す。
+    SlotAtFunctionExit,
+}
+
+impl RcReason {
+    /// 安定した識別子。`retain` / `release` という語を含めない（IR テキストで命令を数えるテストを壊さないため）。
+    pub fn id(self) -> &'static str {
+        match self {
+            RcReason::ParamSlotEntry => "param_slot_entry",
+            RcReason::ConsumeBorrowed(_) => "consume_borrowed",
+            RcReason::ConsumeSharedOwned(_) => "consume_shared_owned",
+            RcReason::BorrowFromMutablePlace => "borrow_from_mutable_place",
+            RcReason::StoreOverwritesSlot => "store_overwrites_slot",
+            RcReason::UnconsumedOwnedAtBlockEnd => "unconsumed_owned_at_block_end",
+            RcReason::SlotAtFunctionExit => "slot_at_function_exit",
+        }
+    }
+
+    /// 消費する地点（`consume_*` のときだけ）。
+    pub fn site(self) -> Option<ConsumeSite> {
+        match self {
+            RcReason::ConsumeBorrowed(s) | RcReason::ConsumeSharedOwned(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// 人間と AI 向けの説明（英語。診断のメッセージと同じ扱い）。
+    pub fn message(self) -> String {
+        match self {
+            RcReason::ParamSlotEntry => {
+                "parameters are passed borrowed (+0); the callee's slot takes its own reference on entry".into()
+            }
+            RcReason::ConsumeBorrowed(s) => format!(
+                "a borrowed value is consumed by `{}`, which needs an owned (+1) reference",
+                s.id()
+            ),
+            RcReason::ConsumeSharedOwned(s) => format!(
+                "an owned value that was already consumed is consumed again by `{}`",
+                s.id()
+            ),
+            RcReason::BorrowFromMutablePlace => {
+                "a value read from a mutable place (list element, dict value or key) is held while it is used (borrow safety, memory-model 2.2)".into()
+            }
+            RcReason::StoreOverwritesSlot => {
+                "storing to a local gives up the reference held by its old value".into()
+            }
+            RcReason::UnconsumedOwnedAtBlockEnd => {
+                "an owned (+1) value was not consumed in this block; together with its retain this is a candidate for the Move optimization".into()
+            }
+            RcReason::SlotAtFunctionExit => {
+                "leaving the function gives up the reference held by a local slot".into()
+            }
+        }
+    }
+}
+
+impl fmt::Display for RcReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.site() {
+            Some(s) => write!(f, "{}:{}", self.id(), s.id()),
+            None => f.write_str(self.id()),
+        }
     }
 }
