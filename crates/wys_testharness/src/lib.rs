@@ -3,14 +3,15 @@
 //! `tests/conformance/**/*.wys` の各ファイルが1つのテストケース。期待値はファイル内のコメントで宣言する。
 //!
 //! ```text
-//! # expect-error: E0201 5:18        期待する診断（コードと開始位置の 行:列）。複数書ける
+//! # expect-error: E0201 5:18        期待するエラー（コードと開始位置の 行:列）。複数書ける
+//! # expect-warning: W0301 7:14      期待する警告。警告だけのケースはビルドして実行する
 //! # expect-stdout: 55               期待する標準出力の1行。複数行は繰り返して書く
 //! # expect-exit: 101                期待する終了コード（省略時は 0）
 //! # expect-stderr-contains: overflow 標準エラーに含まれるべき文字列
 //! ```
 //!
-//! `expect-error` があるケースは型検査までを行い、診断が過不足なく一致することを確かめる。
-//! ないケースはビルドして実行し、標準出力と終了コードを確かめる。
+//! 診断（エラーと警告）は、ファイルに書いた順で過不足なく一致しなければならない。
+//! `expect-error` があるケースは型検査までを行う。ないケースはビルドして実行し、標準出力と終了コードを確かめる。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -18,6 +19,7 @@ use wys_driver::BuildOptions;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Expectations {
+    /// 期待する診断（エラーと警告）。ファイルに書いた順。
     pub errors: Vec<(String, u32, u32)>,
     pub stdout: Option<String>,
     pub exit: i32,
@@ -37,7 +39,7 @@ pub fn parse_expectations(src: &str) -> Result<Expectations, String> {
             .ok_or_else(|| format!("line {}: malformed expectation", i + 1))?;
         let value = value.strip_prefix(' ').unwrap_or(value);
         match key {
-            "error" => {
+            "error" | "warning" => {
                 let (code, pos) = value
                     .split_once(' ')
                     .ok_or_else(|| format!("line {}: expected `CODE LINE:COL`", i + 1))?;
@@ -69,7 +71,8 @@ pub fn parse_expectations(src: &str) -> Result<Expectations, String> {
     if has_stdout {
         e.stdout = Some(stdout);
     }
-    if !e.errors.is_empty() && (e.stdout.is_some() || e.exit != 0) {
+    let expects_error = e.errors.iter().any(|(c, _, _)| c.starts_with('E'));
+    if expects_error && (e.stdout.is_some() || e.exit != 0) {
         return Err("a case cannot expect both compile errors and run results".into());
     }
     Ok(e)

@@ -83,9 +83,14 @@ fn every_error_code_has_a_case() {
     let doc = std::fs::read_to_string(root.join("docs/spec/error-codes.md")).unwrap();
     let documented: Vec<String> = doc
         .lines()
-        .filter_map(|l| l.strip_prefix("| E"))
-        .filter_map(|l| l.split_whitespace().next())
-        .map(|n| format!("E{n}"))
+        .filter_map(|l| {
+            let rest = l.strip_prefix("| ")?;
+            let code = rest.split_whitespace().next()?;
+            let ok = code.len() == 5
+                && (code.starts_with('E') || code.starts_with('W'))
+                && code[1..].chars().all(|c| c.is_ascii_digit());
+            ok.then(|| code.to_string())
+        })
         .collect();
     assert!(
         documented.len() > 10,

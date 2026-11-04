@@ -473,6 +473,7 @@ impl<'a> FnCk<'a> {
                 *env = self.join(live);
                 false
             }
+            StmtKind::Match { subject, arms } => self.match_stmt(subject, arms, env),
             StmtKind::While { cond, body } => {
                 // ループ本体で代入される変数は、2回目以降の条件評価で型が変わり得るので、絞り込みを解除する。
                 let mut assigned = HashSet::new();
@@ -489,6 +490,113 @@ impl<'a> FnCk<'a> {
                 *env = f_env;
                 false
             }
+        }
+    }
+
+    /// `match` の検査。各 `case` で被検査変数を絞り込み、網羅性（E0303）と到達しない `case`（W0301）を調べる。
+    /// 必ず `return` するなら true。
+    fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], env: &mut Env) -> bool {
+        let st = self.expr(subject, env);
+        let subject_var = match &subject.kind {
+            ExprKind::Name(n) if self.vars.contains_key(n) => Some(n.clone()),
+            _ => None,
+        };
+        let members = (st != Ty::Error).then(|| self.cx.types.members(st));
+        let mut remaining = members.clone().unwrap_or_default();
+        let mut live = Vec::new();
+        for arm in arms {
+            let covered: Vec<Ty> = match &arm.pattern.kind {
+                PatternKind::Wildcard => remaining.clone(),
+                kind => {
+                    let pt = self.pattern_type(kind, arm.pattern.span);
+                    match &members {
+                        _ if pt == Ty::Error => Vec::new(),
+                        Some(ms) if !ms.contains(&pt) => {
+                            let msg = format!(
+                                "this pattern can never match: `{}` is not part of `{}`",
+                                self.cx.name(pt),
+                                self.cx.name(st)
+                            );
+                            self.cx
+                                .diags
+                                .push(Diagnostic::error("E0305", msg, arm.pattern.span));
+                            Vec::new()
+                        }
+                        Some(_) if !remaining.contains(&pt) => Vec::new(),
+                        Some(_) => vec![pt],
+                        None => Vec::new(),
+                    }
+                }
+            };
+            let already_reported = self
+                .cx
+                .diags
+                .last()
+                .is_some_and(|d| d.code == "E0305" && d.span == arm.pattern.span);
+            if covered.is_empty() && members.is_some() && !already_reported {
+                self.cx.diags.push(
+                    Diagnostic::warning(
+                        "W0301",
+                        "this `case` is unreachable: earlier cases already cover it",
+                        arm.pattern.span,
+                    )
+                    .with_hint("remove this `case` or move it before the case that covers it"),
+                );
+            }
+            remaining.retain(|m| !covered.contains(m));
+            let mut b = env.clone();
+            if let Some(n) = &subject_var
+                && !covered.is_empty()
+            {
+                let narrowed = self.cx.types.union(covered.iter().copied());
+                b.insert(n.clone(), narrowed);
+            }
+            if !self.block(&arm.body, &mut b) {
+                live.push(b);
+            }
+        }
+        if members.is_some() && !remaining.is_empty() {
+            let missing: Vec<String> = remaining.iter().map(|m| case_text(*m)).collect();
+            let msg = format!(
+                "non-exhaustive `match`: `{}` {} not covered",
+                remaining
+                    .iter()
+                    .map(|m| self.cx.name(*m))
+                    .collect::<Vec<_>>()
+                    .join("`, `"),
+                if remaining.len() == 1 { "is" } else { "are" }
+            );
+            self.cx.diags.push(
+                Diagnostic::error("E0303", msg, subject.span)
+                    .with_cause(format!("the value has type `{}`", self.cx.name(st)))
+                    .with_hint(format!("add {}", missing.join(", ")))
+                    .with_hint("or add `case _:` to handle every remaining value"),
+            );
+            live.push(env.clone());
+        }
+        if live.is_empty() {
+            return true;
+        }
+        *env = self.join(live);
+        false
+    }
+
+    fn pattern_type(&mut self, kind: &PatternKind, span: Span) -> Ty {
+        match kind {
+            PatternKind::None => Ty::None,
+            PatternKind::Wildcard => Ty::Error,
+            PatternKind::Type(name) => match name.as_str() {
+                "int" => Ty::Int,
+                "bool" => Ty::Bool,
+                "str" => Ty::Str,
+                other => {
+                    self.cx.diags.push(
+                        Diagnostic::error("E0203", format!("unknown type `{other}` in pattern"), span)
+                            .with_hint("type patterns are `int()`, `bool()` and `str()`; use `None` or `_` for the others"),
+                    );
+                    Ty::Error
+                }
+            },
         }
     }
 
@@ -971,6 +1079,17 @@ impl<'a> FnCk<'a> {
     }
 }
 
+/// 足りない構成要素に対応する `case` の書き方。
+fn case_text(t: Ty) -> String {
+    match t {
+        Ty::Int => "`case int():`".into(),
+        Ty::Bool => "`case bool():`".into(),
+        Ty::Str => "`case str():`".into(),
+        Ty::None => "`case None:`".into(),
+        _ => "`case _:`".into(),
+    }
+}
+
 /// 文の列の中で代入される変数名を集める（入れ子のブロックを含む）。
 fn assigned_vars(stmts: &[Stmt], out: &mut HashSet<String>) {
     for s in stmts {
@@ -990,6 +1109,11 @@ fn assigned_vars(stmts: &[Stmt], out: &mut HashSet<String>) {
                 }
             }
             StmtKind::While { body, .. } => assigned_vars(body, out),
+            StmtKind::Match { arms, .. } => {
+                for a in arms {
+                    assigned_vars(&a.body, out);
+                }
+            }
             StmtKind::Expr(_) | StmtKind::Return(_) | StmtKind::Pass => {}
         }
     }
@@ -998,6 +1122,22 @@ fn assigned_vars(stmts: &[Stmt], out: &mut HashSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn match_narrows_and_checks_exhaustiveness() {
+        let ok = "def f(v: int | str | None) -> int:\n    match v:\n        case int():\n            return v + 1\n        case str():\n            print(v)\n            return 0\n        case None:\n            return -1\n";
+        assert_eq!(run(&with_main(ok)), Vec::<&str>::new());
+        let wildcard = "def f(v: int | None) -> int:\n    match v:\n        case None:\n            return 0\n        case _:\n            return v\n";
+        assert_eq!(run(&with_main(wildcard)), Vec::<&str>::new());
+        let missing = "def f(v: int | str | None) -> None:\n    match v:\n        case int():\n            pass\n";
+        assert_eq!(run(&with_main(missing)), vec!["E0303"]);
+        let unreachable = "def f(v: int | None) -> None:\n    match v:\n        case _:\n            pass\n        case int():\n            pass\n";
+        assert_eq!(run(&with_main(unreachable)), vec!["W0301"]);
+        let never = "def f(v: int | None) -> None:\n    match v:\n        case str():\n            pass\n        case _:\n            pass\n";
+        assert_eq!(run(&with_main(never)), vec!["E0305"]);
+        let not_all_return = "def f(v: int | None) -> int:\n    match v:\n        case int():\n            return v\n        case None:\n            pass\n";
+        assert_eq!(run(&with_main(not_all_return)), vec!["E0206"]);
+    }
 
     fn run(src: &str) -> Vec<&'static str> {
         let (m, d) = wys_parser::parse_source(src);

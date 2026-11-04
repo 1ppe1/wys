@@ -27,6 +27,8 @@ pub enum TokenKind {
     Or,
     Not,
     Is,
+    Match,
+    Case,
     // operators / punctuation
     Plus,
     Minus,
@@ -76,6 +78,8 @@ impl TokenKind {
             Or => "`or`",
             Not => "`not`",
             Is => "`is`",
+            Match => "`match`",
+            Case => "`case`",
             Plus => "`+`",
             Minus => "`-`",
             Star => "`*`",
@@ -155,6 +159,8 @@ fn keyword(s: &str) -> Option<TokenKind> {
         "or" => Or,
         "not" => Not,
         "is" => Is,
+        "match" => Match,
+        "case" => Case,
         _ => return Option::None,
     })
 }

@@ -1,0 +1,17 @@
+# case _ は残りすべてに一致する。全 case が return するので関数の末尾に return は要らない
+# expect-stdout: 0
+# expect-stdout: 5
+# expect-stdout: 1
+def score(v: int | bool | None) -> int:
+    match v:
+        case None:
+            return 0
+        case int():
+            return v
+        case _:
+            return 1
+
+def main() -> None:
+    print(score(None))
+    print(score(5))
+    print(score(True))

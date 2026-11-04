@@ -1,0 +1,10 @@
+# expect-error: E0305 4:14
+def f(v: int | None) -> None:
+    match v:
+        case str():
+            pass
+        case _:
+            pass
+
+def main() -> None:
+    f(1)
