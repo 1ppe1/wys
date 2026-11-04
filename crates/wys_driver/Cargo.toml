@@ -9,3 +9,12 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+wys_span = { path = "../wys_span" }
+wys_diagnostics = { path = "../wys_diagnostics" }
+wys_parser = { path = "../wys_parser" }
+wys_typeck = { path = "../wys_typeck" }
+wys_lower = { path = "../wys_lower" }
+wys_ir = { path = "../wys_ir" }
+wys_backend = { path = "../wys_backend" }

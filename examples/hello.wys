@@ -1,0 +1,3 @@
+# AC-004: Hello World を Native 実行ファイルにする
+def main() -> None:
+    print("Hello, world!")

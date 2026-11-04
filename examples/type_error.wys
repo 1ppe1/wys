@@ -1,0 +1,6 @@
+# AC-001 / AC-005: 型の合わない値を関数に渡すと、コンパイル時にエラーになる
+def double(x: int) -> int:
+    return x * 2
+
+def main() -> None:
+    print(double("ten"))

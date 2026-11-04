@@ -7,6 +7,8 @@
 | [ai_native_language_requirements.md](ai_native_language_requirements.md) | Draft v0.1 | 要件定義書。全ての設計成果物の起点 |
 | [roadmap.md](roadmap.md) | 承認済み計画 | Phase 0〜3 のマイルストーン、決定順、直近タスク |
 | [spec/diagnostics-schema.json](spec/diagnostics-schema.json) | v0（草案） | 構造化診断JSONのスキーマ（DX-002, AC-005）。実装は `crates/wys_diagnostics` で、テストでスキーマ検証する |
+| [spec/error-codes.md](spec/error-codes.md) | PoC1 | 診断のエラーコード一覧と実行時エラー |
+| [design/ir.md](design/ir.md) | 草案 | 共通IRの構造・値のルール・テキスト形式 |
 | [glossary.md](glossary.md) | Draft | 用語集。文書間で表記を揃えるための基準 |
 | [adr/README.md](adr/README.md) | 運用中 | ADRの書き方、一覧、未決定事項との対応 |
 

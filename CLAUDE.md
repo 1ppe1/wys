@@ -4,7 +4,7 @@
 
 ## プロジェクトの現状
 
-- AIネイティブ次世代プログラミング言語の**構想・要件定義フェーズ**。実装コードはまだない。
+- AIネイティブ次世代プログラミング言語。**Phase 0**（PoC1 で最小言語 → Native 実行まで動作）。進捗は `docs/roadmap.md`。
 - 正となる文書は `docs/ai_native_language_requirements.md`（要件定義書）。迷ったらここに戻る。
 - 言語名・拡張子は未定。文書中では「本言語」と呼ぶ。勝手に名前を付けない。
 - 内部コードネームは `wys`（ユーザーが決定）。Rust クレートは `crates/wys_*`。これは正式名称ではない。
@@ -26,7 +26,19 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-変更を終える前に、この3つがすべて通ることを確認する。
+変更を終える前に、この3つがすべて通ることを確認する（`./scripts/ci.sh` でまとめて実行できる）。
+
+コンパイラを手で動かす場合（`cargo build` でランタイムの `libwys_runtime.a` も作られる）:
+
+```sh
+cargo build
+target/debug/wys_cli run examples/hello.wys
+target/debug/wys_cli check --format json examples/type_error.wys
+target/debug/wys_cli dump-ir examples/fib.wys
+```
+
+- 新しいエラーコードを追加したら `docs/spec/error-codes.md` に追記する。コードは再利用しない。
+- 言語機能を追加したら、`crates/wys_cli/tests/e2e.rs` に実行結果のテストを追加する。
 
 ## 設計上の前提（要件定義書より）
 

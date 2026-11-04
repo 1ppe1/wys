@@ -1,0 +1,13 @@
+# 再帰・ループ・条件分岐の例
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+def main() -> None:
+    i = 0
+    while i <= 10:
+        print(fib(i))
+        i = i + 1
+    done = i == 11 and not False
+    print(done)

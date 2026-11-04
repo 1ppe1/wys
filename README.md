@@ -4,7 +4,19 @@
 Pythonの簡潔さ、TypeScriptの型表現力、Nim/Codon/Mojoのネイティブ性能を参考に、
 **型安全・ネイティブ実行・AIエージェントの安全な実行**を一つの言語体験として提供することを目指す。
 
-> **現在のステータス:** 構想・要件定義フェーズ（Draft v0.1）。実装コードはまだ存在しない。
+> **現在のステータス:** Phase 0（PoC1: 最小言語 → Native 実行ファイルまで動作）。内部コードネームは `wys`（正式名称ではない）。
+
+## 試し方
+
+macOS arm64 で、Rust（`rust-toolchain.toml` で固定）と clang が必要。
+
+```sh
+cargo build
+target/debug/wys_cli run examples/fib.wys
+target/debug/wys_cli check --format json examples/type_error.wys
+```
+
+現在の言語機能は PoC1 の最小サブセット（`int` / `bool` / `str` 定数、関数、`if` / `while`、`print`、`exit`）。
 
 ## ドキュメント
 
@@ -35,6 +47,8 @@ Pythonの簡潔さ、TypeScriptの型表現力、Nim/Codon/Mojoのネイティ�
 ├── Cargo.toml         # Rust ワークスペース
 ├── rust-toolchain.toml
 ├── crates/wys_*/      # コンパイラ・ランタイム・CLI（wys は内部コードネーム）
+├── examples/          # サンプルプログラム（.wys）
+├── scripts/ci.sh      # CI と同じチェック
 └── docs/
     ├── README.md      # ドキュメント索引
     ├── ai_native_language_requirements.md
