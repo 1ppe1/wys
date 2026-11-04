@@ -56,3 +56,10 @@ M3 で `str` の連結、`list[T]`、`dict[K, V]` を入れるため、ヒープ
 - IR の型 `str` が参照型になり、命令 `Retain` / `Release` を追加する。`dump-ir` のスナップショットは変わる。
 - ランタイムの C ABI は引き続きスカラーとポインタだけ（ADR-0009 の制約を継承）。
 - 見直し条件: T3 の検査（生存数、ASan）で IR の設計変更が必要になった場合。retain / release のコストが問題になった場合は、M3b の Move 最適化と `explain` の計測で判断する。
+
+## 追記（2026-11-04、M3 T3 の実装時）
+
+決定は変えていない。AddressSanitizer で検査を実際に効かせるため、実装で次の2点を補った。
+- **参照カウントの増減は、生成コードの中の関数（`@wys_rc_retain` / `@wys_rc_release`）で行う。** ランタイム（Rust）は ASan の計測なしでコンパイルされるので、ランタイムの中で解放済みオブジェクトの参照カウントを読んでも ASan は検出できない。ランタイムには、参照カウントが 0 になったときの解放（`wys_free_object`）だけを残す。
+- **サニタイザを使うときは、生成するすべての関数に `sanitize_address` 属性を付ける。** clang は C のソースには自動で付けるが、LLVM IR を直接渡した場合は付かず、計測が入らない。最初はこの属性がなく、ASan モードの Conformance テストが実質的に何も検査していなかった（T3 で発見して修正）。
+- 検査が働くことは e2e の `arc_checks_detect_injected_errors` が確かめる（release を取り除く → 終了コード 102、二重にする → ASan の heap-use-after-free）。

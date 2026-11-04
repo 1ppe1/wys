@@ -178,6 +178,27 @@ pub struct BuildOptions {
     pub runtime_lib: Option<PathBuf>,
     /// C コンパイラ／リンカ。未指定なら `WYS_CC`、なければ `clang`。
     pub cc: Option<String>,
+    /// 最適化レベル（0 = Debug、2 = Release）。未指定なら `WYS_OPT`、なければ 0。
+    pub opt_level: Option<u8>,
+    /// サニタイザ（`address`）。未指定なら `WYS_SANITIZE`、なければ付けない（ADR-0005 / ADR-0012 の検査用）。
+    pub sanitize: Option<String>,
+}
+
+impl BuildOptions {
+    fn effective_opt_level(&self) -> u8 {
+        self.opt_level
+            .or_else(|| std::env::var("WYS_OPT").ok().and_then(|v| v.parse().ok()))
+            .unwrap_or(0)
+    }
+
+    fn sanitizer_flags(&self) -> Vec<String> {
+        self.sanitize
+            .clone()
+            .or_else(|| std::env::var("WYS_SANITIZE").ok())
+            .filter(|s| !s.is_empty())
+            .map(|s| vec![format!("-fsanitize={s}"), "-g".to_string()])
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug)]
@@ -278,9 +299,11 @@ pub fn link_program(
     let cc = cc(opts);
     let tmp = TempDir::new()?;
     let obj = tmp.0.join("module.o");
+    let sanitize = opts.sanitizer_flags();
     let backend = LlvmTextBackend {
         cc: cc.clone(),
-        opt_level: 0,
+        opt_level: opts.effective_opt_level(),
+        extra_flags: sanitize.clone(),
     };
     backend
         .emit_object(program, &obj)
@@ -289,6 +312,7 @@ pub fn link_program(
         .arg(&obj)
         .arg(&runtime)
         .args(native_link_args())
+        .args(&sanitize)
         .arg("-o")
         .arg(output)
         .output()

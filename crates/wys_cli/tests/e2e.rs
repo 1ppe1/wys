@@ -309,3 +309,85 @@ fn wys_fmt_rewrites_and_checks() {
     let again = cli(&["fmt", "--check", path.to_str().unwrap()]);
     assert_eq!(again.status.code(), Some(0));
 }
+
+/// 生成した LLVM の release を1か所ずつ取り除く／二重にして、ARC の検査が誤りを検出できることを確かめる（ADR-0012）。
+/// - 取り除くと: 終了時の生存オブジェクト数の検査が、リークとして終了コード 102 で知らせる
+/// - 二重にすると: AddressSanitizer が解放済みメモリの使用を検出する
+#[test]
+fn arc_checks_detect_injected_errors() {
+    let src = scratch(
+        "arc_inject",
+        "def repeat(s: str, n: int) -> str:\n    out = \"\"\n    i = 0\n    while i < n:\n        out = out + s\n        i = i + 1\n    return out\n\ndef main() -> None:\n    print(len(repeat(\"ab\", 10)))\n",
+    );
+    let ll = String::from_utf8(cli(&["dump-llvm", src.to_str().unwrap()]).stdout).unwrap();
+    let lines: Vec<&str> = ll.lines().collect();
+    // ASan 用: 関数に sanitize_address 属性が付いた LLVM（同じ行の並び）
+    let asan_out = Command::new(CLI)
+        .args(["dump-llvm", src.to_str().unwrap()])
+        .env("WYS_SANITIZE", "address")
+        .env("WYS_RUNTIME_LIB", runtime_lib())
+        .output()
+        .unwrap();
+    let asan_ll = String::from_utf8(asan_out.stdout).unwrap();
+    let asan_lines: Vec<&str> = asan_ll.lines().collect();
+    assert_eq!(asan_lines.len(), lines.len());
+    let releases: Vec<usize> = (0..lines.len())
+        .filter(|i| lines[*i].contains("call void @wys_rc_release(ptr"))
+        .collect();
+    assert!(releases.len() >= 2, "{ll}");
+    let dir = src.parent().unwrap().to_path_buf();
+    let build_and_run = |name: &str, text: String, flags: &[&str]| {
+        let ll_path = dir.join(format!("{name}.ll"));
+        let exe = dir.join(name);
+        std::fs::write(&ll_path, text).unwrap();
+        let mut cc = Command::new("clang");
+        cc.arg("-Wno-override-module")
+            .args(flags)
+            .arg(&ll_path)
+            .arg(runtime_lib());
+        if cfg!(target_os = "linux") {
+            cc.args([
+                "-lgcc_s",
+                "-lutil",
+                "-lrt",
+                "-lpthread",
+                "-lm",
+                "-ldl",
+                "-lc",
+            ]);
+        }
+        let status = cc.arg("-o").arg(&exe).status().unwrap();
+        assert!(status.success(), "clang failed for {name}");
+        Command::new(&exe).output().unwrap()
+    };
+    let mut leak_detected = false;
+    let mut asan_detected = false;
+    for (k, &i) in releases.iter().enumerate() {
+        let without: Vec<&str> = lines
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, l)| *l)
+            .collect();
+        let out = build_and_run(&format!("leak{k}"), without.join("\n"), &[]);
+        leak_detected |= out.status.code() == Some(102)
+            && String::from_utf8_lossy(&out.stderr).contains("were not freed");
+        let mut doubled: Vec<&str> = asan_lines.clone();
+        doubled.insert(i, asan_lines[i]);
+        let out = build_and_run(
+            &format!("double{k}"),
+            doubled.join("\n"),
+            &["-fsanitize=address", "-g"],
+        );
+        asan_detected |= !out.status.success()
+            && String::from_utf8_lossy(&out.stderr).contains("AddressSanitizer");
+    }
+    assert!(
+        leak_detected,
+        "removing a release was never reported as a leak"
+    );
+    assert!(
+        asan_detected,
+        "doubling a release was never reported by AddressSanitizer"
+    );
+}

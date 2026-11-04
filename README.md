@@ -23,7 +23,7 @@ target/debug/wys fmt examples/fib.wys          # 整形（--check で確認だ�
 - 型: `int` / `bool` / `str`（定数と引数）、`None`、Union（`int | None`）、レコード（`type P = {x: int}`、構造的・不変）、Generics（`def f[T]`、`type Pair[A, B]`）、`Unknown`（外部入力）
 - 文: 関数、`if` / `elif` / `else`、`while`、`match` / `case`（網羅性検査）、`assert`
 - モジュール: `import` / `from ... import`、`pub`
-- ツール: `check`（JSON 診断）、`build`、`run`、`test`、`fmt`、`dump-ir` / `dump-llvm`
+- ツール: `check`（JSON 診断）、`build`（`--release` で -O2）、`run`、`test`、`fmt`、`dump-ir` / `dump-llvm`
 - 文字列: 連結（`+`）、比較（`==` / `!=`）、`len`（M3 T2b、ヒープ上のオブジェクトを ARC で管理）
 - まだないもの: `list` / `dict`、`for`、クラス（M3 以降）
 

@@ -126,11 +126,24 @@ pub unsafe extern "C" fn wys_release(p: *mut Header) {
         }
         (*p).rc -= 1;
         if (*p).rc == 0 {
-            let len = (*p).len as usize;
-            dealloc(p as *mut u8, layout(len));
-            LIVE.fetch_sub(1, Ordering::Relaxed);
+            wys_free_object(p);
         }
     }
+}
+
+/// 参照カウントが 0 になったオブジェクトを解放する。参照カウントの増減は生成コードの中で行う（ADR-0012、
+/// AddressSanitizer で release のしすぎを検出するため）。
+///
+/// # Safety
+/// `p` は参照カウントが 0 になった、生存しているオブジェクトでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_free_object(p: *mut Header) {
+    // SAFETY: 関数の安全条件どおり。
+    unsafe {
+        let len = (*p).len as usize;
+        dealloc(p as *mut u8, layout(len));
+    }
+    LIVE.fetch_sub(1, Ordering::Relaxed);
 }
 
 /// 生成コードの `main` が最後に呼ぶ。解放されていないオブジェクトが残っていれば、コンパイラのバグとして報告する。

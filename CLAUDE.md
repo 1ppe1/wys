@@ -37,7 +37,11 @@ target/debug/wys check --format json examples/type_error.wys
 target/debug/wys dump-ir examples/fib.wys
 target/debug/wys test examples/math_test.wys
 target/debug/wys fmt --check examples/fib.wys
+target/debug/wys build --release examples/fib.wys   # -O2
+WYS_SANITIZE=address target/debug/wys run examples/fib.wys   # AddressSanitizer 付き
 ```
+
+- ARC（retain / release）に関わる変更では、`scripts/ci.sh` の AddressSanitizer モードと生存オブジェクト数の検査（終了コード 102）が通ることを必ず確かめる。
 
 - `examples/` の `.wys` は `wys fmt` で整形しておく（CI が `--check` で確かめる）。
 

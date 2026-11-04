@@ -41,9 +41,10 @@ fn conformance_suite() {
     let root = repo_root();
     let cases = collect_cases(&root.join("tests/conformance"));
     assert!(!cases.is_empty(), "no conformance cases found");
+    // 最適化レベルとサニタイザは環境変数 WYS_OPT / WYS_SANITIZE で切り替える（CI が3つのモードで実行する）
     let opts = BuildOptions {
         runtime_lib: Some(runtime_lib()),
-        cc: None,
+        ..BuildOptions::default()
     };
     let scratch = std::env::temp_dir().join(format!("wys-conformance-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).unwrap();
