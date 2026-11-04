@@ -8,6 +8,7 @@
 |---|---|---|---|
 | 単体テスト | 各クレートの `#[cfg(test)]` | `cargo test` | 字句・構文・型検査・IR 検証器・ランタイム関数 |
 | PoC5 のケース検証 | `scripts/poc5/cases/` | `scripts/poc5/verify.sh`（CI） | 壊れた版は失敗し、正解の修正例は合格する |
+| ARC の検査（M3 T3） | `scripts/ci.sh` | Conformance を Debug（`-O0`）、Release（`WYS_OPT=2`）、AddressSanitizer（`WYS_SANITIZE=address`）の3つのモードで実行 | 終了時の生存オブジェクト数（102）と ASan。検査自体が働くことは e2e の `arc_checks_detect_injected_errors` |
 | Conformance テスト | `tests/conformance/{lang,syntax,types,diagnostics}/*.wys`、`tests/conformance/modules/*/main.wys` | `cargo test -p wys_testharness` | 言語仕様の適合性。期待値は `.wys` の先頭コメントで宣言する |
 | 診断スナップショット | `crates/wys_testharness/tests/snapshots/` | 同上（insta） | 診断 JSON の形を固定する |
 | e2e テスト | `crates/wys_cli/tests/e2e.rs` | `cargo test -p wys_cli` | CLI の挙動（終了コード、出力形式、ビルドした実行ファイル） |
@@ -41,6 +42,7 @@ CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は 
 | DX-005（AI 修正ループ、PoC5） | **準備済み・未計測（M2 T9）**。ケース20件と `scripts/poc5/verify.sh`（CI）。計測は `scripts/poc5/run.sh`（ユーザー実行）。結果は `docs/poc/poc5-results.md` |
 | DX-001（`fmt`） | **合格（M2 T8）**。`wys_fmt` の `formatting_preserves_tokens_and_is_idempotent`（全 Conformance ケースと例で、トークン列が変わらないことと冪等性）、e2e の `wys_fmt_rewrites_and_checks`、CI で `examples/` の `fmt --check` |
 | DX-001（`test`） | **合格（M2 T7）**。e2e の `wys_test_*`、`types/E0801_*`（`# expect-mode: test`） |
+| MEM-005 / NFR-001（use-after-free・二重解放・リークの検出）、COMP-005（Debug / Release） | **M3 T3 で検査の仕組みを導入**（3つのモードの Conformance、注入した誤りの検出）。M3 の出口で判定する |
 | LANG-001（モジュール） | **合格（M2 T6）**。`tests/conformance/modules/<ケース名>/main.wys`（import するファイルを同じディレクトリに置く）。名前解決の単体テストは `wys_resolve` |
 | AC-003（`Unknown` の検証） | **合格（M2 T5）**。拒否: `types/E0601_*`・`E0602_*`。検証後の利用: `lang/unknown_from_args.wys`（コマンドライン引数を `# expect-args:` で渡す） |
 | Linux x86_64 での CI | **M2 T0 で追加済み** |

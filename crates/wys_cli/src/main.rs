@@ -12,7 +12,7 @@ use wys_driver::{BuildError, BuildOptions, Frontend};
 const USAGE: &str = "\
 usage:
   wys check [--format text|json] <file>   check a file and report diagnostics
-  wys build <file> [-o <output>]          build a native executable
+  wys build <file> [-o <output>]          build a native executable (--release: optimize with -O2)
   wys run <file> [-- <args>...]           build and run (arguments after -- go to the program)
   wys test <file>                         run the functions named test_* (no main needed)
   wys fmt [--check] <file>                format a file in place (--check: only report)
@@ -44,6 +44,7 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
     };
     let mut format = Format::Text;
     let mut check_only = false;
+    let mut release = false;
     let mut output: Option<PathBuf> = None;
     let mut file: Option<PathBuf> = None;
     let mut program_args: Vec<String> = Vec::new();
@@ -63,6 +64,7 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
             }
             "-o" => output = Some(PathBuf::from(it.next().ok_or("`-o` needs a path")?)),
             "--check" => check_only = true,
+            "--release" => release = true,
             "-h" | "--help" => {
                 print!("{USAGE}");
                 return Ok(ExitCode::SUCCESS);
@@ -75,7 +77,10 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
             }
         }
     }
-    let opts = BuildOptions::default();
+    let opts = BuildOptions {
+        opt_level: release.then_some(2),
+        ..BuildOptions::default()
+    };
     match cmd.as_str() {
         "-h" | "--help" | "help" => {
             print!("{USAGE}");
@@ -145,7 +150,13 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
             if cmd == "dump-ir" {
                 print!("{p}");
             } else {
-                print!("{}", wys_backend::emit_llvm_ir(p));
+                print!(
+                    "{}",
+                    wys_backend::emit_llvm_ir_with(
+                        p,
+                        std::env::var("WYS_SANITIZE").is_ok_and(|s| s == "address")
+                    )
+                );
             }
             Ok(ExitCode::SUCCESS)
         }
