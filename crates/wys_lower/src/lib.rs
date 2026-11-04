@@ -2165,9 +2165,11 @@ impl<'s, 't> FnLower<'s, 't> {
             }
             return c;
         }
-        if matches!(op, A::Eq | A::Ne) && !matches!(self.ty(lhs), TTy::Int | TTy::Bool | TTy::Str) {
-            // 構造を持つ値の比較（ADR-0016）。型が違えば（`o == 1`）、広い方の Union に揃える
-            let (lt, rt) = (self.ty(lhs), self.ty(rhs));
+        let (lt, rt) = (self.ty(lhs), self.ty(rhs));
+        if matches!(op, A::Eq | A::Ne)
+            && (lt != rt || !matches!(lt, TTy::Int | TTy::Bool | TTy::Str))
+        {
+            // 構造を持つ値の比較（ADR-0016）。型が違えば（`o == 1`、`1 == o`）、広い方の Union に揃える
             let wide = if self.sh.types.members(lt).len() >= self.sh.types.members(rt).len() {
                 lt
             } else {

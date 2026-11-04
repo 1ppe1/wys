@@ -3034,10 +3034,21 @@ impl<'a> FnCk<'a> {
             );
             return Some(Ty::Error);
         }
-        let types = &self.cx.types;
-        if types.members(lt).contains(&Ty::Unknown) || types.members(rt).contains(&Ty::Unknown) {
-            return None; // E0601 は従来の経路で報告する
+        if self.cx.types.members(lt).contains(&Ty::Unknown)
+            || self.cx.types.members(rt).contains(&Ty::Unknown)
+        {
+            return None; // トップレベルの Unknown の E0601 は従来の経路で報告する
         }
+        if self.cx.types.contains_unknown(lt) || self.cx.types.contains_unknown(rt) {
+            // 構造の中の Unknown（`list[Unknown]` など）も E0601
+            self.cx.diags.push(
+                Diagnostic::error("E0601", "this `Unknown` value has not been checked", span)
+                    .with_cause("values from outside the program must be checked before use (LANG-006, ADR-0011)")
+                    .with_hint("inspect the values with `match` before comparing them"),
+            );
+            return Some(Ty::Error);
+        }
+        let types = &self.cx.types;
         // 片方の構成要素がすべて、もう片方の構成要素に含まれる（`o == 1`、`o: int | None`）
         let fits = |a: Ty, b: Ty| {
             let bm = types.members(b);

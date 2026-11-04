@@ -15,6 +15,9 @@
 # expect-stdout: True
 # expect-stdout: False
 # expect-stdout: True
+# expect-stdout: False
+# expect-stdout: True
+# expect-stdout: True
 type P = {x: int, name: str}
 type Box = {v: int | None, tags: list[str]}
 
@@ -56,3 +59,9 @@ def main() -> None:
     print(o == 1)
     s: str | None = "x"
     print(s == "x")
+    # 基本型が左、Union が右
+    print(1 == o)
+    print("x" == s)
+    b: bool | None = True
+    if True == b:
+        print(True)
