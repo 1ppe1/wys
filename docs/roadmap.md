@@ -6,7 +6,7 @@
 |---|---|
 | 週1（基盤・ADR-0002/0003・ワークスペース・CI・診断スキーマ） | 完了。GitHub（private）で CI 成功 |
 | 週2（PoC1: ソース → Native 実行） | 完了。ADR-0004/0008 Accepted |
-| 週3（Conformance 48ケース・AI ループ・PoC2 実験・ADR-0005〜0007 草案） | 完了。ADR-0005〜0007 はレビュー待ち（Proposed） |
+| 週3（Conformance 48ケース・AI ループ・PoC2 実験・ADR-0005〜0007 草案） | 完了。ADR-0005〜0007 は設計レビュー（Fable）の指摘を反映済みで、ユーザーの承認待ち（Proposed） |
 | 週4（文法 v0.1・用語集・ベンチ骨格） | 進行中。Phase 0 の出口判定は ADR-0005〜0007 の承認待ち |
 
 ## Context
