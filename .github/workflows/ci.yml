@@ -7,13 +7,19 @@ on:
 
 jobs:
   check:
-    # ADR-0003: MVP の対象環境は macOS arm64。Linux x86_64 は M2 で追加する。
-    runs-on: macos-15
+    # ADR-0003: MVP の対象環境は macOS arm64。Linux x86_64 は M2（T0）で追加した。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
+      - name: Show C compiler
+        run: clang --version
       - uses: Swatinem/rust-cache@v2
       - name: Run CI checks
         run: ./scripts/ci.sh

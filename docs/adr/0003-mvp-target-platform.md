@@ -38,3 +38,10 @@ Windows は Phase 3 以降に検討する。
 - CI は M0 では macOS arm64 ランナーだけで動かす。
 - Linux を追加するときは、バックエンド方式（ADR-0004）とランタイムのリンク方式（ADR-0008）が両方の環境で動くことを確認し、このADRの「影響」欄に追記する。
 - AC-004 の「指定したMVP対象環境」は、この決定が Accepted になった時点で macOS arm64 を指す。
+
+## 追記（2026-11-04、M2 T0）
+
+この ADR の「影響」に従い、Linux x86_64（`ubuntu-24.04` ランナー、システムの clang）を CI に追加した。決定そのものは変えていない。
+- バックエンド方式（ADR-0004）とランタイムの静的リンク（ADR-0008）は、Linux でも同じ構成で動く。
+- Linux では、Rust の staticlib のために `-lgcc_s -lutil -lrt -lpthread -lm -ldl -lc` をリンクに追加する（`wys_driver`）。
+- e2e テストの動的依存チェックは、Linux では `ldd` を使う。
