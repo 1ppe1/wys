@@ -40,6 +40,8 @@ target/debug/wys fmt --check examples/fib.wys
 target/debug/wys build --release examples/fib.wys   # -O2
 WYS_SANITIZE=address target/debug/wys run examples/fib.wys   # AddressSanitizer 付き
 WYS_RC_STATS=1 target/debug/wys run examples/fib.wys         # 終了時に retain / release の回数を出す
+target/debug/wys explain examples/fib.wys   # 型・絞り込み・ARC 操作の理由を JSON で（ADR-0017）
+target/debug/wys explain E0201              # エラーコードの説明
 benches/measure.sh                                          # ベンチ計測（倍率は書かない）
 ```
 

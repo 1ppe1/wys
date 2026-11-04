@@ -1,0 +1,22 @@
+[package]
+name = "wys_explain"
+description = "`wys explain`: プログラムの説明レポートとエラーコードの説明（DX-004、ADR-0017）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wys_driver = { path = "../wys_driver" }
+wys_typeck = { path = "../wys_typeck" }
+wys_ir = { path = "../wys_ir" }
+wys_span = { path = "../wys_span" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+jsonschema = { version = "0.30", default-features = false }

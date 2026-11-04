@@ -505,3 +505,56 @@ fn rc_stats_count_reference_count_operations() {
     assert!(stderr.contains("rc stats: retain "), "{stderr}");
     assert!(stderr.contains("release 3"), "{stderr}");
 }
+
+#[test]
+fn explain_reports_types_narrowing_and_arc_reasons_as_json() {
+    let path = scratch(
+        "explain",
+        "def first(xs: list[str]) -> str:\n    return xs[0]\n\ndef main() -> None:\n    s: str | None = first([\"a\"])\n    if s is not None:\n        print(s)\n",
+    );
+    let out = cli(&["explain", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["schema_version"], "0");
+    assert_eq!(v["kind"], "file");
+    let first = &v["functions"][0];
+    assert_eq!(first["name"], "first");
+    assert_eq!(first["signature"]["params"][0]["type"], "list[str]");
+    let ops = first["arc"][0]["ops"].as_array().unwrap();
+    assert!(
+        ops.iter()
+            .any(|o| o["op"] == "retain" && o["reason"] == "borrow_from_mutable_place"),
+        "{ops:?}"
+    );
+    let main = &v["functions"][1];
+    assert_eq!(main["narrowing"][0]["variable"], "s");
+    assert_eq!(main["narrowing"][0]["narrowed"], "str");
+    // `--format json` を明示してもよい。text はまだない
+    let out = cli(&["explain", "--format", "json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let out = cli(&["explain", "--format", "text", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn explain_of_a_file_with_errors_prints_diagnostics() {
+    let path = scratch("explain_bad", "def main() -> None:\n    x = 1 + True\n");
+    let out = cli(&["explain", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["diagnostics"][0]["code"], "E0207");
+}
+
+#[test]
+fn explain_looks_up_error_codes() {
+    let out = cli(&["explain", "E0201"]);
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["kind"], "code");
+    assert_eq!(v["code"], "E0201");
+    assert_eq!(v["stage"], "型");
+    let out = cli(&["explain", "E9999"]);
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("unknown error code `E9999`"), "{err}");
+}

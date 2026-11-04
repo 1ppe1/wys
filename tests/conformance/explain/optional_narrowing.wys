@@ -1,0 +1,10 @@
+# `wys explain` のスナップショット: `is not None` と代入による絞り込み
+# expect-stdout: 3
+def add(x: int | None, y: int) -> int:
+    if x is not None:
+        return x + y
+    return y
+
+def main() -> None:
+    z: int | None = 1
+    print(add(z, 2))

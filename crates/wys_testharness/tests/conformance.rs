@@ -66,6 +66,51 @@ fn conformance_suite() {
     );
 }
 
+/// `explain/` 以下のケースは、`wys explain` の JSON を insta のスナップショットとして固定する（ADR-0017）。
+#[test]
+fn explain_json_snapshots() {
+    let root = repo_root();
+    let cases = collect_cases(&root.join("tests/conformance/explain"));
+    assert!(!cases.is_empty(), "no explain cases found");
+    for case in cases {
+        let name = rel(&root, &case);
+        let src = std::fs::read_to_string(&case).unwrap();
+        let fe = wys_testharness::frontend_for_case(&case, &name, &src);
+        let json = wys_explain::explain_file(&fe).unwrap_or_else(|| panic!("{name}: has errors"));
+        let snap_name = format!("explain_{}", case.file_stem().unwrap().to_str().unwrap());
+        insta::assert_snapshot!(snap_name, json);
+    }
+}
+
+/// エラーのないすべてのケースで、`wys explain` の JSON がスキーマ（`docs/spec/explain-schema.json`）に合う。
+#[test]
+fn all_explain_reports_match_schema() {
+    let root = repo_root();
+    let schema: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("docs/spec/explain-schema.json")).unwrap(),
+    )
+    .unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let mut checked = 0;
+    let mut failures = Vec::new();
+    for case in collect_cases(&root.join("tests/conformance")) {
+        let name = rel(&root, &case);
+        let src = std::fs::read_to_string(&case).unwrap();
+        let fe = wys_testharness::frontend_for_case(&case, &name, &src);
+        let Some(json) = wys_explain::explain_file(&fe) else {
+            continue;
+        };
+        checked += 1;
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let errors: Vec<String> = validator.iter_errors(&v).map(|e| e.to_string()).collect();
+        if !errors.is_empty() {
+            failures.push(format!("{name}: {errors:?}"));
+        }
+    }
+    assert!(checked > 50, "only {checked} cases were explained");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 #[test]
 fn diagnostics_json_snapshots() {
     let root = repo_root();

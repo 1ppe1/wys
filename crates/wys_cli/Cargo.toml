@@ -14,6 +14,7 @@ workspace = true
 wys_driver = { path = "../wys_driver" }
 wys_backend = { path = "../wys_backend" }
 wys_fmt = { path = "../wys_fmt" }
+wys_explain = { path = "../wys_explain" }
 
 [dev-dependencies]
 serde_json = "1"

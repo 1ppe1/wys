@@ -1,0 +1,360 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wys.invalid/schemas/explain/v0.json",
+  "title": "wys explain report",
+  "description": "`wys explain` が出力する説明レポート（DX-004、ADR-0017）。静的な事実だけを含む（実行時の回数は `WYS_RC_STATS`）。v0 の間は項目の追加だけを許し、削除や意味の変更をしたら版を上げる。",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/file_report"
+    },
+    {
+      "$ref": "#/$defs/code_report"
+    }
+  ],
+  "$defs": {
+    "file_report": {
+      "description": "`wys explain <file>`: ファイルの関数ごとの説明。関数は宣言の順（import したモジュールの関数も含む）。",
+      "type": "object",
+      "required": [
+        "schema_version",
+        "kind",
+        "file",
+        "functions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "0"
+        },
+        "kind": {
+          "const": "file"
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "functions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/function"
+          }
+        }
+      }
+    },
+    "code_report": {
+      "description": "`wys explain CODE`: `docs/spec/error-codes.md` の表の行。",
+      "type": "object",
+      "required": [
+        "schema_version",
+        "kind",
+        "code",
+        "stage",
+        "summary"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "0"
+        },
+        "kind": {
+          "const": "code"
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[EW][0-9]{4}$"
+        },
+        "stage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "function": {
+      "type": "object",
+      "required": [
+        "name",
+        "span",
+        "signature",
+        "locals",
+        "narrowing",
+        "arc"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "関数名（import したモジュールの関数は `module.name`）。",
+          "type": "string",
+          "minLength": 1
+        },
+        "span": {
+          "$ref": "#/$defs/span"
+        },
+        "signature": {
+          "type": "object",
+          "required": [
+            "type_params",
+            "params",
+            "return"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type_params": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "params": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "type"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "type": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "return": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "locals": {
+          "description": "ローカル変数と引数（宣言の順。先頭は引数）。型は宣言型。",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "type",
+              "kind",
+              "span"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "param",
+                  "local"
+                ]
+              },
+              "span": {
+                "$ref": "#/$defs/span"
+              }
+            }
+          }
+        },
+        "narrowing": {
+          "description": "変数の参照のうち、その地点の型が宣言型と異なる（絞り込まれている）もの。位置の順。",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "variable",
+              "span",
+              "declared",
+              "narrowed"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "variable": {
+                "type": "string",
+                "minLength": 1
+              },
+              "span": {
+                "$ref": "#/$defs/span"
+              },
+              "declared": {
+                "type": "string",
+                "minLength": 1
+              },
+              "narrowed": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "arc": {
+          "description": "IR の関数インスタンスごとの ARC 操作。Generic 関数は使われた型引数ごとに1件（使われなければ0件）。",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/instance"
+          }
+        }
+      }
+    },
+    "instance": {
+      "type": "object",
+      "required": [
+        "instance",
+        "retains",
+        "releases",
+        "ops"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "instance": {
+          "description": "IR の関数名（`dump-ir` と同じ。Generic 関数は `name__N`）。",
+          "type": "string",
+          "minLength": 1
+        },
+        "retains": {
+          "description": "挿入した retain の数（静的な数。実行時の回数ではない）。",
+          "type": "integer",
+          "minimum": 0
+        },
+        "releases": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ops": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/op"
+          }
+        }
+      }
+    },
+    "op": {
+      "type": "object",
+      "required": [
+        "op",
+        "reason",
+        "block",
+        "index",
+        "temp",
+        "message"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "enum": [
+            "retain",
+            "release"
+          ]
+        },
+        "reason": {
+          "description": "挿入した理由（`docs/design/ir.md` の表）。",
+          "enum": [
+            "param_slot_entry",
+            "consume_borrowed",
+            "consume_shared_owned",
+            "borrow_from_mutable_place",
+            "store_overwrites_slot",
+            "unconsumed_owned_at_block_end",
+            "slot_at_function_exit"
+          ]
+        },
+        "site": {
+          "description": "`consume_*` のとき、値を消費する地点。",
+          "enum": [
+            "store",
+            "return",
+            "make_union",
+            "make_record",
+            "list_new",
+            "list_set",
+            "list_push",
+            "dict_new",
+            "dict_set"
+          ]
+        },
+        "block": {
+          "description": "`dump-ir` の `bb` の番号。",
+          "type": "integer",
+          "minimum": 0
+        },
+        "index": {
+          "description": "ブロックの中の命令の添字（0始まり）。",
+          "type": "integer",
+          "minimum": 0
+        },
+        "temp": {
+          "description": "対象の一時値（`dump-ir` の `t` の番号）。",
+          "type": "integer",
+          "minimum": 0
+        },
+        "local": {
+          "description": "スロットに関わる操作のとき、そのローカル変数の名前。",
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "span": {
+      "description": "ソース範囲。line/column は1始まり、column は Unicode スカラー値単位。byte は0始まりの UTF-8 オフセットで end は含まない。",
+      "type": "object",
+      "required": [
+        "file",
+        "start",
+        "end"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start": {
+          "$ref": "#/$defs/position"
+        },
+        "end": {
+          "$ref": "#/$defs/position"
+        }
+      }
+    },
+    "position": {
+      "type": "object",
+      "required": [
+        "line",
+        "column",
+        "byte"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "byte": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

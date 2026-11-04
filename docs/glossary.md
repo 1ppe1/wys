@@ -15,6 +15,7 @@
 | 所有権（Ownership） | 値を誰が管理・解放するかを決めるコンパイラ内部のモデル | MEM-002 |
 | Borrow / Move | 所有権を移さずに参照する操作 / 所有権を移す操作。高性能処理向けに明示的に使う | MEM-004 |
 | ARC / ORC | 参照カウントによる自動メモリ管理。ORCは循環参照の回収を加えた方式（Nimの用語） | MEM-003, 未決定事項 4 |
+| 説明レポート（explain） | `wys explain <file>` が出す JSON。関数ごとのシグネチャ、ローカル変数の型、絞り込み、ARC 操作とその理由。静的な事実だけを含む（DX-004） | ADR-0017, docs/spec/explain-schema.json |
 | ARC 操作の理由 | ARC パスが `retain` / `release` を挿入した理由の識別子（`borrow_from_mutable_place` など7種類）。IR の命令が持ち、`dump-ir` と `wys explain` に出す | ADR-0017, docs/design/ir.md |
 | Effect | 関数が持つ副作用（ネットワーク、ファイル操作など）の種類。静的診断とRuntime強制の両方に使う | AI-009, 未決定事項 5 |
 | Capability | エージェントやコードが使ってよい能力（ファイル、ネットワーク、外部サービスなど）を表す権限。Runtimeが強制する | AI-004, P-05 |
