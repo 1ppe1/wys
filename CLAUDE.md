@@ -35,7 +35,11 @@ cargo build
 target/debug/wys run examples/hello.wys
 target/debug/wys check --format json examples/type_error.wys
 target/debug/wys dump-ir examples/fib.wys
+target/debug/wys test examples/math_test.wys
+target/debug/wys fmt --check examples/fib.wys
 ```
+
+- `examples/` の `.wys` は `wys fmt` で整形しておく（CI が `--check` で確かめる）。
 
 - 新しいエラーコードを追加したら `docs/spec/error-codes.md` に追記する。コードは再利用しない。
 - 言語機能を追加したら、`crates/wys_cli/tests/e2e.rs` に実行結果のテストを追加する。

@@ -57,6 +57,13 @@ pub enum TokenKind {
     LBracket,
     RBracket,
     Dot,
+    /// コメント（`lex_with_trivia` のときだけ）。`level` は行頭のコメントのインデントの深さ、行末のコメントなら `None`。
+    Comment {
+        text: String,
+        level: Option<usize>,
+    },
+    /// 空行（`lex_with_trivia` のときだけ）
+    BlankLine,
     // layout
     Newline,
     Indent,
@@ -115,6 +122,8 @@ impl TokenKind {
             LBracket => "`[`",
             RBracket => "`]`",
             Dot => "`.`",
+            Comment { .. } => "comment",
+            BlankLine => "blank line",
             Newline => "end of line",
             Indent => "indent",
             Dedent => "dedent",
@@ -132,6 +141,15 @@ pub struct Token {
 
 /// ソースをトークン列にする。エラーがあっても最後まで読み、`Eof` で終わるトークン列を返す。
 pub fn lex(src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
+    lexer(src, false).run()
+}
+
+/// コメントと空行もトークンとして返す（`wys fmt` 用）。それ以外のトークンは `lex` と同じ。
+pub fn lex_with_trivia(src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
+    lexer(src, true).run()
+}
+
+fn lexer(src: &str, trivia: bool) -> Lexer<'_> {
     Lexer {
         src,
         bytes: src.as_bytes(),
@@ -140,8 +158,8 @@ pub fn lex(src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
         diags: Vec::new(),
         indents: vec![0],
         paren: 0,
+        trivia,
     }
-    .run()
 }
 
 struct Lexer<'a> {
@@ -152,6 +170,7 @@ struct Lexer<'a> {
     diags: Vec<Diagnostic>,
     indents: Vec<usize>,
     paren: usize,
+    trivia: bool,
 }
 
 fn sp(start: usize, end: usize) -> Span {
@@ -211,6 +230,10 @@ impl Lexer<'_> {
                     while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
                         self.pos += 1;
                     }
+                    if self.trivia {
+                        let text = self.src[start..self.pos].trim_end().to_string();
+                        self.push(TokenKind::Comment { text, level: None }, start, self.pos);
+                    }
                 }
                 b'0'..=b'9' => self.number(),
                 b'"' | b'\'' => self.string(c),
@@ -264,12 +287,36 @@ impl Lexer<'_> {
         }
         match self.bytes[i] {
             b'\n' => {
+                if self.trivia {
+                    self.push(TokenKind::BlankLine, i, i);
+                }
                 self.pos = i + 1;
                 true
             }
             b'#' => {
+                let (width, start) = (i - self.pos, i);
                 while i < self.bytes.len() && self.bytes[i] != b'\n' {
                     i += 1;
+                }
+                if self.trivia {
+                    // コメントの字下げより浅いか同じ深さのブロックの数が、そのコメントのインデントの深さ。
+                    // 今のブロックより深ければ、これから始まるブロック（`def f():` の直後など）に属する
+                    let top = *self.indents.last().expect("indent stack is never empty");
+                    let level = self
+                        .indents
+                        .iter()
+                        .filter(|w| **w > 0 && **w <= width)
+                        .count()
+                        + usize::from(width > top);
+                    let text = self.src[start..i].trim_end().to_string();
+                    self.push(
+                        TokenKind::Comment {
+                            text,
+                            level: Some(level),
+                        },
+                        start,
+                        i,
+                    );
                 }
                 self.pos = (i + 1).min(self.bytes.len());
                 true
@@ -558,6 +605,44 @@ mod tests {
     #[test]
     fn string_escapes_and_unicode() {
         assert_eq!(kinds(r#"print("あ\n\"")"#)[2], Str("あ\n\"".to_string()));
+    }
+
+    #[test]
+    fn trivia_mode_keeps_comments_and_blank_lines() {
+        let src = "# top\ndef f() -> None:\n    # inner\n    pass  # trailing\n\npass\n";
+        let (toks, d) = lex_with_trivia(src);
+        assert!(d.is_empty());
+        let trivia: Vec<_> = toks
+            .iter()
+            .filter(|t| matches!(t.kind, Comment { .. } | BlankLine))
+            .map(|t| t.kind.clone())
+            .collect();
+        assert_eq!(
+            trivia,
+            vec![
+                Comment {
+                    text: "# top".into(),
+                    level: Some(0)
+                },
+                Comment {
+                    text: "# inner".into(),
+                    level: Some(1)
+                },
+                Comment {
+                    text: "# trailing".into(),
+                    level: Option::None
+                },
+                BlankLine,
+            ]
+        );
+        // 通常のトークンは lex と同じ
+        let plain = |ts: Vec<Token>| -> Vec<TokenKind> {
+            ts.into_iter()
+                .map(|t| t.kind)
+                .filter(|k| !matches!(k, Comment { .. } | BlankLine))
+                .collect()
+        };
+        assert_eq!(plain(toks), plain(lex(src).0));
     }
 
     #[test]

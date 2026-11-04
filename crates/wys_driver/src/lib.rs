@@ -7,9 +7,9 @@ use std::process::Command;
 use wys_backend::{Backend, LlvmTextBackend};
 use wys_diagnostics::Diagnostic;
 pub use wys_ir::Program;
-use wys_span::SourceMap;
 
 pub use wys_diagnostics::{to_json, to_text};
+pub use wys_span::{SourceFile, SourceMap};
 
 /// フロントエンドの結果。`program` はエラーがなく、コード生成もできるときだけ `Some`。
 pub struct Frontend {

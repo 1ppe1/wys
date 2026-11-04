@@ -15,6 +15,7 @@ cargo build
 target/debug/wys run examples/fib.wys
 target/debug/wys check --format json examples/type_error.wys
 target/debug/wys test examples/math_test.wys   # test_* 関数を実行（main 不要）
+target/debug/wys fmt examples/fib.wys          # 整形（--check で確認だけ）
 ```
 
 現在の言語機能は PoC1 の最小サブセット（`int` / `bool` / `str` 定数、関数、`if` / `while`、`print`、`exit`）。

@@ -9,4 +9,8 @@ echo "==> cargo clippy"
 cargo clippy --workspace --all-targets -- -D warnings
 echo "==> cargo test"
 cargo test --workspace
+echo "==> wys fmt --check examples"
+for f in examples/*.wys; do
+  ./target/debug/wys fmt --check "$f"
+done
 echo "==> OK"
