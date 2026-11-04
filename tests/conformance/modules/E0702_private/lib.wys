@@ -1,0 +1,2 @@
+def secret() -> None:
+    pass

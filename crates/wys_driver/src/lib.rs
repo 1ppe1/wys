@@ -7,13 +7,14 @@ use std::process::Command;
 use wys_backend::{Backend, LlvmTextBackend};
 use wys_diagnostics::Diagnostic;
 pub use wys_ir::Program;
-use wys_span::SourceFile;
+use wys_span::SourceMap;
 
 pub use wys_diagnostics::{to_json, to_text};
 
 /// フロントエンドの結果。`program` はエラーがなく、コード生成もできるときだけ `Some`。
 pub struct Frontend {
-    pub file: SourceFile,
+    /// 読み込んだすべてのソース（エントリファイルと import したモジュール）。
+    pub file: SourceMap,
     pub diagnostics: Vec<Diagnostic>,
     pub program: Option<Program>,
     /// 型検査は通ったが、このコンパイラのコード生成がまだ対応していない機能を使っている場合の説明。
@@ -38,17 +39,28 @@ impl Frontend {
 
 /// 字句解析から IR 生成までを行う。構文エラーがあれば型検査はしない（エラーの連鎖を防ぐ）。
 pub fn frontend(name: &str, text: &str) -> Frontend {
-    let file = SourceFile::new(name, text);
-    let (module, diagnostics) = wys_parser::parse_source(text);
-    if !diagnostics.is_empty() {
+    frontend_with(name, text, &|p| std::fs::read_to_string(p).ok())
+}
+
+/// `read` で import 先のファイルを読む（テストなどでファイルシステムを使わない場合）。
+pub fn frontend_with(
+    name: &str,
+    text: &str,
+    read: &dyn Fn(&std::path::Path) -> Option<String>,
+) -> Frontend {
+    let loaded = wys_resolve::load_program(name, text, read);
+    let file = loaded.sources;
+    let module = loaded.module;
+    if loaded.diagnostics.iter().any(Diagnostic::is_error) {
         return Frontend {
             file,
-            diagnostics,
+            diagnostics: loaded.diagnostics,
             program: None,
             unsupported: None,
         };
     }
-    let (tc, diagnostics) = wys_typeck::check(&module);
+    let (tc, mut diagnostics) = wys_typeck::check(&module);
+    diagnostics.splice(0..0, loaded.diagnostics);
     if diagnostics.iter().any(Diagnostic::is_error) {
         return Frontend {
             file,
@@ -87,7 +99,7 @@ pub enum BuildError {
 impl std::fmt::Debug for Frontend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Frontend")
-            .field("file", &self.file.name)
+            .field("file", &self.file.entry().name)
             .field("diagnostics", &self.diagnostics.len())
             .finish()
     }
@@ -245,6 +257,27 @@ mod tests {
         assert!(!fe.has_errors());
         assert_eq!(fe.warnings().len(), 1);
         assert!(fe.program.is_some());
+    }
+
+    #[test]
+    fn modules_are_resolved_and_built() {
+        let read = |p: &std::path::Path| {
+            (p == std::path::Path::new("dir/geo.wys"))
+                .then(|| "pub def area(w: int, h: int) -> int:\n    return w * h\n".to_string())
+        };
+        let fe = frontend_with(
+            "dir/main.wys",
+            "from geo import area\n\ndef main() -> None:\n    print(area(2, 3))\n",
+            &read,
+        );
+        assert!(!fe.has_errors(), "{:?}", fe.diagnostics);
+        assert!(
+            fe.program
+                .unwrap()
+                .funcs
+                .iter()
+                .any(|f| f.name == "geo.area")
+        );
     }
 
     #[test]

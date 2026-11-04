@@ -1,0 +1,5 @@
+# expect-error: E0702 2:17
+from lib import secret
+
+def main() -> None:
+    secret()

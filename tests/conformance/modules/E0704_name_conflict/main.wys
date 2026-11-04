@@ -1,0 +1,8 @@
+# expect-error: E0704 2:17
+from lib import f
+
+def f() -> None:
+    pass
+
+def main() -> None:
+    pass

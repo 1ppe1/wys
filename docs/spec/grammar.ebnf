@@ -1,5 +1,5 @@
 (* wys 文法 v0.2-draft — M2 作業中（v0.1 = M1 サブセット。実装: crates/wys_lexer, crates/wys_parser）
- * v0.2 の変更: Union 型（A | B）、is / is not（T1a）、match / case（T2）、type 定義・レコード・キーワード引数・フィールド参照（T3）、Generics（T4）
+ * v0.2 の変更: Union 型（A | B）、is / is not（T1a）、match / case（T2）、type 定義・レコード・キーワード引数・フィールド参照（T3）、Generics（T4）、モジュール（T6）
  *
  * 表記: ISO EBNF 風。{ x } は 0 回以上、[ x ] は省略可、| は選択。
  * NEWLINE / INDENT / DEDENT は字句解析器が生成する（下の「レイアウト規則」）。
@@ -7,7 +7,9 @@
  *)
 
 (* ---------- プログラム ---------- *)
-module      = { NEWLINE | type_def | func_def } EOF ;
+module      = { NEWLINE | import | [ "pub" ] ( type_def | func_def ) } EOF ;
+import      = ( "import" dotted | "from" dotted "import" IDENT { "," IDENT } ) NEWLINE ;   (* ADR-0010 *)
+dotted      = IDENT { "." IDENT } ;                     (* a.b は エントリのディレクトリからの a/b.wys *)
 type_def    = "type" IDENT [ type_params ] "=" ( record_type | type ) NEWLINE ;   (* type は予約語ではない（トップレベルの `type 名前 =` のときだけ） *)
 record_type = "{" [ field_decl { "," field_decl } [ "," ] ] "}" ;
 field_decl  = IDENT ":" type ;
@@ -16,7 +18,7 @@ type_params = "[" IDENT { "," IDENT } [ "," ] "]" ;          (* 型パラメー�
 params      = param { "," param } [ "," ] ;
 param       = IDENT ":" type ;                       (* 型注釈は必須（E0103） *)
 type        = type_atom { "|" type_atom } ;            (* Union。平坦化・重複除去する（ADR-0006） *)
-type_atom   = IDENT [ "[" type { "," type } [ "," ] "]" ] | "None" ;   (* int, bool, str, None、type の名前、Pair[int, str] *)
+type_atom   = dotted [ "[" type { "," type } [ "," ] "]" ] | "None" ;   (* int, bool, str, None、type の名前、Pair[int, str] *)
 block       = NEWLINE INDENT stmt { stmt } DEDENT ;
 
 (* ---------- 文 ---------- *)
@@ -43,7 +45,7 @@ cmp_op      = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
 additive    = term { ( "+" | "-" ) term } ;
 term        = unary { ( "*" | "/" | "//" | "%" ) unary } ;   (* "/" は型検査で拒否（E0207） *)
 unary       = "-" unary | postfix ;
-postfix     = primary { "." IDENT } ;                 (* フィールド参照。レコードは不変なので代入はできない *)
+postfix     = primary { "." IDENT [ "(" [ args ] ")" ] } ;   (* フィールド参照。名前の並びの後の ( は修飾付きの呼び出し m.f(...) *)
 primary     = INT | STRING | "True" | "False" | "None"
             | IDENT [ "(" [ args ] ")" ]
             | "(" expr ")" ;
@@ -57,7 +59,7 @@ STRING      = '"' { char | escape } '"' | "'" { char | escape } "'" ;
 escape      = "\" ( "n" | "t" | "r" | "0" | "\" | '"' | "'" ) ;   (* その他は E0006 *)
 comment     = "#" { any character except newline } ;
 
-(* 予約語: def return if elif else while pass True False None and or not is match case
+(* 予約語: def return if elif else while pass True False None and or not is match case pub import from
  * （match / case は Python と違いソフトキーワードではない。ユーザー決定、docs/plans/m2.md）
  *
  * レイアウト規則:

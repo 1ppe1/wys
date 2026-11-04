@@ -29,6 +29,9 @@ pub enum TokenKind {
     Is,
     Match,
     Case,
+    Pub,
+    Import,
+    From,
     // operators / punctuation
     Plus,
     Minus,
@@ -85,6 +88,9 @@ impl TokenKind {
             Is => "`is`",
             Match => "`match`",
             Case => "`case`",
+            Pub => "`pub`",
+            Import => "`import`",
+            From => "`from`",
             Plus => "`+`",
             Minus => "`-`",
             Star => "`*`",
@@ -171,6 +177,9 @@ fn keyword(s: &str) -> Option<TokenKind> {
         "is" => Is,
         "match" => Match,
         "case" => Case,
+        "pub" => Pub,
+        "import" => Import,
+        "from" => From,
         _ => return Option::None,
     })
 }

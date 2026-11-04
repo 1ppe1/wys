@@ -1,0 +1,17 @@
+[package]
+name = "wys_resolve"
+description = "モジュールの読み込みと名前解決（ADR-0010）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wys_span = { path = "../wys_span" }
+wys_diagnostics = { path = "../wys_diagnostics" }
+wys_ast = { path = "../wys_ast" }
+wys_parser = { path = "../wys_parser" }

@@ -1,0 +1,5 @@
+# expect-error: E0701 2:8
+import nowhere.found
+
+def main() -> None:
+    pass

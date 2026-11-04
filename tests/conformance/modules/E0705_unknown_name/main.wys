@@ -1,0 +1,5 @@
+# expect-error: E0705 2:17
+from lib import g
+
+def main() -> None:
+    pass

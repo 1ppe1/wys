@@ -955,6 +955,7 @@ dependencies = [
  "wys_ir",
  "wys_lower",
  "wys_parser",
+ "wys_resolve",
  "wys_span",
  "wys_typeck",
 ]
@@ -988,6 +989,16 @@ dependencies = [
  "wys_ast",
  "wys_diagnostics",
  "wys_lexer",
+ "wys_span",
+]
+
+[[package]]
+name = "wys_resolve"
+version = "0.0.0"
+dependencies = [
+ "wys_ast",
+ "wys_diagnostics",
+ "wys_parser",
  "wys_span",
 ]
 

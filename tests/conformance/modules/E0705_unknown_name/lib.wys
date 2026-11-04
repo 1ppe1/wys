@@ -1,0 +1,2 @@
+pub def f() -> None:
+    pass

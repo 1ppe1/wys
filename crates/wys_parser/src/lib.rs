@@ -15,17 +15,38 @@ pub fn parse_source(src: &str) -> (Module, Vec<Diagnostic>) {
     (module, diags)
 }
 
+/// ソースマップの基準位置 `base` に置かれたファイルを解析する（位置は通し番号になる）。
+/// 式の ID は `first_expr` から振る（複数のモジュールを1つにまとめても重ならないように）。
+pub fn parse_source_at(src: &str, base: u32, first_expr: u32) -> (Module, Vec<Diagnostic>) {
+    let shift = |s: Span| Span::new(s.start + base, s.end + base);
+    let (mut tokens, mut diags) = wys_lexer::lex(src);
+    for t in &mut tokens {
+        t.span = shift(t.span);
+    }
+    for d in &mut diags {
+        d.span = shift(d.span);
+    }
+    let (module, pdiags) = parse_from(&tokens, first_expr);
+    diags.extend(pdiags);
+    (module, diags)
+}
+
 /// トークン列を構文解析する。`tokens` は `Eof` で終わっていなければならない。
 pub fn parse(tokens: &[Token]) -> (Module, Vec<Diagnostic>) {
+    parse_from(tokens, 0)
+}
+
+fn parse_from(tokens: &[Token], first_expr: u32) -> (Module, Vec<Diagnostic>) {
     let mut p = Parser {
         toks: tokens,
         pos: 0,
         diags: Vec::new(),
-        next_expr: 0,
+        next_expr: first_expr,
     };
-    let (types, funcs) = p.module();
+    let (imports, types, funcs) = p.module();
     (
         Module {
+            imports,
             types,
             funcs,
             expr_count: p.next_expr,
@@ -33,6 +54,9 @@ pub fn parse(tokens: &[Token]) -> (Module, Vec<Diagnostic>) {
         p.diags,
     )
 }
+
+/// 呼び出しの位置引数とキーワード引数。
+type CallArgs = (Vec<Expr>, Vec<(Ident, Expr)>);
 
 /// エラー時の値。診断は発生時点で `diags` に積まれている。
 struct Reported;
@@ -168,12 +192,22 @@ impl Parser<'_> {
 
     // ---- module / definitions ----
 
-    fn module(&mut self) -> (Vec<TypeDef>, Vec<FuncDef>) {
+    fn module(&mut self) -> (Vec<Import>, Vec<TypeDef>, Vec<FuncDef>) {
+        let mut imports = Vec::new();
         let mut types = Vec::new();
         let mut funcs = Vec::new();
         loop {
+            let public = matches!(self.peek(), TokenKind::Pub)
+                && matches!(self.peek_at(1), TokenKind::Def | TokenKind::Ident(_));
+            if public {
+                self.bump();
+            }
             match self.peek() {
                 TokenKind::Eof => break,
+                TokenKind::Import | TokenKind::From if !public => match self.import() {
+                    Ok(i) => imports.push(i),
+                    Err(Reported) => self.sync(),
+                },
                 // `type` は予約語ではない。トップレベルの `type Name =` のときだけ型定義として扱う
                 TokenKind::Ident(kw)
                     if kw == "type"
@@ -181,7 +215,10 @@ impl Parser<'_> {
                         && matches!(self.peek_at(2), TokenKind::Assign | TokenKind::LBracket) =>
                 {
                     match self.type_def() {
-                        Ok(t) => types.push(t),
+                        Ok(mut t) => {
+                            t.public = public;
+                            types.push(t);
+                        }
                         Err(Reported) => self.sync(),
                     }
                 }
@@ -189,7 +226,10 @@ impl Parser<'_> {
                     self.bump();
                 }
                 TokenKind::Def => match self.func_def() {
-                    Ok(f) => funcs.push(f),
+                    Ok(mut f) => {
+                        f.public = public;
+                        funcs.push(f);
+                    }
                     Err(Reported) => self.sync(),
                 },
                 TokenKind::Indent => {
@@ -213,7 +253,37 @@ impl Parser<'_> {
                 }
             }
         }
-        (types, funcs)
+        (imports, types, funcs)
+    }
+
+    /// `import a.b` / `from a.b import f, g`
+    fn import(&mut self) -> PResult<Import> {
+        let start = self.span().start;
+        let from = self.eat(&TokenKind::From);
+        if !from {
+            self.expect(&TokenKind::Import, "`import`")?;
+        }
+        let mut module = vec![self.ident("a module name")?];
+        while self.eat(&TokenKind::Dot) {
+            module.push(self.ident("a module name")?);
+        }
+        let names = if from {
+            self.expect(&TokenKind::Import, "`import`")?;
+            let mut names = vec![self.ident("a name to import")?];
+            while self.eat(&TokenKind::Comma) {
+                names.push(self.ident("a name to import")?);
+            }
+            Some(names)
+        } else {
+            None
+        };
+        let end = self.prev_end();
+        self.expect(&TokenKind::Newline, "end of line")?;
+        Ok(Import {
+            module,
+            names,
+            span: Span::new(start, end),
+        })
     }
 
     fn type_def(&mut self) -> PResult<TypeDef> {
@@ -240,6 +310,7 @@ impl Parser<'_> {
         let end = self.prev_end();
         self.expect(&TokenKind::Newline, "end of line")?;
         Ok(TypeDef {
+            public: false,
             name,
             params,
             value,
@@ -284,7 +355,17 @@ impl Parser<'_> {
             TokenKind::None => "None".to_string(),
             _ => return Err(self.error_here("a type")),
         };
-        let span = self.bump().span;
+        let mut span = self.bump().span;
+        let mut name = name;
+        // `m.Point` のような修飾付きの型名（ADR-0010）
+        while matches!(self.peek(), TokenKind::Dot)
+            && matches!(self.peek_at(1), TokenKind::Ident(_))
+        {
+            self.bump();
+            let part = self.ident("a type name")?;
+            name = format!("{name}.{}", part.name);
+            span = Span::new(span.start, part.span.end);
+        }
         if self.eat(&TokenKind::LBracket) {
             let mut args = Vec::new();
             loop {
@@ -360,6 +441,7 @@ impl Parser<'_> {
         self.expect(&TokenKind::Colon, "`:`")?;
         let body = self.block()?;
         Ok(FuncDef {
+            public: false,
             name,
             type_params,
             params,
@@ -718,6 +800,26 @@ impl Parser<'_> {
         while self.eat(&TokenKind::Dot) {
             let name = self.ident("a field name")?;
             let start = e.span.start;
+            // `m.f(...)` / `a.b.f(...)`: 名前だけの並びの後に `(` が来たら、修飾付きの呼び出し（ADR-0010）
+            if self.at(&TokenKind::LParen)
+                && let Some(prefix) = dotted_name(&e)
+            {
+                self.bump();
+                let (args, kwargs) = self.call_args()?;
+                let callee = Ident {
+                    name: format!("{prefix}.{}", name.name),
+                    span: Span::new(start, name.span.end),
+                };
+                e = self.mk(
+                    ExprKind::Call {
+                        callee,
+                        args,
+                        kwargs,
+                    },
+                    start,
+                );
+                continue;
+            }
             e = self.mk(
                 ExprKind::Field {
                     base: Box::new(e),
@@ -727,6 +829,35 @@ impl Parser<'_> {
             );
         }
         Ok(e)
+    }
+
+    /// `(` の後ろから `)` まで: 位置引数とキーワード引数。
+    fn call_args(&mut self) -> PResult<CallArgs> {
+        let mut args = Vec::new();
+        let mut kwargs = Vec::new();
+        while !self.at(&TokenKind::RParen) {
+            if matches!(self.peek(), TokenKind::Ident(_))
+                && matches!(self.peek_at(1), TokenKind::Assign)
+            {
+                let k = self.ident("an argument name")?;
+                self.bump(); // `=`
+                kwargs.push((k, self.expr()?));
+            } else if !kwargs.is_empty() {
+                self.diags.push(Diagnostic::error(
+                    "E0101",
+                    "positional arguments must come before keyword arguments",
+                    self.span(),
+                ));
+                return Err(Reported);
+            } else {
+                args.push(self.expr()?);
+            }
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RParen, "`,` or `)`")?;
+        Ok((args, kwargs))
     }
 
     fn primary(&mut self) -> PResult<Expr> {
@@ -755,30 +886,7 @@ impl Parser<'_> {
             TokenKind::Ident(name) => {
                 let span = self.bump().span;
                 if self.eat(&TokenKind::LParen) {
-                    let mut args = Vec::new();
-                    let mut kwargs = Vec::new();
-                    while !self.at(&TokenKind::RParen) {
-                        if matches!(self.peek(), TokenKind::Ident(_))
-                            && matches!(self.peek_at(1), TokenKind::Assign)
-                        {
-                            let k = self.ident("an argument name")?;
-                            self.bump(); // `=`
-                            kwargs.push((k, self.expr()?));
-                        } else if !kwargs.is_empty() {
-                            self.diags.push(Diagnostic::error(
-                                "E0101",
-                                "positional arguments must come before keyword arguments",
-                                self.span(),
-                            ));
-                            return Err(Reported);
-                        } else {
-                            args.push(self.expr()?);
-                        }
-                        if !self.eat(&TokenKind::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(&TokenKind::RParen, "`,` or `)`")?;
+                    let (args, kwargs) = self.call_args()?;
                     ExprKind::Call {
                         callee: Ident { name, span },
                         args,
@@ -801,6 +909,15 @@ impl Parser<'_> {
             _ => return Err(self.error_here("an expression")),
         };
         Ok(self.mk(kind, start))
+    }
+}
+
+/// `a` / `a.b` のように、名前とフィールド参照だけからなる式なら、その並び（`a.b`）を返す。
+fn dotted_name(e: &Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Name(n) => Some(n.clone()),
+        ExprKind::Field { base, name } => dotted_name(base).map(|p| format!("{p}.{}", name.name)),
+        _ => None,
     }
 }
 
@@ -932,6 +1049,38 @@ mod tests {
         assert!(
             matches!(&f.params[0].ty.kind, TypeExprKind::Apply(n, a) if n == "Pair" && a.len() == 2)
         );
+    }
+
+    #[test]
+    fn imports_visibility_and_qualified_names() {
+        let m = ok(
+            "import util.text\nfrom shapes import Point, area\n\npub type P = {x: int}\n\npub def f(p: shapes.Point) -> int:\n    return util.text.width(p.x)\n\ndef g() -> None:\n    pass\n",
+        );
+        assert_eq!(m.imports.len(), 2);
+        assert_eq!(m.imports[0].module_name(), "util.text");
+        assert!(m.imports[0].names.is_none());
+        assert_eq!(m.imports[1].names.as_ref().unwrap().len(), 2);
+        assert!(m.types[0].public);
+        assert!(m.funcs[0].public && !m.funcs[1].public);
+        assert!(
+            matches!(&m.funcs[0].params[0].ty.kind, TypeExprKind::Name(n) if n == "shapes.Point")
+        );
+        let StmtKind::Return(Some(e)) = &m.funcs[0].body[0].kind else {
+            panic!()
+        };
+        let ExprKind::Call { callee, args, .. } = &e.kind else {
+            panic!()
+        };
+        assert_eq!(callee.name, "util.text.width");
+        assert!(matches!(args[0].kind, ExprKind::Field { .. }));
+    }
+
+    #[test]
+    fn parse_at_offsets_spans_and_expr_ids() {
+        let (m, d) = parse_source_at("def f() -> int:\n    return 1\n", 100, 7);
+        assert!(d.is_empty());
+        assert_eq!(m.funcs[0].name.span.start, 104);
+        assert_eq!(m.expr_count, 8);
     }
 
     #[test]

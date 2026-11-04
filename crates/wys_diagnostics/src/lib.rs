@@ -3,7 +3,7 @@
 //! JSON の形は `docs/spec/diagnostics-schema.json`（v0）に従う。
 
 use serde::Serialize;
-use wys_span::{SourceFile, Span};
+use wys_span::{SourceMap, Span};
 
 /// 診断 JSON のスキーマバージョン。スキーマを変えたら更新する。
 pub const SCHEMA_VERSION: &str = "0";
@@ -170,9 +170,9 @@ struct RelatedJson<'a> {
     span: Option<SpanJson<'a>>,
 }
 
-fn span_json<'a>(file: &'a SourceFile, span: Span) -> SpanJson<'a> {
+fn span_json<'a>(map: &'a SourceMap, span: Span) -> SpanJson<'a> {
     let pos = |b| {
-        let p = file.position(b);
+        let p = map.position(b);
         PositionJson {
             line: p.line,
             column: p.column,
@@ -180,14 +180,14 @@ fn span_json<'a>(file: &'a SourceFile, span: Span) -> SpanJson<'a> {
         }
     };
     SpanJson {
-        file: &file.name,
+        file: map.file_name(span.start),
         start: pos(span.start),
         end: pos(span.end),
     }
 }
 
-/// 診断の一覧をスキーマ v0 の JSON 文字列にする。M0 では単一ファイルのみを扱う。
-pub fn to_json(file: &SourceFile, diagnostics: &[Diagnostic]) -> String {
+/// 診断の一覧をスキーマ v0 の JSON 文字列にする。`span.file` は位置を含むファイル（モジュール）の名前。
+pub fn to_json(file: &SourceMap, diagnostics: &[Diagnostic]) -> String {
     let report = ReportJson {
         schema_version: SCHEMA_VERSION,
         diagnostics: diagnostics
@@ -225,10 +225,11 @@ pub fn to_json(file: &SourceFile, diagnostics: &[Diagnostic]) -> String {
 }
 
 /// 人間向けのテキスト出力（`file:line:col: error[E0001]: message`）。
-pub fn to_text(file: &SourceFile, diagnostics: &[Diagnostic]) -> String {
+pub fn to_text(file: &SourceMap, diagnostics: &[Diagnostic]) -> String {
     let mut out = String::new();
     for d in diagnostics {
         let p = file.position(d.span.start);
+        let name = file.file_name(d.span.start);
         let sev = match d.severity {
             Severity::Error => "error",
             Severity::Warning => "warning",
@@ -236,7 +237,7 @@ pub fn to_text(file: &SourceFile, diagnostics: &[Diagnostic]) -> String {
         };
         out.push_str(&format!(
             "{}:{}:{}: {}[{}]: {}\n",
-            file.name, p.line, p.column, sev, d.code, d.message
+            name, p.line, p.column, sev, d.code, d.message
         ));
         if let Some(c) = &d.cause {
             out.push_str(&format!("  cause: {c}\n"));
@@ -251,10 +252,11 @@ pub fn to_text(file: &SourceFile, diagnostics: &[Diagnostic]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wys_span::SourceFile;
 
     const SCHEMA: &str = include_str!("../../../docs/spec/diagnostics-schema.json");
 
-    fn sample() -> (SourceFile, Vec<Diagnostic>) {
+    fn sample() -> (SourceMap, Vec<Diagnostic>) {
         let file = SourceFile::new(
             "main.wys",
             "def f(x: int) -> int:\n    return x\n\nf(\"a\")\n",
@@ -269,7 +271,7 @@ mod tests {
         .with_cause("関数 f の引数 x は int として宣言されています")
         .with_fix("int の値を渡してください", arg, "0")
         .with_related(RelatedKind::Function, "f", Some(Span::new(4, 5)));
-        (file, vec![d])
+        (SourceMap::single(file), vec![d])
     }
 
     fn validator() -> jsonschema::Validator {
@@ -290,7 +292,7 @@ mod tests {
 
     #[test]
     fn empty_report_matches_schema() {
-        let file = SourceFile::new("empty.wys", "");
+        let file = SourceMap::single(SourceFile::new("empty.wys", ""));
         let out: serde_json::Value = serde_json::from_str(&to_json(&file, &[])).unwrap();
         assert!(validator().is_valid(&out));
     }

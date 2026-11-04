@@ -9,6 +9,7 @@ pub struct ExprId(pub u32);
 
 #[derive(Debug, Clone)]
 pub struct Module {
+    pub imports: Vec<Import>,
     pub types: Vec<TypeDef>,
     pub funcs: Vec<FuncDef>,
     /// 割り当て済みの `ExprId` の数。
@@ -38,9 +39,30 @@ pub enum TypeExprKind {
     Apply(String, Vec<TypeExpr>),
 }
 
+/// `import a.b`（`names` が `None`）または `from a.b import f, g`。
+#[derive(Debug, Clone)]
+pub struct Import {
+    pub module: Vec<Ident>,
+    pub names: Option<Vec<Ident>>,
+    pub span: Span,
+}
+
+impl Import {
+    /// `a.b` の形のモジュール名。
+    pub fn module_name(&self) -> String {
+        self.module
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+}
+
 /// トップレベルの `type Name = ...`。
 #[derive(Debug, Clone)]
 pub struct TypeDef {
+    /// `pub type`（ほかのモジュールから使える、ADR-0010）
+    pub public: bool,
     pub name: Ident,
     /// `type Pair[A, B] = ...` の型パラメータ。
     pub params: Vec<Ident>,
@@ -64,6 +86,8 @@ pub struct Param {
 
 #[derive(Debug, Clone)]
 pub struct FuncDef {
+    /// `pub def`（ほかのモジュールから使える、ADR-0010）
+    pub public: bool,
     pub name: Ident,
     /// `def f[T](...)` の型パラメータ。
     pub type_params: Vec<Ident>,

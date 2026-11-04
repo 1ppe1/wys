@@ -93,13 +93,41 @@ pub fn collect_cases(dir: &Path) -> Vec<PathBuf> {
             let p = entry.path();
             if p.is_dir() {
                 stack.push(p);
-            } else if p.extension().is_some_and(|e| e == "wys") {
+            } else if p.extension().is_some_and(|e| e == "wys") && is_case(&p) {
                 out.push(p);
             }
         }
     }
     out.sort();
     out
+}
+
+/// `modules/<ケース名>/` の中では `main.wys` だけがケースで、ほかのファイルは import されるモジュール。
+fn is_case(p: &Path) -> bool {
+    let under_modules = p
+        .ancestors()
+        .skip(1)
+        .any(|a| a.file_name().is_some_and(|n| n == "modules"));
+    if !under_modules {
+        return true;
+    }
+    let case_dir_parent = p.parent().and_then(Path::parent).and_then(Path::file_name);
+    p.file_name().is_some_and(|n| n == "main.wys")
+        && case_dir_parent.is_some_and(|n| n == "modules")
+}
+
+/// ケースのフロントエンドを実行する。`display_name` は `path` のリポジトリからの相対パスで、
+/// import 先のファイルも同じ基準（リポジトリのルート）から読む（テストのカレントディレクトリに依存しない）。
+pub fn frontend_for_case(path: &Path, display_name: &str, src: &str) -> wys_driver::Frontend {
+    let depth = Path::new(display_name).components().count();
+    let root = path
+        .ancestors()
+        .nth(depth)
+        .unwrap_or(Path::new(""))
+        .to_path_buf();
+    wys_driver::frontend_with(display_name, src, &|p| {
+        std::fs::read_to_string(root.join(p)).ok()
+    })
 }
 
 /// 1ケースを実行する。`display_name` は診断に入るファイル名（スナップショットを安定させるため相対パス）。
@@ -111,7 +139,7 @@ pub fn run_case(
 ) -> Result<(), String> {
     let src = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let exp = parse_expectations(&src)?;
-    let fe = wys_driver::frontend(display_name, &src);
+    let fe = frontend_for_case(path, display_name, &src);
     let actual: Vec<(String, u32, u32)> = fe
         .diagnostics
         .iter()
