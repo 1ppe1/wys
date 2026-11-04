@@ -579,4 +579,17 @@ fn effects_are_checked_and_do_not_change_the_program() {
     );
     assert_eq!(code, 0);
     assert_eq!(stdout, "1\n");
+    // IR の属性と `wys explain` に出る（T9b）
+    let ok = scratch(
+        "effects_explain",
+        "def log(x: int) -> None uses io:\n    print(x)\n\ndef main() -> None:\n    log(1)\n",
+    );
+    let out = cli(&["dump-ir", ok.to_str().unwrap()]);
+    let ir = String::from_utf8(out.stdout).unwrap();
+    assert!(ir.contains("fn f0 log(l0: int) uses io {"), "{ir}");
+    let out = cli(&["explain", ok.to_str().unwrap()]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["functions"][0]["effects"]["declared"][0], "io");
+    assert!(v["functions"][1]["effects"]["declared"].is_null());
+    assert_eq!(v["functions"][1]["effects"]["sites"][0]["callee"], "log");
 }

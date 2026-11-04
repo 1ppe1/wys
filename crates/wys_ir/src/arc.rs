@@ -406,6 +406,7 @@ mod tests {
                 ret,
                 temps,
                 blocks: vec![Block { insts, term }],
+                effects: None,
             }],
         }
     }

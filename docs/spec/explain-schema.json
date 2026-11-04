@@ -81,7 +81,8 @@
         "signature",
         "locals",
         "narrowing",
-        "arc"
+        "arc",
+        "effects"
       ],
       "additionalProperties": false,
       "properties": {
@@ -206,6 +207,9 @@
           "items": {
             "$ref": "#/$defs/instance"
           }
+        },
+        "effects": {
+          "$ref": "#/$defs/effects"
         }
       }
     },
@@ -353,6 +357,85 @@
         "byte": {
           "type": "integer",
           "minimum": 0
+        }
+      }
+    },
+    "effect_name": {
+      "enum": [
+        "io",
+        "exit"
+      ]
+    },
+    "effects": {
+      "description": "Effect（ADR-0014 論点 10）。推論ではない: `required` は本体の呼び出しのうち、組み込み関数と注釈のある関数の Effect の和集合。",
+      "type": "object",
+      "required": [
+        "declared",
+        "required",
+        "sites"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "declared": {
+          "description": "`uses` 節で宣言した Effect（`uses pure` なら空）。注釈がなければ null。",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/effect_name"
+              },
+              "uniqueItems": true
+            }
+          ]
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/effect_name"
+          },
+          "uniqueItems": true
+        },
+        "sites": {
+          "description": "関数の呼び出し（位置の順）。",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/effect_site"
+          }
+        }
+      }
+    },
+    "effect_site": {
+      "type": "object",
+      "required": [
+        "callee",
+        "span",
+        "effects",
+        "annotated"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "callee": {
+          "description": "呼び出し先（モジュールの関数は `module.name`）。",
+          "type": "string",
+          "minLength": 1
+        },
+        "span": {
+          "$ref": "#/$defs/span"
+        },
+        "effects": {
+          "description": "呼び出し先の Effect。注釈のない関数なら空。",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/effect_name"
+          },
+          "uniqueItems": true
+        },
+        "annotated": {
+          "description": "呼び出し先が組み込み関数か、`uses` 節のある関数なら真。",
+          "type": "boolean"
         }
       }
     }

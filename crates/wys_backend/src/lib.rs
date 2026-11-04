@@ -1080,6 +1080,7 @@ mod tests {
                     insts: vec![],
                     term: Terminator::Return(None),
                 }],
+                effects: None,
             }],
         };
         let ll = emit_llvm_ir(&p);
@@ -1095,7 +1096,7 @@ mod tests {
     }
 
     #[test]
-    fn arc_reasons_do_not_change_the_generated_code() {
+    fn arc_reasons_and_effects_do_not_change_the_generated_code() {
         // def f(s: str) -> str: return s（ARC パスが retain / release を挿入する）
         let mut p = Program {
             strings: vec![],
@@ -1117,6 +1118,7 @@ mod tests {
                     }],
                     term: Terminator::Return(Some(TempId(0))),
                 }],
+                effects: None,
             }],
         };
         wys_ir::arc::insert(&mut p);
@@ -1129,6 +1131,9 @@ mod tests {
                 }
             }
         }
+        assert_eq!(before, emit_llvm_ir(&p));
+        // Effect の属性（ADR-0014）も生成コードを変えない
+        p.funcs[0].effects = Some(vec![Effect::Io, Effect::Exit]);
         assert_eq!(before, emit_llvm_ir(&p));
     }
 }

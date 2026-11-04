@@ -101,7 +101,12 @@ expression: json
           "releases": 0,
           "ops": []
         }
-      ]
+      ],
+      "effects": {
+        "declared": null,
+        "required": [],
+        "sites": []
+      }
     },
     {
       "name": "main",
@@ -170,7 +175,53 @@ expression: json
           "releases": 0,
           "ops": []
         }
-      ]
+      ],
+      "effects": {
+        "declared": null,
+        "required": [
+          "io"
+        ],
+        "sites": [
+          {
+            "callee": "print",
+            "span": {
+              "file": "tests/conformance/explain/optional_narrowing.wys",
+              "start": {
+                "line": 10,
+                "column": 5,
+                "byte": 251
+              },
+              "end": {
+                "line": 10,
+                "column": 10,
+                "byte": 256
+              }
+            },
+            "effects": [
+              "io"
+            ],
+            "annotated": true
+          },
+          {
+            "callee": "add",
+            "span": {
+              "file": "tests/conformance/explain/optional_narrowing.wys",
+              "start": {
+                "line": 10,
+                "column": 11,
+                "byte": 257
+              },
+              "end": {
+                "line": 10,
+                "column": 14,
+                "byte": 260
+              }
+            },
+            "effects": [],
+            "annotated": false
+          }
+        ]
+      }
     }
   ]
 }

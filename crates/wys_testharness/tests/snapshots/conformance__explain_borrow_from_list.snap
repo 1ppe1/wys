@@ -87,7 +87,12 @@ expression: json
             }
           ]
         }
-      ]
+      ],
+      "effects": {
+        "declared": null,
+        "required": [],
+        "sites": []
+      }
     },
     {
       "name": "main",
@@ -182,7 +187,53 @@ expression: json
             }
           ]
         }
-      ]
+      ],
+      "effects": {
+        "declared": null,
+        "required": [
+          "io"
+        ],
+        "sites": [
+          {
+            "callee": "print",
+            "span": {
+              "file": "tests/conformance/explain/borrow_from_list.wys",
+              "start": {
+                "line": 8,
+                "column": 5,
+                "byte": 248
+              },
+              "end": {
+                "line": 8,
+                "column": 10,
+                "byte": 253
+              }
+            },
+            "effects": [
+              "io"
+            ],
+            "annotated": true
+          },
+          {
+            "callee": "first",
+            "span": {
+              "file": "tests/conformance/explain/borrow_from_list.wys",
+              "start": {
+                "line": 8,
+                "column": 11,
+                "byte": 254
+              },
+              "end": {
+                "line": 8,
+                "column": 16,
+                "byte": 259
+              }
+            },
+            "effects": [],
+            "annotated": false
+          }
+        ]
+      }
     }
   ]
 }
