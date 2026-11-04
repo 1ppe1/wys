@@ -489,6 +489,18 @@ impl Parser<'_> {
             }
             TokenKind::If => return self.if_stmt(),
             TokenKind::Match => return self.match_stmt(),
+            TokenKind::For => {
+                self.bump();
+                let var = self.ident("a loop variable name")?;
+                self.expect(&TokenKind::In, "`in`")?;
+                let iter = self.expr()?;
+                self.expect(&TokenKind::Colon, "`:`")?;
+                let body = self.block()?;
+                return Ok(Stmt {
+                    kind: StmtKind::For { var, iter, body },
+                    span: Span::new(start, self.prev_end()),
+                });
+            }
             TokenKind::While => {
                 self.bump();
                 let cond = self.expr()?;
@@ -524,7 +536,17 @@ impl Parser<'_> {
                 let value = self.expr()?;
                 StmtKind::Assign { target, ann, value }
             }
-            _ => StmtKind::Expr(self.expr()?),
+            _ => {
+                let e = self.expr()?;
+                if matches!(e.kind, ExprKind::Index { .. }) && self.eat(&TokenKind::Assign) {
+                    StmtKind::IndexAssign {
+                        target: e,
+                        value: self.expr()?,
+                    }
+                } else {
+                    StmtKind::Expr(e)
+                }
+            }
         };
         let end = self.prev_end();
         self.expect(&TokenKind::Newline, "end of line")?;
@@ -797,7 +819,23 @@ impl Parser<'_> {
     /// `primary { "." IDENT }`
     fn postfix(&mut self) -> PResult<Expr> {
         let mut e = self.primary()?;
-        while self.eat(&TokenKind::Dot) {
+        loop {
+            if self.eat(&TokenKind::LBracket) {
+                let index = self.expr()?;
+                self.expect(&TokenKind::RBracket, "`]`")?;
+                let start = e.span.start;
+                e = self.mk(
+                    ExprKind::Index {
+                        base: Box::new(e),
+                        index: Box::new(index),
+                    },
+                    start,
+                );
+                continue;
+            }
+            if !self.eat(&TokenKind::Dot) {
+                break;
+            }
             let name = self.ident("a field name")?;
             let start = e.span.start;
             // `m.f(...)` / `a.b.f(...)`: 名前だけの並びの後に `(` が来たら、修飾付きの呼び出し（ADR-0010）
@@ -895,6 +933,18 @@ impl Parser<'_> {
                 } else {
                     ExprKind::Name(name)
                 }
+            }
+            TokenKind::LBracket => {
+                self.bump();
+                let mut items = Vec::new();
+                while !self.at(&TokenKind::RBracket) {
+                    items.push(self.expr()?);
+                    if !self.eat(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&TokenKind::RBracket, "`,` or `]`")?;
+                ExprKind::List(items)
             }
             TokenKind::LParen => {
                 self.bump();

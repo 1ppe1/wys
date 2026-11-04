@@ -1,0 +1,3 @@
+# expect-error: E0901 3:10
+def main() -> None:
+    xs = []

@@ -26,6 +26,8 @@ pub enum Ty {
     Record(RecordId),
     /// 型パラメータ（`def f[T]` の `T`）。中身の分からない型として扱い、単相化で具体的な型に置き換える。
     Param(ParamId),
+    /// `list[T]`（ヒープ上の可変なリスト、参照を共有する。M3 T4a、ADR-0012）
+    List(ListId),
     /// 未検証の外部値（ADR-0011）。`int` / `bool` / `str` / `None` のどれかだが、開いた型として扱い、
     /// `match` で確かめるまで具体的な型として使えない。
     Unknown,
@@ -43,6 +45,9 @@ pub struct RecordId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ParamId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ListId(pub u32);
 
 /// 型パラメータから具体的な型への対応。
 pub type Subst = HashMap<ParamId, Ty>;
@@ -80,6 +85,9 @@ pub struct Types {
     records: Vec<RecordDef>,
     record_index: HashMap<Vec<(String, Ty)>, RecordId>,
     params: Vec<String>,
+    /// `list[T]` の要素の型（`ListId` の順）
+    lists: Vec<Ty>,
+    list_index: HashMap<Ty, ListId>,
 }
 
 impl Types {
@@ -140,6 +148,7 @@ impl Types {
             Ty::Error => "<error>".into(),
             Ty::Param(p) => self.params[p.0 as usize].clone(),
             Ty::Unknown => "Unknown".into(),
+            Ty::List(l) => format!("list[{}]", name(self.lists[l.0 as usize])),
             Ty::Record(r) => {
                 let def = &self.records[r.0 as usize];
                 match &def.name {
@@ -261,6 +270,14 @@ impl Types {
     pub fn subst(&mut self, t: Ty, map: &Subst) -> Ty {
         match t {
             Ty::Param(p) => map.get(&p).copied().unwrap_or(t),
+            Ty::List(l) => {
+                let e = self.lists[l.0 as usize];
+                if !self.contains_param(e) {
+                    return t;
+                }
+                let e = self.subst(e, map);
+                self.list(e)
+            }
             Ty::Union(_) => {
                 let ms: Vec<Ty> = self
                     .members(t)
@@ -293,6 +310,7 @@ impl Types {
             // Union の構成要素は Union を含まない（平坦化済み）
             Ty::Union(_) => self.members(t).iter().any(|m| self.contains_param(*m)),
             Ty::Record(r) => self.records[r.0 as usize].has_param,
+            Ty::List(l) => self.contains_param(self.lists[l.0 as usize]),
             _ => false,
         }
     }
@@ -303,8 +321,28 @@ impl Types {
             Ty::Unknown => true,
             Ty::Union(_) => self.members(t).iter().any(|m| self.contains_unknown(*m)),
             Ty::Record(r) => self.records[r.0 as usize].has_unknown,
+            Ty::List(l) => self.contains_unknown(self.lists[l.0 as usize]),
             _ => false,
         }
+    }
+
+    /// `list[elem]` の型を作る（同じ要素の型なら同じ ID）。
+    pub fn list(&mut self, elem: Ty) -> Ty {
+        if elem == Ty::Error {
+            return Ty::Error;
+        }
+        if let Some(&id) = self.list_index.get(&elem) {
+            return Ty::List(id);
+        }
+        let id = ListId(self.lists.len() as u32);
+        self.lists.push(elem);
+        self.list_index.insert(elem, id);
+        Ty::List(id)
+    }
+
+    /// `list[T]` の要素の型。
+    pub fn list_elem(&self, l: ListId) -> Ty {
+        self.lists[l.0 as usize]
     }
 
     /// 型の入れ子の深さ（基本型は 0）。レコードは登録時に計算した値を使う。
@@ -319,6 +357,7 @@ impl Types {
                     .unwrap_or(0)
             }
             Ty::Record(r) => self.records[r.0 as usize].depth,
+            Ty::List(l) => 1 + self.depth(self.lists[l.0 as usize]),
             _ => 0,
         }
     }
@@ -383,6 +422,7 @@ const BUILTINS: &[&str] = &[
     "parse_scalar",
     "assert",
     "len",
+    "range",
 ];
 
 pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
@@ -574,12 +614,24 @@ impl Ctx {
                     .find_map(|sc| sc.get(name))
                     .expect("checked above")
             }
-            TypeExprKind::Name(name) | TypeExprKind::Apply(name, _) if name == "list" => {
-                self.diags.push(
-                    Diagnostic::error("E0405", "`list` is not available yet", t.span).with_cause(
-                        "lists need heap memory management, which arrives in M3 (ADR-0009)",
-                    ),
-                );
+            TypeExprKind::Apply(name, args) if name == "list" => {
+                if args.len() != 1 {
+                    self.diags.push(Diagnostic::error(
+                        "E0402",
+                        format!("`list` takes 1 type argument but {} were given", args.len()),
+                        t.span,
+                    ));
+                    return Ty::Error;
+                }
+                let elem = self.resolve(&args[0]);
+                self.types.list(elem)
+            }
+            TypeExprKind::Name(name) if name == "list" => {
+                self.diags.push(Diagnostic::error(
+                    "E0402",
+                    "`list` needs its element type, e.g. `list[int]`",
+                    t.span,
+                ));
                 Ty::Error
             }
             TypeExprKind::Name(name)
@@ -1004,6 +1056,65 @@ impl<'a> FnCk<'a> {
                 false
             }
             StmtKind::Match { subject, arms } => self.match_stmt(subject, arms, env),
+            StmtKind::For { var, iter, body } => {
+                let elem = self.for_iter(iter, env);
+                let declared = match self.vars.get(&var.name) {
+                    Some(v) => {
+                        let (vty, decl) = (v.ty, v.decl);
+                        let ctx = format!(
+                            "loop variable `{}` was declared as `{}`",
+                            var.name,
+                            self.cx.name(vty)
+                        );
+                        self.cx.require(
+                            elem,
+                            vty,
+                            iter.span,
+                            &ctx,
+                            Some((RelatedKind::Variable, &var.name, decl)),
+                        );
+                        vty
+                    }
+                    None => {
+                        self.declare(&var.name, elem, var.span);
+                        elem
+                    }
+                };
+                // while と同じく、本体で代入される変数（ループ変数を含む）の絞り込みを解除する
+                let mut assigned = HashSet::new();
+                assigned_vars(body, &mut assigned);
+                for name in assigned {
+                    if let (Some(slot), Some(v)) = (env.get_mut(&name), self.vars.get(&name)) {
+                        *slot = v.ty;
+                    }
+                }
+                let mut b = env.clone();
+                b.insert(var.name.clone(), declared);
+                self.block(body, &mut b);
+                false
+            }
+            StmtKind::IndexAssign { target, value } => {
+                let ExprKind::Index { base, index } = &target.kind else {
+                    unreachable!("the parser only builds IndexAssign from an index expression")
+                };
+                let bt = self.expr(base, env);
+                let it = self.expr(index, env);
+                self.cx.require(
+                    it,
+                    Ty::Int,
+                    index.span,
+                    "a list index must be an `int`",
+                    None,
+                );
+                let elem = self.list_elem_of(bt, base.span);
+                let vt = self.expr_hint(value, env, elem);
+                if let Some(e) = elem {
+                    self.cx
+                        .require(vt, e, value.span, "an element of the list", None);
+                }
+                self.record(target, Ty::None);
+                false
+            }
             StmtKind::While { cond, body } => {
                 // ループ本体で代入される変数は、2回目以降の条件評価で型が変わり得るので、絞り込みを解除する。
                 let mut assigned = HashSet::new();
@@ -1194,6 +1305,176 @@ impl<'a> FnCk<'a> {
         }
     }
 
+    /// 型の手掛かり（`hint`）付きで式を検査する。今はリストのリテラル（特に空の `[]`）だけが手掛かりを使う。
+    fn expr_hint(&mut self, e: &Expr, env: &Env, hint: Option<Ty>) -> Ty {
+        match &e.kind {
+            ExprKind::List(items) => {
+                let t = self.list_literal(items, env, hint, e.span);
+                self.record(e, t)
+            }
+            _ => self.expr(e, env),
+        }
+    }
+
+    /// `[a, b, c]`: 手掛かりが `list[T]` なら各要素が `T` に収まるかを確かめる。なければ要素の型の Union。
+    fn list_literal(&mut self, items: &[Expr], env: &Env, hint: Option<Ty>, span: Span) -> Ty {
+        let elem_hint = match hint {
+            Some(Ty::List(l)) => Some(self.cx.types.list_elem(l)),
+            _ => None,
+        };
+        let tys: Vec<Ty> = items
+            .iter()
+            .map(|i| self.expr_hint(i, env, elem_hint))
+            .collect();
+        if let Some(elem) = elem_hint {
+            for (i, t) in items.iter().zip(&tys) {
+                self.cx
+                    .require(*t, elem, i.span, "an element of the list", None);
+            }
+            return self.cx.types.list(elem);
+        }
+        if tys.is_empty() {
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E0901",
+                    "cannot infer the element type of an empty list",
+                    span,
+                )
+                .with_hint("annotate the variable, e.g. `xs: list[int] = []`"),
+            );
+            return Ty::Error;
+        }
+        let elem = self.cx.types.union(tys);
+        self.cx.types.list(elem)
+    }
+
+    /// 添字を付けられる値なら要素の型。そうでなければ診断を出して `None`。
+    fn list_elem_of(&mut self, t: Ty, span: Span) -> Option<Ty> {
+        match t {
+            Ty::List(l) => Some(self.cx.types.list_elem(l)),
+            Ty::Error => None,
+            Ty::Unknown => {
+                self.cx
+                    .require(t, Ty::Int, span, "only lists can be indexed", None);
+                None
+            }
+            t => {
+                let rest = self.cx.types.without_none(t);
+                let msg = if self.cx.types.contains_none(t) && matches!(rest, Ty::List(_)) {
+                    Diagnostic::error(
+                        "E0301",
+                        format!(
+                            "this value may be `None`: cannot index `{}`",
+                            self.cx.name(t)
+                        ),
+                        span,
+                    )
+                    .with_hint("check it first, e.g. `if xs is not None:`")
+                } else {
+                    Diagnostic::error(
+                        "E0904",
+                        format!("`{}` cannot be indexed", self.cx.name(t)),
+                        span,
+                    )
+                    .with_cause("only `list` values can be indexed")
+                };
+                self.cx.diags.push(msg);
+                None
+            }
+        }
+    }
+
+    /// `for` の反復対象: `range(n)` / `range(a, b)` なら `int`、`list[T]` なら `T`。
+    fn for_iter(&mut self, iter: &Expr, env: &Env) -> Ty {
+        if let ExprKind::Call {
+            callee,
+            args,
+            kwargs,
+        } = &iter.kind
+            && callee.name == "range"
+            && kwargs.is_empty()
+        {
+            if args.is_empty() || args.len() > 2 {
+                self.cx.diags.push(Diagnostic::error(
+                    "E0205",
+                    format!(
+                        "`range` takes 1 or 2 arguments but {} were given",
+                        args.len()
+                    ),
+                    iter.span,
+                ));
+            }
+            for a in args {
+                let t = self.expr(a, env);
+                self.cx
+                    .require(t, Ty::Int, a.span, "`range` takes `int` arguments", None);
+            }
+            self.record(iter, Ty::Int);
+            return Ty::Int;
+        }
+        let t = self.expr(iter, env);
+        match t {
+            Ty::List(l) => self.cx.types.list_elem(l),
+            Ty::Error => Ty::Error,
+            other => {
+                let msg = format!("cannot iterate over `{}`", self.cx.name(other));
+                self.cx.diags.push(
+                    Diagnostic::error("E0903", msg, iter.span)
+                        .with_hint("iterate over a `list[T]` or `range(n)`"),
+                );
+                Ty::Error
+            }
+        }
+    }
+
+    /// `xs.append(v)`（ローカル変数のリストへのメソッド呼び出し）。
+    fn method_call(
+        &mut self,
+        recv: &str,
+        method: &str,
+        mspan: Span,
+        args: &[Expr],
+        span: Span,
+        env: &Env,
+    ) -> Ty {
+        let rt = match env.get(recv) {
+            Some(t) => *t,
+            None => self.vars[recv].ty,
+        };
+        match (rt, method) {
+            (Ty::List(l), "append") => {
+                let elem = self.cx.types.list_elem(l);
+                if args.len() != 1 {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!("`append` takes 1 argument but {} were given", args.len()),
+                        span,
+                    ));
+                    for a in args {
+                        self.expr(a, env);
+                    }
+                    return Ty::None;
+                }
+                let vt = self.expr_hint(&args[0], env, Some(elem));
+                self.cx
+                    .require(vt, elem, args[0].span, "an element of the list", None);
+                Ty::None
+            }
+            (Ty::Error, _) => Ty::Error,
+            (t, m) => {
+                for a in args {
+                    self.expr(a, env);
+                }
+                let msg = format!("`{}` has no method `{m}`", self.cx.name(t));
+                self.cx.diags.push(
+                    Diagnostic::error("E0905", msg, mspan)
+                        .with_cause("only `append` on `list` is supported in M3"),
+                );
+                Ty::Error
+            }
+        }
+    }
+
     fn require_condition(&mut self, t: Ty, span: Span) {
         if t == Ty::Bool || t == Ty::Error {
             return;
@@ -1214,8 +1495,10 @@ impl<'a> FnCk<'a> {
     }
 
     fn assign(&mut self, target: &Ident, ann: Option<&TypeExpr>, value: &Expr, env: &mut Env) {
-        let vt = self.expr(value, env);
         let ann_ty = ann.map(|a| self.cx.resolve(a));
+        // 空のリスト `[]` などのために、注釈か既存の変数の型を手掛かりとして渡す
+        let hint = ann_ty.or_else(|| self.vars.get(&target.name).map(|v| v.ty));
+        let vt = self.expr_hint(value, env, hint);
         let declared = if let Some(var) = self.vars.get(&target.name) {
             let (decl_ty, decl) = (var.ty, var.decl);
             if let Some(at) = ann_ty
@@ -1311,7 +1594,7 @@ impl<'a> FnCk<'a> {
                 self.cx.diags.push(d);
             }
             (r, Some(e)) => {
-                let t = self.expr(e, env);
+                let t = self.expr_hint(e, env, Some(r));
                 let ctx = format!("the function's return type is `{}`", self.cx.name(r));
                 self.cx.require(t, r, e.span, &ctx, None);
             }
@@ -1477,6 +1760,28 @@ impl<'a> FnCk<'a> {
                 let lt = self.expr(lhs, env);
                 let rt = self.expr(rhs, env);
                 self.binary(*op, lt, rt, e.span)
+            }
+            ExprKind::List(items) => self.list_literal(items, env, None, e.span),
+            ExprKind::Index { base, index } => {
+                let bt = self.expr(base, env);
+                let it = self.expr(index, env);
+                self.cx.require(
+                    it,
+                    Ty::Int,
+                    index.span,
+                    "a list index must be an `int`",
+                    None,
+                );
+                self.list_elem_of(bt, base.span).unwrap_or(Ty::Error)
+            }
+            ExprKind::Call { callee, args, .. }
+                if callee
+                    .name
+                    .rsplit_once('.')
+                    .is_some_and(|(recv, _)| self.vars.contains_key(recv)) =>
+            {
+                let (recv, method) = callee.name.rsplit_once('.').expect("checked above");
+                self.method_call(recv, method, callee.span, args, e.span, env)
             }
             ExprKind::Call {
                 callee,
@@ -1873,7 +2178,31 @@ impl<'a> FnCk<'a> {
     }
 
     fn call(&mut self, callee: &Ident, args: &[Expr], span: Span, id: ExprId, env: &Env) -> Ty {
-        let arg_tys: Vec<Ty> = args.iter().map(|a| self.expr(a, env)).collect();
+        // Generic でない関数なら、仮引数の型を手掛かりとして渡す（`f([])` のため）
+        let hints: Vec<Option<Ty>> = match self.cx.sig_index.get(&callee.name) {
+            Some(&i)
+                if self.cx.sigs[i].type_params.is_empty()
+                    && self.cx.sigs[i].params.len() == args.len() =>
+            {
+                self.cx.sigs[i].params.iter().map(|t| Some(*t)).collect()
+            }
+            _ => vec![None; args.len()],
+        };
+        let arg_tys: Vec<Ty> = args
+            .iter()
+            .zip(hints)
+            .map(|(a, h)| self.expr_hint(a, env, h))
+            .collect();
+        if callee.name == "range" {
+            self.cx.diags.push(
+                Diagnostic::error("E0902", "`range` can only be used in a `for` loop", span)
+                    .with_hint("write `for i in range(n):`"),
+            );
+            return Ty::Error;
+        }
+        if callee.name == "len" && args.len() == 1 && matches!(arg_tys[0], Ty::List(_)) {
+            return Ty::Int;
+        }
         match callee.name.as_str() {
             "print" => {
                 if args.len() != 1 {
@@ -2047,6 +2376,11 @@ fn assigned_vars(stmts: &[Stmt], out: &mut HashSet<String>) {
                 }
             }
             StmtKind::While { body, .. } => assigned_vars(body, out),
+            StmtKind::For { var, body, .. } => {
+                out.insert(var.name.clone());
+                assigned_vars(body, out);
+            }
+            StmtKind::IndexAssign { .. } => {}
             StmtKind::Match { arms, .. } => {
                 for a in arms {
                     assigned_vars(&a.body, out);
@@ -2360,7 +2694,10 @@ mod tests {
                 "def f[T](x: T | None) -> None:\n    match x:\n        case int():\n            pass\n        case _:\n            pass\n",
                 vec!["E0401"],
             ),
-            ("def f(x: list[int]) -> None:\n    pass\n", vec!["E0405"]),
+            (
+                "def f(x: list[int, str]) -> None:\n    pass\n",
+                vec!["E0402"],
+            ),
             ("def f(x: int[str]) -> None:\n    pass\n", vec!["E0402"]),
         ];
         for (src, codes) in cases {

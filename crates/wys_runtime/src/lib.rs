@@ -195,6 +195,124 @@ pub unsafe extern "C" fn wys_str_len(s: *const Header) -> i64 {
     std::str::from_utf8(b).map_or(b.len(), |s| s.chars().count()) as i64
 }
 
+// ---------------------------------------------------------------- lists (M3 T4a)
+
+/// リストのオブジェクト。先頭は `Header` と同じ配置（参照カウントの増減は生成コードが行う）。
+/// 要素は `data` が指す別のバッファに、要素の大きさ（生成コードが渡す）ごとに並べる。
+#[repr(C)]
+pub struct ListObj {
+    rc: i64,
+    len: i64,
+    cap: i64,
+    data: *mut u8,
+}
+
+fn buffer_layout(cap: usize, elem_size: usize) -> Layout {
+    Layout::from_size_align((cap * elem_size).max(1), ALIGN).expect("list too large")
+}
+
+/// 空のリスト（参照カウント 1、容量 `cap`）を作る。
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_list_new(elem_size: i64, cap: i64) -> *mut ListObj {
+    let cap = cap.max(4) as usize;
+    // SAFETY: レイアウトは大きさ 1 以上で、アラインメントは 8。
+    let (obj, data) = unsafe {
+        (
+            alloc(Layout::new::<ListObj>()) as *mut ListObj,
+            alloc(buffer_layout(cap, elem_size as usize)),
+        )
+    };
+    if obj.is_null() || data.is_null() {
+        let _ = std::io::stdout().flush();
+        eprintln!("runtime error: out of memory");
+        std::process::abort();
+    }
+    // SAFETY: 確保したばかりの領域に書き込む。
+    unsafe {
+        obj.write(ListObj {
+            rc: 1,
+            len: 0,
+            cap: cap as i64,
+            data,
+        });
+    }
+    LIVE.fetch_add(1, Ordering::Relaxed);
+    obj
+}
+
+/// 末尾に1つ分の領域を足し、その場所を返す（生成コードが要素を書き込む）。
+///
+/// # Safety
+/// `l` は生存しているリストで、`elem_size` は作成時と同じでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_list_push_slot(l: *mut ListObj, elem_size: i64) -> *mut u8 {
+    let size = elem_size as usize;
+    // SAFETY: 関数の安全条件どおり。
+    unsafe {
+        if (*l).len == (*l).cap {
+            let old_cap = (*l).cap as usize;
+            let new_cap = old_cap * 2;
+            let data = std::alloc::realloc(
+                (*l).data,
+                buffer_layout(old_cap, size),
+                (new_cap * size).max(1),
+            );
+            if data.is_null() {
+                let _ = std::io::stdout().flush();
+                eprintln!("runtime error: out of memory");
+                std::process::abort();
+            }
+            (*l).data = data;
+            (*l).cap = new_cap as i64;
+        }
+        let slot = (*l).data.add((*l).len as usize * size);
+        (*l).len += 1;
+        slot
+    }
+}
+
+/// `i` 番目の要素の場所。負の添字は末尾から数える（Python と同じ）。範囲外は実行時エラー。
+///
+/// # Safety
+/// `l` は生存しているリストで、`elem_size` は作成時と同じでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_list_slot(l: *mut ListObj, i: i64, elem_size: i64) -> *mut u8 {
+    // SAFETY: 関数の安全条件どおり。
+    unsafe {
+        let len = (*l).len;
+        let j = if i < 0 { i + len } else { i };
+        if j < 0 || j >= len {
+            runtime_error(&format!("index out of range: index {i}, length {len}"));
+        }
+        (*l).data.add(j as usize * elem_size as usize)
+    }
+}
+
+/// # Safety
+/// `l` は生存しているリストでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_list_len(l: *const ListObj) -> i64 {
+    // SAFETY: 関数の安全条件どおり。
+    unsafe { (*l).len }
+}
+
+/// 参照カウントが 0 になったリストを解放する（要素の release は生成コードが先に行う）。
+///
+/// # Safety
+/// `l` は参照カウントが 0 になったリストで、`elem_size` は作成時と同じでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_list_free(l: *mut ListObj, elem_size: i64) {
+    // SAFETY: 関数の安全条件どおり。
+    unsafe {
+        dealloc(
+            (*l).data,
+            buffer_layout((*l).cap as usize, elem_size as usize),
+        );
+        dealloc(l as *mut u8, Layout::new::<ListObj>());
+    }
+    LIVE.fetch_sub(1, Ordering::Relaxed);
+}
+
 // ---------------------------------------------------------------- command line
 
 /// プログラムに渡されたコマンドライン引数（プログラム名を除く）。不死のオブジェクトとして持つ。
@@ -434,6 +552,27 @@ mod tests {
             assert!(!wys_str_eq(c, a));
             assert_eq!(LIVE.load(Ordering::Relaxed), before + 1);
             wys_release(c);
+        }
+        assert_eq!(LIVE.load(Ordering::Relaxed), before);
+    }
+
+    #[test]
+    fn lists_grow_index_and_free() {
+        let _guard = LIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let before = LIVE.load(Ordering::Relaxed);
+        let l = wys_list_new(8, 1);
+        // SAFETY: l は生存しているリストで、要素の大きさは 8。
+        unsafe {
+            for v in 0..10i64 {
+                let s = wys_list_push_slot(l, 8) as *mut i64;
+                s.write(v * v);
+            }
+            assert_eq!(wys_list_len(l), 10);
+            assert_eq!(*(wys_list_slot(l, 3, 8) as *mut i64), 9);
+            assert_eq!(*(wys_list_slot(l, -1, 8) as *mut i64), 81);
+            assert_eq!(LIVE.load(Ordering::Relaxed), before + 1);
+            (*l).rc = 0;
+            wys_list_free(l, 8);
         }
         assert_eq!(LIVE.load(Ordering::Relaxed), before);
     }

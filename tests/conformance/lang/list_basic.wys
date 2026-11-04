@@ -1,0 +1,23 @@
+# list[T]: リテラル、添字の読み書き（負の添字は末尾から）、len、append
+# expect-stdout: 3
+# expect-stdout: 10
+# expect-stdout: 30
+# expect-stdout: 99
+# expect-stdout: 4
+# expect-stdout: 40
+def total(xs: list[int]) -> int:
+    s = 0
+    for x in xs:
+        s = s + x
+    return s
+
+def main() -> None:
+    xs = [10, 20, 30]
+    print(len(xs))
+    print(xs[0])
+    print(xs[-1])
+    xs[1] = 99
+    print(xs[1])
+    xs.append(40)
+    print(len(xs))
+    print(xs[3])

@@ -25,7 +25,8 @@ target/debug/wys fmt examples/fib.wys          # 整形（--check で確認だ�
 - モジュール: `import` / `from ... import`、`pub`
 - ツール: `check`（JSON 診断）、`build`（`--release` で -O2）、`run`、`test`、`fmt`、`dump-ir` / `dump-llvm`
 - 文字列: 連結（`+`）、比較（`==` / `!=`）、`len`（M3 T2b、ヒープ上のオブジェクトを ARC で管理）
-- まだないもの: `list` / `dict`、`for`、クラス（M3 以降）
+- リスト: `list[T]`、`[1, 2]`、添字、`append`、`len`、`for x in xs:` / `for i in range(n):`（M3 T4a）
+- まだないもの: `dict`、`Result`、クラス（M3 以降）
 
 ## ドキュメント
 

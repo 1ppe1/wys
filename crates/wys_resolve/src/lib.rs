@@ -389,6 +389,14 @@ impl Resolver<'_> {
                     self.expr(cond);
                     self.stmts(body);
                 }
+                StmtKind::For { iter, body, .. } => {
+                    self.expr(iter);
+                    self.stmts(body);
+                }
+                StmtKind::IndexAssign { target, value } => {
+                    self.expr(target);
+                    self.expr(value);
+                }
                 StmtKind::Match { subject, arms } => {
                     self.expr(subject);
                     for a in arms {
@@ -426,6 +434,15 @@ impl Resolver<'_> {
                 self.expr(rhs);
             }
             ExprKind::Field { base, .. } => self.expr(base),
+            ExprKind::List(items) => {
+                for i in items {
+                    self.expr(i);
+                }
+            }
+            ExprKind::Index { base, index } => {
+                self.expr(base);
+                self.expr(index);
+            }
             ExprKind::Int(_)
             | ExprKind::Bool(_)
             | ExprKind::Str(_)

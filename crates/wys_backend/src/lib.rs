@@ -126,6 +126,11 @@ declare void @wys_print_int(i64)
 declare void @wys_print_bool(i1 zeroext)
 declare void @wys_print_str(ptr)
 declare void @wys_free_object(ptr)
+declare ptr @wys_list_new(i64, i64)
+declare ptr @wys_list_push_slot(ptr, i64)
+declare ptr @wys_list_slot(ptr, i64, i64)
+declare i64 @wys_list_len(ptr)
+declare void @wys_list_free(ptr, i64)
 declare void @wys_runtime_finish()
 declare ptr @wys_str_concat(ptr, ptr)
 declare zeroext i1 @wys_str_eq(ptr, ptr)
@@ -156,6 +161,7 @@ fn llty(t: Ty) -> String {
         Ty::Str => "ptr".into(),
         Ty::Union(u) => format!("%union.{}", u.0),
         Ty::Record(r) => format!("%record.{}", r.0),
+        Ty::List(_) => "ptr".into(),
     }
 }
 
@@ -164,7 +170,7 @@ fn llty(t: Ty) -> String {
 fn words(p: &Program, t: Ty) -> u32 {
     match t {
         Ty::Int | Ty::Bool => 1,
-        Ty::Str => 1,
+        Ty::Str | Ty::List(_) => 1,
         Ty::Union(u) => 1 + union_payload_words(p, u),
         Ty::Record(r) => p.records[r.0 as usize]
             .iter()
@@ -272,6 +278,9 @@ fn emit_module(p: &Program) -> String {
 fn glue(kind: &str, t: Ty) -> String {
     match t {
         Ty::Str => format!("@wys_rc_{kind}"),
+        // リストの retain は参照カウントだけ。release は要素の解放とバッファの返却を含む型ごとの関数
+        Ty::List(_) if kind == "retain" => "@wys_rc_retain".to_string(),
+        Ty::List(l) => format!("@wys_release_list{}", l.0),
         Ty::Union(u) => format!("@wys_{kind}_u{}", u.0),
         Ty::Record(r) => format!("@wys_{kind}_r{}", r.0),
         Ty::Int | Ty::Bool => unreachable!("scalars have no reference counts"),
@@ -280,7 +289,32 @@ fn glue(kind: &str, t: Ty) -> String {
 
 /// Union とレコードの参照カウント操作（drop glue、ADR-0012）。Union はタグで分岐し、レコードはフィールドごとに操作する。
 /// ランタイムは型の配置を知らないので、生成コード側で型ごとに作る。
+/// 要素の大きさ（バイト）。すべての型が 8 バイト境界に並ぶので、語数 × 8 で上から見積もる。
+fn elem_size(p: &Program, t: Ty) -> u32 {
+    words(p, t) * 8
+}
+
 fn emit_glue(out: &mut String, p: &Program, drops: &DropInfo) {
+    // リストの release: 参照カウントが 0 になったら、要素を release してからバッファを返す
+    for (i, elem) in p.lists.iter().enumerate() {
+        let size = elem_size(p, *elem);
+        let _ = writeln!(
+            out,
+            "\ndefine private void @wys_release_list{i}(ptr %p) {{\nentry:\n  %isnull = icmp eq ptr %p, null\n  br i1 %isnull, label %done, label %load\nload:\n  %rc = load i64, ptr %p, align 8\n  %n = sub i64 %rc, 1\n  store i64 %n, ptr %p, align 8\n  %zero = icmp eq i64 %n, 0\n  br i1 %zero, label %free, label %done\nfree:\n  %len = call i64 @wys_list_len(ptr %p)\n  br label %loop\nloop:\n  %i = phi i64 [0, %free], [%i2, %body]\n  %more = icmp slt i64 %i, %len\n  br i1 %more, label %body, label %fin\nbody:"
+        );
+        if drops.get(*elem) {
+            let lt = llty(*elem);
+            let _ = writeln!(
+                out,
+                "  %s = call ptr @wys_list_slot(ptr %p, i64 %i, i64 {size})\n  %x = load {lt}, ptr %s\n  call void {}({lt} %x)",
+                glue("release", *elem)
+            );
+        }
+        let _ = writeln!(
+            out,
+            "  %i2 = add i64 %i, 1\n  br label %loop\nfin:\n  call void @wys_list_free(ptr %p, i64 {size})\n  br label %done\ndone:\n  ret void\n}}"
+        );
+    }
     for kind in ["retain", "release"] {
         for (i, members) in p.unions.iter().enumerate() {
             let uty = Ty::Union(UnionId(i as u32));
@@ -430,6 +464,80 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                         );
                     }
                     let _ = writeln!(out, "  {d} = load {uty}, ptr {d}.slot");
+                }
+                Inst::ListNew { dst, list, items } => {
+                    let d = t(*dst);
+                    let elem = p.lists[list.0 as usize];
+                    let size = elem_size(p, elem);
+                    let _ = writeln!(
+                        out,
+                        "  {d} = call ptr @wys_list_new(i64 {size}, i64 {})",
+                        items.len()
+                    );
+                    for (k, it) in items.iter().enumerate() {
+                        let _ = writeln!(
+                            out,
+                            "  {d}.s{k} = call ptr @wys_list_push_slot(ptr {d}, i64 {size})\n  store {} {}, ptr {d}.s{k}",
+                            llty(elem),
+                            t(*it)
+                        );
+                    }
+                }
+                Inst::ListLen { dst, src } => {
+                    let _ = writeln!(
+                        out,
+                        "  {} = call i64 @wys_list_len(ptr {})",
+                        t(*dst),
+                        t(*src)
+                    );
+                }
+                Inst::ListGet { dst, src, index } => {
+                    let d = t(*dst);
+                    let elem = f.temps[dst.0 as usize];
+                    let _ = writeln!(
+                        out,
+                        "  {d}.s = call ptr @wys_list_slot(ptr {}, i64 {}, i64 {})\n  {d} = load {}, ptr {d}.s",
+                        t(*src),
+                        t(*index),
+                        elem_size(p, elem),
+                        llty(elem)
+                    );
+                }
+                Inst::ListSet { list, index, value } => {
+                    let elem = f.temps[value.0 as usize];
+                    let lt = llty(elem);
+                    let k = fresh;
+                    fresh += 1;
+                    let _ = writeln!(
+                        out,
+                        "  %ls{k} = call ptr @wys_list_slot(ptr {}, i64 {}, i64 {})",
+                        t(*list),
+                        t(*index),
+                        elem_size(p, elem)
+                    );
+                    if drops.get(elem) {
+                        let _ = writeln!(
+                            out,
+                            "  %lo{k} = load {lt}, ptr %ls{k}\n  store {lt} {}, ptr %ls{k}\n  call void {}({lt} %lo{k})",
+                            t(*value),
+                            glue("release", elem)
+                        );
+                    } else {
+                        let _ = writeln!(out, "  store {lt} {}, ptr %ls{k}", t(*value));
+                    }
+                }
+                Inst::ListPush { list, value } => {
+                    let elem = f.temps[value.0 as usize];
+                    let k = fresh;
+                    fresh += 1;
+                    let _ = writeln!(
+                        out,
+                        "  %lp{k} = call ptr @wys_list_push_slot(ptr {}, i64 {})\n  store {} {}, ptr %lp{k}",
+                        t(*list),
+                        elem_size(p, elem),
+                        llty(elem),
+                        t(*value)
+                    );
                 }
                 Inst::Retain { src } | Inst::Release { src } => {
                     let ty = f.temps[src.0 as usize];
@@ -680,6 +788,7 @@ mod tests {
             strings: vec![],
             unions: vec![],
             records: vec![],
+            lists: vec![],
             entry: FuncId(0),
             funcs: vec![Function {
                 name: "main".into(),

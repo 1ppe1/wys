@@ -1,6 +1,0 @@
-# expect-error: E0405 2:15
-def total(xs: list[int]) -> int:
-    return 0
-
-def main() -> None:
-    pass

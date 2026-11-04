@@ -20,6 +20,8 @@ pub enum Ty {
     Str,
     Union(UnionId),
     Record(RecordId),
+    /// `list[T]`（ヒープ上のリストへのポインタ1語、M3 T4a）
+    List(ListId),
 }
 
 impl Ty {
@@ -38,12 +40,16 @@ impl Ty {
             Ty::Str => "str".into(),
             Ty::Union(u) => format!("u{}", u.0),
             Ty::Record(r) => format!("r{}", r.0),
+            Ty::List(l) => format!("list{}", l.0),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UnionId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ListId(pub u32);
 
 /// 不変のレコード（ADR-0009: 値型、受け渡しはコピー）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -74,6 +80,8 @@ pub struct Program {
     pub unions: Vec<Vec<Member>>,
     /// レコード型のフィールド（名前と型、この順で配置する）。`Ty::Record(RecordId(i))` は `records[i]` を指す。
     pub records: Vec<Vec<(String, Ty)>>,
+    /// `list[T]` の要素の型。`Ty::List(ListId(i))` は `lists[i]` を指す。
+    pub lists: Vec<Ty>,
     pub funcs: Vec<Function>,
     /// エントリポイント（引数なし・戻り値なし）。
     pub entry: FuncId,
@@ -277,6 +285,33 @@ pub enum Inst {
     Release {
         src: TempId,
     },
+    /// リストを作る（`items` を +1 で消費する）。
+    ListNew {
+        dst: TempId,
+        list: ListId,
+        items: Vec<TempId>,
+    },
+    ListLen {
+        dst: TempId,
+        src: TempId,
+    },
+    /// 要素の読み出し（借用。負の添字は末尾から、範囲外はパニック）。
+    ListGet {
+        dst: TempId,
+        src: TempId,
+        index: TempId,
+    },
+    /// 要素の置き換え（`value` を +1 で消費し、古い要素を release する）。
+    ListSet {
+        list: TempId,
+        index: TempId,
+        value: TempId,
+    },
+    /// 末尾への追加（`value` を +1 で消費する）。
+    ListPush {
+        list: TempId,
+        value: TempId,
+    },
     /// レコード値を作る。`fields` はレコードのフィールドの順。
     MakeRecord {
         dst: TempId,
@@ -350,6 +385,13 @@ fn union_member(p: &Program, u: UnionId, variant: u32) -> Result<Member, String>
         .ok_or_else(|| format!("union u{} has no variant {variant}", u.0))
 }
 
+fn list_elem(p: &Program, l: ListId) -> Result<Ty, String> {
+    p.lists
+        .get(l.0 as usize)
+        .copied()
+        .ok_or_else(|| format!("unknown list type list{}", l.0))
+}
+
 fn verify_types(p: &Program, f: &Function) -> Result<(), String> {
     for t in f.locals.iter().chain(&f.temps).chain(f.ret.iter()) {
         match t {
@@ -358,6 +400,9 @@ fn verify_types(p: &Program, f: &Function) -> Result<(), String> {
             }
             Ty::Record(r) if r.0 as usize >= p.records.len() => {
                 return Err(format!("unknown record r{}", r.0));
+            }
+            Ty::List(l) if l.0 as usize >= p.lists.len() => {
+                return Err(format!("unknown list type list{}", l.0));
             }
             _ => {}
         }
@@ -487,6 +532,50 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                 }
                 Inst::Retain { src } | Inst::Release { src } => {
                     use_(*src, &defined_in)?;
+                }
+                Inst::ListNew { dst, list, items } => {
+                    let elem = list_elem(p, *list)?;
+                    for it in items {
+                        expect("list item", use_(*it, &defined_in)?, elem)?;
+                    }
+                    expect("list_new result", temp_ty(*dst)?, Ty::List(*list))?;
+                    define(*dst, &mut defined_in)?;
+                }
+                Inst::ListLen { dst, src } => {
+                    let Ty::List(_) = use_(*src, &defined_in)? else {
+                        return Err(format!("bb{bi}: list_len on a non-list value"));
+                    };
+                    expect("list_len result", temp_ty(*dst)?, Ty::Int)?;
+                    define(*dst, &mut defined_in)?;
+                }
+                Inst::ListGet { dst, src, index } => {
+                    let Ty::List(l) = use_(*src, &defined_in)? else {
+                        return Err(format!("bb{bi}: list_get on a non-list value"));
+                    };
+                    expect("list index", use_(*index, &defined_in)?, Ty::Int)?;
+                    expect("list_get result", temp_ty(*dst)?, list_elem(p, l)?)?;
+                    define(*dst, &mut defined_in)?;
+                }
+                Inst::ListSet { list, index, value } => {
+                    let Ty::List(l) = use_(*list, &defined_in)? else {
+                        return Err(format!("bb{bi}: list_set on a non-list value"));
+                    };
+                    expect("list index", use_(*index, &defined_in)?, Ty::Int)?;
+                    expect(
+                        "list_set value",
+                        use_(*value, &defined_in)?,
+                        list_elem(p, l)?,
+                    )?;
+                }
+                Inst::ListPush { list, value } => {
+                    let Ty::List(l) = use_(*list, &defined_in)? else {
+                        return Err(format!("bb{bi}: list_push on a non-list value"));
+                    };
+                    expect(
+                        "list_push value",
+                        use_(*value, &defined_in)?,
+                        list_elem(p, l)?,
+                    )?;
                 }
                 Inst::MakeRecord {
                     dst,
@@ -673,6 +762,23 @@ impl fmt::Display for Program {
                             writeln!(f, "t{} = union_is t{}, {variant}", dst.0, src.0)?
                         }
                         Inst::Retain { src } => writeln!(f, "retain t{}", src.0)?,
+                        Inst::ListNew { dst, list, items } => {
+                            let xs: Vec<String> =
+                                items.iter().map(|t| format!("t{}", t.0)).collect();
+                            writeln!(f, "t{} = list_new list{}[{}]", dst.0, list.0, xs.join(", "))?
+                        }
+                        Inst::ListLen { dst, src } => {
+                            writeln!(f, "t{} = list_len t{}", dst.0, src.0)?
+                        }
+                        Inst::ListGet { dst, src, index } => {
+                            writeln!(f, "t{} = list_get t{}, t{}", dst.0, src.0, index.0)?
+                        }
+                        Inst::ListSet { list, index, value } => {
+                            writeln!(f, "list_set t{}, t{}, t{}", list.0, index.0, value.0)?
+                        }
+                        Inst::ListPush { list, value } => {
+                            writeln!(f, "list_push t{}, t{}", list.0, value.0)?
+                        }
                         Inst::Release { src } => writeln!(f, "release t{}", src.0)?,
                         Inst::MakeRecord {
                             dst,
@@ -744,6 +850,7 @@ mod tests {
             strings: vec!["hi".into()],
             unions: vec![],
             records: vec![],
+            lists: vec![],
             entry: FuncId(0),
             funcs: vec![Function {
                 name: "main".into(),
