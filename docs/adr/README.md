@@ -17,8 +17,8 @@
 | [0001](0001-record-architecture-decisions.md) | 設計判断をADRで記録する | Accepted | 2026-11-04 |
 | [0002](0002-implementation-language-rust.md) | 実装言語に Rust を採用する | Accepted | 2026-11-04 |
 | [0003](0003-mvp-target-platform.md) | MVP の対象環境を macOS arm64 とする | Accepted | 2026-11-04 |
-| [0004](0004-native-backend-llvm-ir-text.md) | Native バックエンドは LLVM IR テキストを clang に渡す | Proposed | 2026-11-04 |
-| [0008](0008-runtime-static-linking.md) | ランタイムは Rust staticlib として静的リンクする | Proposed | 2026-11-04 |
+| [0004](0004-native-backend-llvm-ir-text.md) | Native バックエンドは LLVM IR テキストを clang に渡す | Accepted | 2026-11-04 |
+| [0008](0008-runtime-static-linking.md) | ランタイムは Rust staticlib として静的リンクする | Accepted | 2026-11-04 |
 
 ## 未決定事項との対応
 
@@ -31,7 +31,7 @@
 | 3 | Union/Null、Generics、エラー処理の正確な構文 | Phase 1 | LANG-003, 004, 008 | — |
 | 4 | ARC/ORC相当の方式、循環参照回収、Ownership/Borrowの詳細 | Phase 1 | MEM-001〜005 | — |
 | 5 | Effectの表現形式（型シグネチャ、注釈、推論の組合せ） | Phase 1（基礎）／Phase 2 | AI-009 | — |
-| 6 | Runtimeの構成（静的リンク、動的リンク、最小バイナリ） | Phase 1 | COMP-002, AC-004 | [0008](0008-runtime-static-linking.md)（Proposed） |
+| 6 | Runtimeの構成（静的リンク、動的リンク、最小バイナリ） | Phase 1 | COMP-002, AC-004 | [0008](0008-runtime-static-linking.md) |
 | 7 | MVPの対象OS/CPU、初期標準ライブラリ範囲 | Phase 1 | NFR-006 | [0003](0003-mvp-target-platform.md)（OS/CPU のみ） |
 | 8 | Python連携方式と対応バージョン、GIL/スレッド境界 | Phase 2 | INTEROP-001〜003 | — |
 | 9 | AI SDKを標準添付するか別パッケージとするか | Phase 2 | AI-001〜010 | — |
