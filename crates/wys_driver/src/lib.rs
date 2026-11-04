@@ -131,6 +131,25 @@ impl Drop for TempDir {
     }
 }
 
+/// Rust の staticlib（ランタイム）をリンクするのに必要なシステムライブラリ。
+/// `cargo rustc -p wys_runtime --lib --crate-type staticlib -- --print native-static-libs` の出力に合わせる。
+/// macOS では clang が既定で `libSystem` をリンクするので追加は要らない。
+fn native_link_args() -> &'static [&'static str] {
+    if cfg!(target_os = "linux") {
+        &[
+            "-lgcc_s",
+            "-lutil",
+            "-lrt",
+            "-lpthread",
+            "-lm",
+            "-ldl",
+            "-lc",
+        ]
+    } else {
+        &[]
+    }
+}
+
 /// IR から実行ファイルを作る。
 pub fn link_program(
     program: &Program,
@@ -151,6 +170,7 @@ pub fn link_program(
     let out = Command::new(&cc)
         .arg(&obj)
         .arg(&runtime)
+        .args(native_link_args())
         .arg("-o")
         .arg(output)
         .output()

@@ -76,16 +76,40 @@ fn ac004_hello_world_builds_a_standalone_executable() {
     assert_eq!(run.status.code(), Some(0));
 
     // 外部インタプリタやランタイムの共有ライブラリに依存しない（OS 標準のライブラリだけ）
+    for lib in dynamic_dependencies(&exe) {
+        let system = if cfg!(target_os = "macos") {
+            lib.starts_with("/usr/lib/") || lib.starts_with("/System/")
+        } else {
+            lib.starts_with("/lib") || lib.starts_with("/usr/lib") || lib.starts_with("linux-vdso")
+        };
+        assert!(system, "unexpected dynamic dependency: {lib}");
+    }
+}
+
+/// 実行ファイルが動的にリンクしているライブラリのパス（macOS は `otool -L`、Linux は `ldd`）。
+fn dynamic_dependencies(exe: &std::path::Path) -> Vec<String> {
     if cfg!(target_os = "macos") {
-        let libs = Command::new("otool").arg("-L").arg(&exe).output().unwrap();
-        let libs = String::from_utf8(libs.stdout).unwrap();
-        for line in libs.lines().skip(1) {
-            let lib = line.trim();
-            assert!(
-                lib.starts_with("/usr/lib/") || lib.starts_with("/System/"),
-                "unexpected dynamic dependency: {lib}"
-            );
-        }
+        let out = Command::new("otool").arg("-L").arg(exe).output().unwrap();
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|l| l.trim().to_string())
+            .collect()
+    } else {
+        let out = Command::new("ldd").arg(exe).output().unwrap();
+        // 例: "libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x...)" / "/lib64/ld-linux-x86-64.so.2 (0x...)"
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let l = l.trim();
+                match l.split_once("=>") {
+                    Some((_, rhs)) => rhs.trim().to_string(),
+                    None => l.to_string(),
+                }
+            })
+            .collect()
     }
 }
 
