@@ -10,7 +10,7 @@
 | 週4（文法 v0.1・用語集・ベンチ骨格・出口判定） | 完了。**Phase 0 の出口条件（ADR-0002〜0008 が Accepted、PoC1 が CI で動く）を満たした** |
 | M1（最小サブセット） | **完了**。AC-001 / AC-004 / AC-005 を確認（`docs/test-plan.md`）。CLI 名は `wys` |
 | M2（型拡張・モジュール） | **完了**（出口判定は [docs/plans/m2.md](plans/m2.md)）。AC-002 / AC-003、LANG-001・003〜006、DX-001 合格。DX-005 は計測の仕組みまで（計測はユーザー） |
-| M3 | 計画承認済み（[docs/plans/m3.md](plans/m3.md)）。T0（持ち越しの小修正）PR 中 |
+| M3 | 計画承認済み（[docs/plans/m3.md](plans/m3.md)）。T0・T1（ADR-0012 Accepted）完了、T2a（ヒープの基盤と `str` の参照型化）PR 中 |
 
 ## Context
 

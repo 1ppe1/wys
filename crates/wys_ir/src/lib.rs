@@ -9,6 +9,8 @@
 //! - Union はタグ付き値（ADR-0009）。`Program::unions` に構成要素を登録し、構成要素の番号がタグになる。
 //!   `None` の構成要素は中身（payload）を持たない。
 
+pub mod arc;
+
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -251,6 +253,14 @@ pub enum Inst {
         variant: u32,
         payload: Option<TempId>,
     },
+    /// 参照カウントを1増やす（`str` はオブジェクト、Union / レコードは中の参照型すべて）。ARC パスが挿入する。
+    Retain {
+        src: TempId,
+    },
+    /// 参照カウントを1減らし、0 になったら解放する。ARC パスが挿入する。
+    Release {
+        src: TempId,
+    },
     /// レコード値を作る。`fields` はレコードのフィールドの順。
     MakeRecord {
         dst: TempId,
@@ -459,6 +469,9 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                     expect("make_union result", temp_ty(*dst)?, Ty::Union(*union))?;
                     define(*dst, &mut defined_in)?;
                 }
+                Inst::Retain { src } | Inst::Release { src } => {
+                    use_(*src, &defined_in)?;
+                }
                 Inst::MakeRecord {
                     dst,
                     record,
@@ -643,6 +656,8 @@ impl fmt::Display for Program {
                         Inst::UnionIs { dst, src, variant } => {
                             writeln!(f, "t{} = union_is t{}, {variant}", dst.0, src.0)?
                         }
+                        Inst::Retain { src } => writeln!(f, "retain t{}", src.0)?,
+                        Inst::Release { src } => writeln!(f, "release t{}", src.0)?,
                         Inst::MakeRecord {
                             dst,
                             record,

@@ -1,0 +1,29 @@
+# str の受け渡し（引数、戻り値、再代入、Optional、レコードのフィールド）。ARC の retain / release が挿入されても出力は変わらない
+# expect-stdout: b
+# expect-stdout: hi ada
+# expect-stdout: none
+# expect-stdout: ada
+type User = {name: str, nick: str | None}
+
+def pick(a: str, b: str, first: bool) -> str:
+    if first:
+        return a
+    return b
+
+def label(u: User) -> str:
+    n = u.nick
+    if n is None:
+        return "none"
+    return n
+
+def main() -> None:
+    s = "a"
+    i = 0
+    while i < 3:
+        s = pick("a", "b", i == 0)
+        i = i + 1
+    print(s)
+    u = User(name="ada", nick="hi ada")
+    print(label(u))
+    print(label(User(name="x", nick=None)))
+    print(u.name)

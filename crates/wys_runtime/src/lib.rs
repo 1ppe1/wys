@@ -1,19 +1,153 @@
-//! ランタイム（print、exit、算術の実行時検査）
+//! ランタイム（ヒープオブジェクト、出力、外部入力、算術の実行時検査）
 //!
 //! コンパイラが生成したコードから C ABI で呼び出される。staticlib として実行ファイルに静的リンクする。
 //! ここで定義する関数のシグネチャは `wys_backend` が出力する宣言と一致させる必要がある。
+//! C ABI にはスカラーとポインタだけを渡す（ADR-0009）。
 //!
-//! 実行時エラーの終了コードは 101 とする（PoC1 時点の暫定）。
+//! ヒープオブジェクト（ADR-0012）: `{ 参照カウント: i64, 長さ: i64, 中身... }`。
+//! 参照カウントが負のオブジェクトは不死で、retain / release は何もしない（文字列リテラル、コマンドライン引数）。
+//!
+//! 実行時エラーの終了コードは 101。生成コードの誤りでオブジェクトが解放されずに残った場合は 102。
 
 // `#[unsafe(no_mangle)]` は unsafe 属性なので、このクレートに限り unsafe_code を許可する。
 #![allow(unsafe_code)]
 
+use std::alloc::{Layout, alloc, dealloc};
 use std::ffi::{CStr, c_char};
 use std::io::Write;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI64, Ordering};
 
-/// プログラムに渡されたコマンドライン引数（プログラム名を除く）。`argv` の文字列はプロセスの終了まで有効（不死）。
-static ARGS: OnceLock<Vec<&'static [u8]>> = OnceLock::new();
+/// 実行時エラー時の終了コード。
+pub const RUNTIME_ERROR_EXIT_CODE: i32 = 101;
+/// プログラムの終了時に、解放されていないオブジェクトがあった場合の終了コード（コンパイラのバグ）。
+pub const LEAK_EXIT_CODE: i32 = 102;
+
+fn runtime_error(msg: &str) -> ! {
+    let _ = std::io::stdout().flush();
+    eprintln!("runtime error: {msg}");
+    std::process::exit(RUNTIME_ERROR_EXIT_CODE);
+}
+
+// ---------------------------------------------------------------- heap objects
+
+/// オブジェクトの先頭。生成コードの LLVM 型 `{ i64, i64, [N x i8] }` と同じ配置。
+#[repr(C)]
+pub struct Header {
+    rc: i64,
+    len: i64,
+}
+
+const HEADER: usize = std::mem::size_of::<Header>();
+const ALIGN: usize = 8;
+
+/// 生存している（確保されて、まだ解放されていない）不死でないオブジェクトの数。
+static LIVE: AtomicI64 = AtomicI64::new(0);
+
+fn layout(len: usize) -> Layout {
+    Layout::from_size_align(HEADER + len.max(1), ALIGN).expect("object too large")
+}
+
+/// 中身が `len` バイトのオブジェクトを確保する（参照カウント 1）。
+fn new_object(len: usize) -> *mut Header {
+    // SAFETY: レイアウトは大きさ 1 以上で、アラインメントは 8。
+    let p = unsafe { alloc(layout(len)) } as *mut Header;
+    if p.is_null() {
+        let _ = std::io::stdout().flush();
+        eprintln!("runtime error: out of memory");
+        std::process::abort();
+    }
+    // SAFETY: 確保したばかりの領域に書き込む。
+    unsafe {
+        p.write(Header {
+            rc: 1,
+            len: len as i64,
+        });
+    }
+    LIVE.fetch_add(1, Ordering::Relaxed);
+    p
+}
+
+/// 不死のオブジェクトを作る（解放しない。生存数にも数えない）。
+fn new_immortal(bytes: &[u8]) -> *mut Header {
+    let p = new_object(bytes.len());
+    LIVE.fetch_sub(1, Ordering::Relaxed);
+    // SAFETY: new_object が中身の領域を確保している。
+    unsafe {
+        (*p).rc = -1;
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), data(p), bytes.len());
+    }
+    p
+}
+
+/// オブジェクトの中身の先頭。
+fn data(p: *mut Header) -> *mut u8 {
+    // SAFETY: 中身はヘッダの直後に置かれている。
+    unsafe { (p as *mut u8).add(HEADER) }
+}
+
+/// オブジェクトの中身をバイト列として読む。
+///
+/// # Safety
+/// `p` は生成コードかこのランタイムが作った、生存しているオブジェクトでなければならない。
+unsafe fn bytes<'a>(p: *const Header) -> &'a [u8] {
+    // SAFETY: 関数の安全条件どおり。
+    unsafe { std::slice::from_raw_parts(data(p as *mut Header), (*p).len as usize) }
+}
+
+/// # Safety
+/// `p` は null か、生存しているオブジェクトでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_retain(p: *mut Header) {
+    if p.is_null() {
+        return;
+    }
+    // SAFETY: 関数の安全条件どおり。
+    unsafe {
+        if (*p).rc >= 0 {
+            (*p).rc += 1;
+        }
+    }
+}
+
+/// 参照カウントを減らし、0 になったら解放する。
+///
+/// # Safety
+/// `p` は null か、生存しているオブジェクトでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_release(p: *mut Header) {
+    if p.is_null() {
+        return;
+    }
+    // SAFETY: 関数の安全条件どおり。
+    unsafe {
+        if (*p).rc < 0 {
+            return; // 不死
+        }
+        (*p).rc -= 1;
+        if (*p).rc == 0 {
+            let len = (*p).len as usize;
+            dealloc(p as *mut u8, layout(len));
+            LIVE.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// 生成コードの `main` が最後に呼ぶ。解放されていないオブジェクトが残っていれば、コンパイラのバグとして報告する。
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_runtime_finish() {
+    let _ = std::io::stdout().flush();
+    let live = LIVE.load(Ordering::Relaxed);
+    if live != 0 && std::env::var_os("WYS_ALLOW_LEAKS").is_none() {
+        eprintln!("runtime error: {live} object(s) were not freed (this is a compiler bug)");
+        std::process::exit(LEAK_EXIT_CODE);
+    }
+}
+
+// ---------------------------------------------------------------- command line
+
+/// プログラムに渡されたコマンドライン引数（プログラム名を除く）。不死のオブジェクトとして持つ。
+static ARGS: OnceLock<Vec<usize>> = OnceLock::new();
 
 /// 生成コードの `main` が最初に呼ぶ。
 ///
@@ -23,24 +157,23 @@ static ARGS: OnceLock<Vec<&'static [u8]>> = OnceLock::new();
 pub unsafe extern "C" fn wys_runtime_init(argc: i32, argv: *const *const c_char) {
     let mut args = Vec::new();
     for i in 1..argc.max(0) as usize {
-        // SAFETY: C の main から渡された argv は argc 個の有効な NUL 終端文字列を指し、プロセスの終了まで有効。
-        let s: &'static CStr = unsafe { CStr::from_ptr(*argv.add(i)) };
-        args.push(s.to_bytes());
+        // SAFETY: C の main から渡された argv は argc 個の有効な NUL 終端文字列を指す。
+        let s: &CStr = unsafe { CStr::from_ptr(*argv.add(i)) };
+        args.push(new_immortal(s.to_bytes()) as usize);
     }
     let _ = ARGS.set(args);
 }
 
-fn args() -> &'static [&'static [u8]] {
-    ARGS.get().map_or(&[], |v| v.as_slice())
-}
-
-fn arg_at(i: i64) -> Option<&'static [u8]> {
-    usize::try_from(i).ok().and_then(|i| args().get(i).copied())
+fn arg_at(i: i64) -> Option<*mut Header> {
+    let args = ARGS.get().map_or(&[][..], |v| v.as_slice());
+    usize::try_from(i)
+        .ok()
+        .and_then(|i| args.get(i).map(|p| *p as *mut Header))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_arg_count() -> i64 {
-    args().len() as i64
+    ARGS.get().map_or(0, |v| v.len() as i64)
 }
 
 #[unsafe(no_mangle)]
@@ -48,17 +181,15 @@ pub extern "C" fn wys_arg_exists(i: i64) -> bool {
     arg_at(i).is_some()
 }
 
+/// `i` 番目の引数（不死の文字列オブジェクト）。`wys_arg_exists` が真の番号にだけ使う。
 #[unsafe(no_mangle)]
-pub extern "C" fn wys_arg_ptr(i: i64) -> *const u8 {
-    arg_at(i).map_or(std::ptr::null(), |a| a.as_ptr())
+pub extern "C" fn wys_arg(i: i64) -> *mut Header {
+    arg_at(i).unwrap_or_else(|| runtime_error("argument index out of range"))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn wys_arg_len(i: i64) -> i64 {
-    arg_at(i).map_or(0, |a| a.len() as i64)
-}
+// ---------------------------------------------------------------- parse_scalar (ADR-0011)
 
-/// `parse_scalar` の分類（ADR-0011）: 0 = int、1 = bool、2 = str、3 = null。
+/// `parse_scalar` の分類: 0 = int、1 = bool、2 = str、3 = null。
 #[derive(Debug, PartialEq, Eq)]
 enum Scalar {
     Int(i64),
@@ -88,18 +219,11 @@ fn classify(bytes: &[u8]) -> Scalar {
 }
 
 /// # Safety
-/// `ptr` は `len` バイト読み取り可能でなければならない。
-unsafe fn bytes<'a>(ptr: *const u8, len: i64) -> &'a [u8] {
-    // SAFETY: 呼び出し側（生成コード）が有効な文字列のポインタと長さを渡す。
-    unsafe { std::slice::from_raw_parts(ptr, len as usize) }
-}
-
-/// # Safety
-/// `ptr` は `len` バイト読み取り可能でなければならない。
+/// `s` は生存している文字列オブジェクトでなければならない。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn wys_scalar_kind(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn wys_scalar_kind(s: *const Header) -> i64 {
     // SAFETY: 関数の安全条件どおり。
-    match classify(unsafe { bytes(ptr, len) }) {
+    match classify(unsafe { bytes(s) }) {
         Scalar::Int(_) => 0,
         Scalar::Bool(_) => 1,
         Scalar::Str => 2,
@@ -108,32 +232,25 @@ pub unsafe extern "C" fn wys_scalar_kind(ptr: *const u8, len: i64) -> i64 {
 }
 
 /// # Safety
-/// `ptr` は `len` バイト読み取り可能でなければならない。
+/// `s` は生存している文字列オブジェクトでなければならない。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn wys_scalar_int(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn wys_scalar_int(s: *const Header) -> i64 {
     // SAFETY: 関数の安全条件どおり。
-    match classify(unsafe { bytes(ptr, len) }) {
+    match classify(unsafe { bytes(s) }) {
         Scalar::Int(v) => v,
         _ => 0,
     }
 }
 
 /// # Safety
-/// `ptr` は `len` バイト読み取り可能でなければならない。
+/// `s` は生存している文字列オブジェクトでなければならない。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn wys_scalar_bool(ptr: *const u8, len: i64) -> bool {
+pub unsafe extern "C" fn wys_scalar_bool(s: *const Header) -> bool {
     // SAFETY: 関数の安全条件どおり。
-    matches!(classify(unsafe { bytes(ptr, len) }), Scalar::Bool(true))
+    matches!(classify(unsafe { bytes(s) }), Scalar::Bool(true))
 }
 
-/// 実行時エラー時の終了コード。
-pub const RUNTIME_ERROR_EXIT_CODE: i32 = 101;
-
-fn runtime_error(msg: &str) -> ! {
-    let _ = std::io::stdout().flush();
-    eprintln!("runtime error: {msg}");
-    std::process::exit(RUNTIME_ERROR_EXIT_CODE);
-}
+// ---------------------------------------------------------------- output and control
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_print_int(v: i64) {
@@ -145,16 +262,13 @@ pub extern "C" fn wys_print_bool(v: bool) {
     println!("{}", if v { "True" } else { "False" });
 }
 
-/// `ptr` はコンパイラが生成した UTF-8 の定数文字列を指し、`len` バイトの長さを持つ。
-///
 /// # Safety
-/// `ptr` は `len` バイト読み取り可能な有効な UTF-8 データを指していなければならない。
+/// `s` は生存している文字列オブジェクトでなければならない。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn wys_print_str(ptr: *const u8, len: i64) {
-    // SAFETY: コンパイラは定数文字列のアドレスと正確な長さだけを渡す。
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+pub unsafe extern "C" fn wys_print_str(s: *const Header) {
     let mut out = std::io::stdout().lock();
-    let _ = out.write_all(bytes);
+    // SAFETY: 関数の安全条件どおり。
+    let _ = out.write_all(unsafe { bytes(s) });
     let _ = out.write_all(b"\n");
 }
 
@@ -173,18 +287,15 @@ pub extern "C" fn wys_test_index() -> i64 {
         .unwrap_or(-1)
 }
 
-/// `assert` の失敗。`ptr` / `len` は「ファイル:行:列」の定数文字列。
+/// `assert` の失敗。`loc` は「ファイル:行:列」の不死の文字列オブジェクト。
 ///
 /// # Safety
-/// `ptr` は `len` バイト読み取り可能な UTF-8 データを指していなければならない。
+/// `loc` は生存している文字列オブジェクトでなければならない。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn wys_assert_fail(ptr: *const u8, len: i64) -> ! {
-    // SAFETY: コンパイラは定数文字列のアドレスと正確な長さだけを渡す。
-    let loc = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
-    runtime_error(&format!(
-        "assertion failed at {}",
-        String::from_utf8_lossy(loc)
-    ));
+pub unsafe extern "C" fn wys_assert_fail(loc: *const Header) -> ! {
+    // SAFETY: 関数の安全条件どおり。
+    let loc = String::from_utf8_lossy(unsafe { bytes(loc) }).into_owned();
+    runtime_error(&format!("assertion failed at {loc}"));
 }
 
 #[unsafe(no_mangle)]
@@ -225,6 +336,32 @@ pub extern "C" fn wys_mod(a: i64, b: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn objects_are_counted_and_freed() {
+        let before = LIVE.load(Ordering::Relaxed);
+        let p = new_object(5);
+        assert_eq!(LIVE.load(Ordering::Relaxed), before + 1);
+        // SAFETY: p は生存しているオブジェクト。
+        unsafe {
+            wys_retain(p);
+            assert_eq!((*p).rc, 2);
+            wys_release(p);
+            wys_release(p);
+        }
+        assert_eq!(LIVE.load(Ordering::Relaxed), before);
+        // null と不死は何もしない
+        // SAFETY: null は許される。不死のオブジェクトは解放されない。
+        unsafe {
+            wys_retain(std::ptr::null_mut());
+            wys_release(std::ptr::null_mut());
+            let i = new_immortal(b"abc");
+            wys_release(i);
+            assert_eq!((*i).rc, -1);
+            assert_eq!(bytes(i), b"abc");
+        }
+        assert_eq!(LIVE.load(Ordering::Relaxed), before);
+    }
 
     #[test]
     fn classify_matches_adr_0011() {
