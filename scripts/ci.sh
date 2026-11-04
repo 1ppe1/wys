@@ -16,9 +16,13 @@ echo "==> conformance (AddressSanitizer)"
 # リークの判定は終了時の生存オブジェクト数（102）で行う。パニックや exit() では解放せずに終わるので、
 # LeakSanitizer（Linux の ASan では既定で有効）は無効にする（ADR-0013）
 ASAN_OPTIONS=detect_leaks=0 WYS_SANITIZE=address cargo test -q -p wys_testharness --test conformance conformance_suite
-echo "==> wys fmt --check examples"
-for f in examples/*.wys; do
+echo "==> wys fmt --check examples, benches"
+for f in examples/*.wys benches/programs/*.wys; do
   ./target/debug/wys fmt --check "$f"
+done
+echo "==> bench programs (check)"
+for f in benches/programs/*.wys; do
+  ./target/debug/wys check "$f" >/dev/null
 done
 echo "==> poc5 cases"
 ./scripts/poc5/verify.sh

@@ -1,0 +1,10 @@
+# 文字列の連結（毎回新しいオブジェクトを確保して古いものを解放する）
+def main() -> None:
+    s = ""
+    total = 0
+    for i in range(20000):
+        s = s + "x"
+        if len(s) == 100:
+            total = total + len(s)
+            s = ""
+    print(total)

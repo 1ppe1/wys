@@ -147,9 +147,24 @@ pub unsafe extern "C" fn wys_free_object(p: *mut Header) {
 }
 
 /// 生成コードの `main` が最後に呼ぶ。解放されていないオブジェクトが残っていれば、コンパイラのバグとして報告する。
+/// 参照カウントの操作の回数（`WYS_RC_STATS` 付きでビルドした生成コードだけが加算する。ベンチ計測用、M3 T7）。
+#[unsafe(no_mangle)]
+#[allow(non_upper_case_globals)]
+pub static wys_stat_retains: AtomicI64 = AtomicI64::new(0);
+#[unsafe(no_mangle)]
+#[allow(non_upper_case_globals)]
+pub static wys_stat_releases: AtomicI64 = AtomicI64::new(0);
+
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_runtime_finish() {
     let _ = std::io::stdout().flush();
+    if std::env::var("WYS_RC_STATS").is_ok_and(|v| !v.is_empty() && v != "0") {
+        eprintln!(
+            "rc stats: retain {}, release {}",
+            wys_stat_retains.load(Ordering::Relaxed),
+            wys_stat_releases.load(Ordering::Relaxed)
+        );
+    }
     let live = LIVE.load(Ordering::Relaxed);
     if live != 0 && std::env::var_os("WYS_ALLOW_LEAKS").is_none() {
         eprintln!("runtime error: {live} object(s) were not freed (this is a compiler bug)");

@@ -182,6 +182,8 @@ pub struct BuildOptions {
     pub opt_level: Option<u8>,
     /// サニタイザ（`address`）。未指定なら `WYS_SANITIZE`、なければ付けない（ADR-0005 / ADR-0012 の検査用）。
     pub sanitize: Option<String>,
+    /// 参照カウントの操作の回数を数える（ベンチ計測用）。未指定なら `WYS_RC_STATS` が空でなければ有効。
+    pub rc_stats: Option<bool>,
 }
 
 impl BuildOptions {
@@ -189,6 +191,12 @@ impl BuildOptions {
         self.opt_level
             .or_else(|| std::env::var("WYS_OPT").ok().and_then(|v| v.parse().ok()))
             .unwrap_or(0)
+    }
+
+    fn effective_rc_stats(&self) -> bool {
+        self.rc_stats.unwrap_or_else(|| {
+            std::env::var("WYS_RC_STATS").is_ok_and(|v| !v.is_empty() && v != "0")
+        })
     }
 
     fn sanitizer_flags(&self) -> Vec<String> {
@@ -304,6 +312,7 @@ pub fn link_program(
         cc: cc.clone(),
         opt_level: opts.effective_opt_level(),
         extra_flags: sanitize.clone(),
+        rc_stats: opts.effective_rc_stats(),
     };
     backend
         .emit_object(program, &obj)

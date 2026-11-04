@@ -1,0 +1,23 @@
+# 辞書の追加・更新・読み出し・削除
+def main() -> None:
+    counts: dict[int, int] = {}
+    for i in range(200000):
+        k = (i * 7919) % 5000
+        n = counts.get(k)
+        if n is None:
+            counts[k] = 1
+        else:
+            counts[k] = n + 1
+    total = 0
+    for k in counts:
+        total = total + counts[k]
+    print(total)
+    for k in range(2500):
+        counts.pop(k)
+    print(len(counts))
+    words: dict[str, str] = {}
+    w = "k"
+    for i in range(2000):
+        w = w + "a"
+        words[w] = w
+    print(len(words))

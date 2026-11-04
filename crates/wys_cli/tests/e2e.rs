@@ -44,6 +44,15 @@ fn cli(args: &[&str]) -> Output {
         .expect("run wys")
 }
 
+fn cli_env(args: &[&str], envs: &[(&str, &str)]) -> Output {
+    Command::new(CLI)
+        .args(args)
+        .env("WYS_RUNTIME_LIB", runtime_lib())
+        .envs(envs.iter().copied())
+        .output()
+        .expect("run wys")
+}
+
 fn run(name: &str, src: &str) -> (i32, String, String) {
     let path = scratch(name, src);
     let out = cli(&["run", path.to_str().unwrap()]);
@@ -472,4 +481,27 @@ fn dict_counts_words_in_insertion_order() {
         String::from_utf8(run.stdout).unwrap(),
         "b\n3\na\n1\nc\n1\nFalse\n"
     );
+}
+
+#[test]
+fn rc_stats_count_reference_count_operations() {
+    let path = scratch(
+        "rc_stats",
+        "def main() -> None:\n    s = \"\"\n    for i in range(3):\n        s = s + \"x\"\n    print(s)\n",
+    );
+    let exe = path.with_extension("stats");
+    let build = cli_env(
+        &["build", path.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[("WYS_RC_STATS", "1")],
+    );
+    assert_eq!(build.status.code(), Some(0));
+    let run = std::process::Command::new(&exe)
+        .env("WYS_RC_STATS", "1")
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "xxx\n");
+    let stderr = String::from_utf8(run.stderr).unwrap();
+    // 3回の連結で作った文字列はすべて解放される（最初の空文字列はリテラルで不死）
+    assert!(stderr.contains("rc stats: retain "), "{stderr}");
+    assert!(stderr.contains("release 3"), "{stderr}");
 }
