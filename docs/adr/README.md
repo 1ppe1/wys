@@ -26,6 +26,7 @@
 | [0010](0010-modules-and-visibility.md) | モジュールと可視性 | Accepted | 2026-11-04 |
 | [0011](0011-unknown-and-validation.md) | `Unknown` の実行時表現と検証 API | Accepted | 2026-11-04 |
 | [0012](0012-heap-objects-and-arc-pass.md) | ヒープオブジェクトと、IR パスによる ARC | Accepted | 2026-11-04 |
+| [0013](0013-result-binding-patterns-try-panic.md) | `Result[T, E]`、束縛パターン、`?`、パニックの仕様 | Accepted | 2026-11-04 |
 
 ## 未決定事項との対応
 
