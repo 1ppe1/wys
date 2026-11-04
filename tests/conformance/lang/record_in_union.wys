@@ -1,0 +1,22 @@
+# レコードを含む Optional と、その絞り込み（Union の中身にレコードを入れる）
+# expect-stdout: ada
+# expect-stdout: 36
+# expect-stdout: not found
+type User = {name: str, age: int, active: bool}
+
+def find(id: int) -> User | None:
+    if id == 1:
+        return User(name="ada", age=36, active=True)
+    return None
+
+def show(id: int) -> None:
+    u = find(id)
+    if u is None:
+        print("not found")
+        return
+    print(u.name)
+    print(u.age)
+
+def main() -> None:
+    show(1)
+    show(2)

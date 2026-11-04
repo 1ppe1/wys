@@ -1,0 +1,5 @@
+# expect-error: E0503 2:23
+type Point = {x: int, x: int}
+
+def main() -> None:
+    pass

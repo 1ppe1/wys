@@ -17,6 +17,7 @@ pub enum Ty {
     Bool,
     Str,
     Union(UnionId),
+    Record(RecordId),
 }
 
 impl Ty {
@@ -26,12 +27,17 @@ impl Ty {
             Ty::Bool => "bool".into(),
             Ty::Str => "str".into(),
             Ty::Union(u) => format!("u{}", u.0),
+            Ty::Record(r) => format!("r{}", r.0),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UnionId(pub u32);
+
+/// 不変のレコード（ADR-0009: 値型、受け渡しはコピー）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RecordId(pub u32);
 
 /// Union の構成要素。`None` は中身を持たない構成要素。
 pub type Member = Option<Ty>;
@@ -56,6 +62,8 @@ pub struct Program {
     pub strings: Vec<String>,
     /// Union 型の構成要素。`Ty::Union(UnionId(i))` は `unions[i]` を指す。構成要素は Union を含まない。
     pub unions: Vec<Vec<Member>>,
+    /// レコード型のフィールド（名前と型、この順で配置する）。`Ty::Record(RecordId(i))` は `records[i]` を指す。
+    pub records: Vec<Vec<(String, Ty)>>,
     pub funcs: Vec<Function>,
     /// エントリポイント（引数なし・戻り値なし）。
     pub entry: FuncId,
@@ -194,6 +202,18 @@ pub enum Inst {
         variant: u32,
         payload: Option<TempId>,
     },
+    /// レコード値を作る。`fields` はレコードのフィールドの順。
+    MakeRecord {
+        dst: TempId,
+        record: RecordId,
+        fields: Vec<TempId>,
+    },
+    /// レコード値の `index` 番目のフィールド。
+    Field {
+        dst: TempId,
+        src: TempId,
+        index: u32,
+    },
     /// Union 値のタグが `variant` かどうか（`bool`）。
     UnionIs {
         dst: TempId,
@@ -257,10 +277,14 @@ fn union_member(p: &Program, u: UnionId, variant: u32) -> Result<Member, String>
 
 fn verify_types(p: &Program, f: &Function) -> Result<(), String> {
     for t in f.locals.iter().chain(&f.temps).chain(f.ret.iter()) {
-        if let Ty::Union(u) = t
-            && u.0 as usize >= p.unions.len()
-        {
-            return Err(format!("unknown union u{}", u.0));
+        match t {
+            Ty::Union(u) if u.0 as usize >= p.unions.len() => {
+                return Err(format!("unknown union u{}", u.0));
+            }
+            Ty::Record(r) if r.0 as usize >= p.records.len() => {
+                return Err(format!("unknown record r{}", r.0));
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -386,6 +410,34 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                     expect("make_union result", temp_ty(*dst)?, Ty::Union(*union))?;
                     define(*dst, &mut defined_in)?;
                 }
+                Inst::MakeRecord {
+                    dst,
+                    record,
+                    fields,
+                } => {
+                    let def = p
+                        .records
+                        .get(record.0 as usize)
+                        .ok_or_else(|| format!("unknown record r{}", record.0))?;
+                    if def.len() != fields.len() {
+                        return Err(format!("bb{bi}: make_record field count mismatch"));
+                    }
+                    for (t, (_, want)) in fields.iter().zip(def) {
+                        expect("record field", use_(*t, &defined_in)?, *want)?;
+                    }
+                    expect("make_record result", temp_ty(*dst)?, Ty::Record(*record))?;
+                    define(*dst, &mut defined_in)?;
+                }
+                Inst::Field { dst, src, index } => {
+                    let Ty::Record(r) = use_(*src, &defined_in)? else {
+                        return Err(format!("bb{bi}: field access on a non-record value"));
+                    };
+                    let (_, want) = p.records[r.0 as usize]
+                        .get(*index as usize)
+                        .ok_or_else(|| format!("bb{bi}: record r{} has no field {index}", r.0))?;
+                    expect("field result", temp_ty(*dst)?, *want)?;
+                    define(*dst, &mut defined_in)?;
+                }
                 Inst::UnionIs { dst, src, variant } => {
                     let Ty::Union(u) = use_(*src, &defined_in)? else {
                         return Err(format!("bb{bi}: union_is on a non-union value"));
@@ -474,6 +526,13 @@ impl fmt::Display for Program {
         for (i, s) in self.strings.iter().enumerate() {
             writeln!(f, "string s{i} = {s:?}")?;
         }
+        for (i, fields) in self.records.iter().enumerate() {
+            let fs: Vec<String> = fields
+                .iter()
+                .map(|(n, t)| format!("{n}: {}", t.name()))
+                .collect();
+            writeln!(f, "record r{i} = {{{}}}", fs.join(", "))?;
+        }
         for (i, members) in self.unions.iter().enumerate() {
             let names: Vec<String> = members.iter().map(|m| member_name(*m)).collect();
             writeln!(f, "union u{i} = {}", names.join(" | "))?;
@@ -535,6 +594,24 @@ impl fmt::Display for Program {
                         Inst::UnionIs { dst, src, variant } => {
                             writeln!(f, "t{} = union_is t{}, {variant}", dst.0, src.0)?
                         }
+                        Inst::MakeRecord {
+                            dst,
+                            record,
+                            fields,
+                        } => {
+                            let fs: Vec<String> =
+                                fields.iter().map(|t| format!("t{}", t.0)).collect();
+                            writeln!(
+                                f,
+                                "t{} = make_record r{}({})",
+                                dst.0,
+                                record.0,
+                                fs.join(", ")
+                            )?
+                        }
+                        Inst::Field { dst, src, index } => {
+                            writeln!(f, "t{} = field t{}, {index}", dst.0, src.0)?
+                        }
                         Inst::UnionPayload { dst, src, variant } => {
                             writeln!(f, "t{} = union_payload t{}, {variant}", dst.0, src.0)?
                         }
@@ -586,6 +663,7 @@ mod tests {
         Program {
             strings: vec!["hi".into()],
             unions: vec![],
+            records: vec![],
             entry: FuncId(0),
             funcs: vec![Function {
                 name: "main".into(),

@@ -1,0 +1,16 @@
+# 幅部分型: 必要なフィールドを持つレコードは、より小さいレコード型の場所で使える（変換地点でコピー）
+# expect-stdout: ada
+# expect-stdout: grace
+# expect-stdout: 36
+type Named = {name: str}
+type User = {name: str, age: int}
+
+def greet(n: Named) -> None:
+    print(n.name)
+
+def main() -> None:
+    u = User(name="ada", age=36)
+    greet(u)
+    n: Named = User(name="grace", age=0)
+    greet(n)
+    print(u.age)

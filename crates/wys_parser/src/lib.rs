@@ -23,9 +23,10 @@ pub fn parse(tokens: &[Token]) -> (Module, Vec<Diagnostic>) {
         diags: Vec::new(),
         next_expr: 0,
     };
-    let funcs = p.module();
+    let (types, funcs) = p.module();
     (
         Module {
+            types,
             funcs,
             expr_count: p.next_expr,
         },
@@ -167,11 +168,23 @@ impl Parser<'_> {
 
     // ---- module / definitions ----
 
-    fn module(&mut self) -> Vec<FuncDef> {
+    fn module(&mut self) -> (Vec<TypeDef>, Vec<FuncDef>) {
+        let mut types = Vec::new();
         let mut funcs = Vec::new();
         loop {
             match self.peek() {
                 TokenKind::Eof => break,
+                // `type` は予約語ではない。トップレベルの `type Name =` のときだけ型定義として扱う
+                TokenKind::Ident(kw)
+                    if kw == "type"
+                        && matches!(self.peek_at(1), TokenKind::Ident(_))
+                        && matches!(self.peek_at(2), TokenKind::Assign) =>
+                {
+                    match self.type_def() {
+                        Ok(t) => types.push(t),
+                        Err(Reported) => self.sync(),
+                    }
+                }
                 TokenKind::Newline => {
                     self.bump();
                 }
@@ -200,7 +213,36 @@ impl Parser<'_> {
                 }
             }
         }
-        funcs
+        (types, funcs)
+    }
+
+    fn type_def(&mut self) -> PResult<TypeDef> {
+        let start = self.bump().span.start; // `type`
+        let name = self.ident("a type name")?;
+        self.expect(&TokenKind::Assign, "`=`")?;
+        let value = if self.eat(&TokenKind::LBrace) {
+            let mut fields = Vec::new();
+            while !self.at(&TokenKind::RBrace) {
+                let fname = self.ident("a field name")?;
+                self.expect(&TokenKind::Colon, "`:` and the field type")?;
+                let ty = self.type_expr()?;
+                fields.push((fname, ty));
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(&TokenKind::RBrace, "`,` or `}`")?;
+            TypeDefValue::Record(fields)
+        } else {
+            TypeDefValue::Alias(self.type_expr()?)
+        };
+        let end = self.prev_end();
+        self.expect(&TokenKind::Newline, "end of line")?;
+        Ok(TypeDef {
+            name,
+            value,
+            span: Span::new(start, end),
+        })
     }
 
     fn type_expr(&mut self) -> PResult<TypeExpr> {
@@ -634,7 +676,24 @@ impl Parser<'_> {
                 start,
             ));
         }
-        self.primary()
+        self.postfix()
+    }
+
+    /// `primary { "." IDENT }`
+    fn postfix(&mut self) -> PResult<Expr> {
+        let mut e = self.primary()?;
+        while self.eat(&TokenKind::Dot) {
+            let name = self.ident("a field name")?;
+            let start = e.span.start;
+            e = self.mk(
+                ExprKind::Field {
+                    base: Box::new(e),
+                    name,
+                },
+                start,
+            );
+        }
+        Ok(e)
     }
 
     fn primary(&mut self) -> PResult<Expr> {
@@ -664,8 +723,24 @@ impl Parser<'_> {
                 let span = self.bump().span;
                 if self.eat(&TokenKind::LParen) {
                     let mut args = Vec::new();
+                    let mut kwargs = Vec::new();
                     while !self.at(&TokenKind::RParen) {
-                        args.push(self.expr()?);
+                        if matches!(self.peek(), TokenKind::Ident(_))
+                            && matches!(self.peek_at(1), TokenKind::Assign)
+                        {
+                            let k = self.ident("an argument name")?;
+                            self.bump(); // `=`
+                            kwargs.push((k, self.expr()?));
+                        } else if !kwargs.is_empty() {
+                            self.diags.push(Diagnostic::error(
+                                "E0101",
+                                "positional arguments must come before keyword arguments",
+                                self.span(),
+                            ));
+                            return Err(Reported);
+                        } else {
+                            args.push(self.expr()?);
+                        }
                         if !self.eat(&TokenKind::Comma) {
                             break;
                         }
@@ -674,6 +749,7 @@ impl Parser<'_> {
                     ExprKind::Call {
                         callee: Ident { name, span },
                         args,
+                        kwargs,
                     }
                 } else {
                     ExprKind::Name(name)
@@ -789,6 +865,27 @@ mod tests {
         };
         assert_eq!(arms.len(), 1);
         assert_eq!(m.funcs[0].body.len(), 2);
+    }
+
+    #[test]
+    fn record_definitions_construction_and_fields() {
+        let m = ok(
+            "type Point = {x: int, y: int}\ntype MaybeInt = int | None\n\ndef f(p: Point) -> int:\n    q = Point(x=1, y=p.y)\n    return q.x\n",
+        );
+        assert_eq!(m.types.len(), 2);
+        assert!(matches!(&m.types[0].value, TypeDefValue::Record(f) if f.len() == 2));
+        assert!(matches!(&m.types[1].value, TypeDefValue::Alias(_)));
+        let StmtKind::Assign { value, .. } = &m.funcs[0].body[0].kind else {
+            panic!()
+        };
+        let ExprKind::Call { kwargs, args, .. } = &value.kind else {
+            panic!()
+        };
+        assert!(args.is_empty());
+        assert_eq!(kwargs.len(), 2);
+        assert!(matches!(kwargs[1].1.kind, ExprKind::Field { .. }));
+        // `type` は予約語ではない
+        ok("def f(type: int) -> int:\n    return type\n");
     }
 
     #[test]

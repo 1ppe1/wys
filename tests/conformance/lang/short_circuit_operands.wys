@@ -1,0 +1,11 @@
+# 短絡評価（and / or）を他の式のオペランドや2番目以降の引数に置いても正しく動く
+# expect-stdout: True
+# expect-stdout: True
+# expect-stdout: False
+def g(a: int, b: bool) -> None:
+    print(b)
+
+def main() -> None:
+    print(True == (False or True))
+    g(1, 2 > 1 and 3 > 2)
+    g(2, 1 > 2 or 2 > 3)

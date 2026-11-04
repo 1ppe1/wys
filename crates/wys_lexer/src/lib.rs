@@ -49,6 +49,9 @@ pub enum TokenKind {
     Comma,
     Arrow,
     Pipe,
+    LBrace,
+    RBrace,
+    Dot,
     // layout
     Newline,
     Indent,
@@ -99,6 +102,9 @@ impl TokenKind {
             Comma => "`,`",
             Arrow => "`->`",
             Pipe => "`|`",
+            LBrace => "`{`",
+            RBrace => "`}`",
+            Dot => "`.`",
             Newline => "end of line",
             Indent => "indent",
             Dedent => "dedent",
@@ -427,6 +433,9 @@ impl Lexer<'_> {
             (b':', _) => (Colon, 1),
             (b',', _) => (Comma, 1),
             (b'|', _) => (Pipe, 1),
+            (b'{', _) => (LBrace, 1),
+            (b'}', _) => (RBrace, 1),
+            (b'.', _) => (Dot, 1),
             _ => {
                 let ch = self.src[self.pos..].chars().next().expect("in bounds");
                 self.pos += ch.len_utf8();
@@ -439,8 +448,9 @@ impl Lexer<'_> {
             }
         };
         match kind {
-            LParen => self.paren += 1,
-            RParen => self.paren = self.paren.saturating_sub(1),
+            // 括弧の内側では改行とインデントを無視する（`{ }` も同じ）
+            LParen | LBrace => self.paren += 1,
+            RParen | RBrace => self.paren = self.paren.saturating_sub(1),
             _ => {}
         }
         self.pos += len;

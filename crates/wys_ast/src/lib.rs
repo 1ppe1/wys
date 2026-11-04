@@ -9,6 +9,7 @@ pub struct ExprId(pub u32);
 
 #[derive(Debug, Clone)]
 pub struct Module {
+    pub types: Vec<TypeDef>,
     pub funcs: Vec<FuncDef>,
     /// 割り当て済みの `ExprId` の数。
     pub expr_count: u32,
@@ -33,6 +34,22 @@ pub enum TypeExprKind {
     Name(String),
     /// `A | B | ...`（2つ以上）。
     Union(Vec<TypeExpr>),
+}
+
+/// トップレベルの `type Name = ...`。
+#[derive(Debug, Clone)]
+pub struct TypeDef {
+    pub name: Ident,
+    pub value: TypeDefValue,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum TypeDefValue {
+    /// `{x: int, y: int}`（構造的レコード、ADR-0007）
+    Record(Vec<(Ident, TypeExpr)>),
+    /// 既存の型の別名（`int | None` など）
+    Alias(TypeExpr),
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +147,13 @@ pub enum ExprKind {
     Call {
         callee: Ident,
         args: Vec<Expr>,
+        /// `name=value` のキーワード引数（レコードの作成で使う）。
+        kwargs: Vec<(Ident, Expr)>,
+    },
+    /// `base.name`（レコードのフィールド参照）
+    Field {
+        base: Box<Expr>,
+        name: Ident,
     },
     /// `lhs is rhs` / `lhs is not rhs`。型検査で `rhs` は `None` に限る。
     Is {

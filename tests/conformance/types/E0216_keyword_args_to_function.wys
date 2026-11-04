@@ -1,0 +1,6 @@
+# expect-error: E0216 6:7
+def f(a: int) -> None:
+    print(a)
+
+def main() -> None:
+    f(a=1)

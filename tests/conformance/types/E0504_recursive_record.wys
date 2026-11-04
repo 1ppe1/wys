@@ -1,0 +1,5 @@
+# expect-error: E0504 2:6
+type Node = {value: int, next: Node | None}
+
+def main() -> None:
+    pass

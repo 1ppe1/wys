@@ -1,0 +1,12 @@
+# expect-error: E0304 6:14
+type Point = {x: int, y: int}
+
+def f(v: Point | None) -> None:
+    match v:
+        case Point():
+            pass
+        case _:
+            pass
+
+def main() -> None:
+    pass
