@@ -1,0 +1,6 @@
+# 循環は、循環を閉じる import（b.wys の1行目）で報告する
+# expect-error: E0703 1:1
+import a
+
+def main() -> None:
+    pass

@@ -62,9 +62,69 @@ impl SourceFile {
     }
 }
 
+/// 複数のソースファイルを1本のバイト位置で扱う（モジュール、ADR-0010）。
+/// 各ファイルに基準位置（base）を割り当て、`Span` はその通し番号で表す。
+#[derive(Debug, Clone, Default)]
+pub struct SourceMap {
+    files: Vec<(u32, SourceFile)>,
+}
+
+impl SourceMap {
+    pub fn single(file: SourceFile) -> Self {
+        let mut m = Self::default();
+        m.add(file);
+        m
+    }
+
+    /// ファイルを追加し、その基準位置を返す。ファイルどうしの位置が重ならないよう、1バイトの隙間を空ける。
+    pub fn add(&mut self, file: SourceFile) -> u32 {
+        let base = match self.files.last() {
+            Some((b, f)) => b + u32::try_from(f.text.len()).expect("source file too large") + 1,
+            None => 0,
+        };
+        self.files.push((base, file));
+        base
+    }
+
+    fn find(&self, byte: u32) -> (u32, &SourceFile) {
+        let i = self.files.partition_point(|(b, _)| *b <= byte);
+        let (base, file) = &self.files[i.max(1) - 1];
+        (*base, file)
+    }
+
+    /// 位置 `byte` を含むファイルの名前。
+    pub fn file_name(&self, byte: u32) -> &str {
+        &self.find(byte).1.name
+    }
+
+    /// 位置 `byte` の行・列（`Position::byte` はファイル内の位置）。
+    pub fn position(&self, byte: u32) -> Position {
+        let (base, file) = self.find(byte);
+        file.position(byte - base)
+    }
+
+    /// 最初に追加したファイル（エントリファイル）。
+    pub fn entry(&self) -> &SourceFile {
+        &self.files[0].1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_map_locates_files_and_positions() {
+        let mut m = SourceMap::default();
+        let a = m.add(SourceFile::new("a.wys", "x = 1\n"));
+        let b = m.add(SourceFile::new("b.wys", "y\nz = 2\n"));
+        assert_eq!(a, 0);
+        assert_eq!(b, 7);
+        assert_eq!(m.file_name(2), "a.wys");
+        assert_eq!(m.file_name(b + 2), "b.wys");
+        let p = m.position(b + 2);
+        assert_eq!((p.line, p.column, p.byte), (2, 1, 2));
+    }
 
     #[test]
     fn positions_are_one_based_and_count_chars() {

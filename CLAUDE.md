@@ -46,6 +46,7 @@ target/debug/wys dump-ir examples/fib.wys
    - 実行結果: `lang/`。`# expect-stdout:` `# expect-exit:` `# expect-stderr-contains:`
    - 構文エラー: `syntax/`、型エラー: `types/`。`# expect-error: CODE 行:列`
    - 診断 JSON の形も固定したいもの: `diagnostics/`（insta スナップショット）
+   - 複数ファイル（モジュール）: `modules/<ケース名>/main.wys` と、そこから import するファイル
 2. 新しいケースが**失敗することを確認してから**実装する。
 3. `.wys` の挙動は `scripts/ai-loop.sh <file>` で確かめる。診断があれば JSON が返るので、`code`・`span`・`hints` を読んで直す。
 4. `./scripts/ci.sh` が通るまで作業を終えない。

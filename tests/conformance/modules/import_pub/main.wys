@@ -1,0 +1,13 @@
+# import / from import / 修飾付きの呼び出し・型名・レコードの作成（ADR-0010）
+# expect-stdout: 6
+# expect-stdout: 14
+# expect-stdout: hello
+import geometry
+import util.text
+from geometry import area, Rect
+
+def main() -> None:
+    print(area(2, 3))
+    r: geometry.Rect = Rect(w=3, h=4)
+    print(geometry.perimeter(r))
+    print(util.text.echo("hello"))

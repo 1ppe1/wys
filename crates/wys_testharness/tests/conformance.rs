@@ -71,7 +71,7 @@ fn diagnostics_json_snapshots() {
     for case in collect_cases(&root.join("tests/conformance/diagnostics")) {
         let name = rel(&root, &case);
         let src = std::fs::read_to_string(&case).unwrap();
-        let fe = wys_driver::frontend(&name, &src);
+        let fe = wys_testharness::frontend_for_case(&case, &name, &src);
         let snap_name = case.file_stem().unwrap().to_str().unwrap().to_string();
         insta::assert_snapshot!(snap_name, wys_driver::to_json(&fe.file, &fe.diagnostics));
     }
@@ -125,7 +125,8 @@ fn all_diagnostics_match_schema() {
     let mut checked = 0;
     for case in collect_cases(&root.join("tests/conformance")) {
         let name = rel(&root, &case);
-        let fe = wys_driver::frontend(&name, &std::fs::read_to_string(&case).unwrap());
+        let src = std::fs::read_to_string(&case).unwrap();
+        let fe = wys_testharness::frontend_for_case(&case, &name, &src);
         let json: serde_json::Value =
             serde_json::from_str(&wys_driver::to_json(&fe.file, &fe.diagnostics)).unwrap();
         let errors: Vec<String> = validator

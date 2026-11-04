@@ -1,0 +1,10 @@
+pub type Rect = {w: int, h: int}
+
+pub def area(w: int, h: int) -> int:
+    return w * h
+
+pub def perimeter(r: Rect) -> int:
+    return double(r.w + r.h)
+
+def double(n: int) -> int:
+    return n * 2

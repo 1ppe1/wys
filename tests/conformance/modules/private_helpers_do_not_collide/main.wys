@@ -1,0 +1,14 @@
+# 別々のモジュールにある同じ名前の非公開関数は衝突しない
+# expect-stdout: 1
+# expect-stdout: 2
+# expect-stdout: 3
+import a
+import b
+
+def helper() -> int:
+    return 3
+
+def main() -> None:
+    print(a.value())
+    print(b.value())
+    print(helper())
