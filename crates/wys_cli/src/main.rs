@@ -13,7 +13,7 @@ const USAGE: &str = "\
 usage:
   wys check [--format text|json] <file>   check a file and report diagnostics
   wys build <file> [-o <output>]          build a native executable
-  wys run <file>                          build and run
+  wys run <file> [-- <args>...]           build and run (arguments after -- go to the program)
   wys dump-ir <file>                      print the wys IR
   wys dump-llvm <file>                    print the generated LLVM IR
 ";
@@ -43,9 +43,14 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
     let mut format = Format::Text;
     let mut output: Option<PathBuf> = None;
     let mut file: Option<PathBuf> = None;
+    let mut program_args: Vec<String> = Vec::new();
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
+            "--" => {
+                program_args.extend(it.by_ref().cloned());
+                break;
+            }
             "--format" => {
                 format = match it.next().map(String::as_str) {
                     Some("json") => Format::Json,
@@ -116,6 +121,7 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
                 return build_error(e, format);
             }
             let status = std::process::Command::new(&exe)
+                .args(&program_args)
                 .status()
                 .map_err(|e| format!("cannot run the program: {e}"));
             let _ = std::fs::remove_file(&exe);

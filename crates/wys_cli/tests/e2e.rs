@@ -234,3 +234,14 @@ fn warnings_are_reported_but_do_not_fail() {
             .contains("warning[W0301]")
     );
 }
+
+#[test]
+fn run_passes_arguments_after_double_dash() {
+    let path = scratch(
+        "args",
+        "def main() -> None:\n    print(arg_count())\n    a = arg(1)\n    if a is not None:\n        print(a)\n",
+    );
+    let out = cli(&["run", path.to_str().unwrap(), "--", "first", "second"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "2\nsecond\n");
+}

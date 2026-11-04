@@ -39,7 +39,62 @@ impl Shared<'_> {
             TTy::Param(_) => {
                 panic!("type parameter reached code generation; monomorphization missed it")
             }
+            TTy::Unknown => {
+                let u = self.unknown_union();
+                Some(Ty::Union(self.ir_union(u)))
+            }
             TTy::Error => panic!("lowering received a type error; run the type checker first"),
+        }
+    }
+
+    /// `Unknown` の実行時表現（ADR-0011）: `int | bool | str | None` の Union。
+    fn unknown_union(&mut self) -> wys_typeck::UnionId {
+        match self.types.union([TTy::Int, TTy::Bool, TTy::Str, TTy::None]) {
+            TTy::Union(u) => u,
+            _ => unreachable!("four members always form a union"),
+        }
+    }
+
+    /// `Unknown` を実行時表現の Union に置き換える（レコードのフィールドや Union の構成要素の中も）。
+    fn norm(&mut self, t: TTy) -> TTy {
+        match t {
+            TTy::Unknown => TTy::Union(self.unknown_union()),
+            TTy::Union(_) if self.types.members(t).contains(&TTy::Unknown) => {
+                let ms: Vec<TTy> = self
+                    .types
+                    .members(t)
+                    .into_iter()
+                    .map(|m| self.norm(m))
+                    .collect();
+                self.types.union(ms)
+            }
+            TTy::Record(r) => {
+                let def = self.types.record_def(r).clone();
+                if !def.fields.iter().any(|(_, ft)| self.has_unknown(*ft)) {
+                    return t;
+                }
+                let fields = def
+                    .fields
+                    .iter()
+                    .map(|(n, ft)| (n.clone(), self.norm(*ft)))
+                    .collect();
+                self.types.record_named(fields, def.name, def.args)
+            }
+            _ => t,
+        }
+    }
+
+    fn has_unknown(&self, t: TTy) -> bool {
+        match t {
+            TTy::Unknown => true,
+            TTy::Union(_) => self.types.members(t).iter().any(|m| self.has_unknown(*m)),
+            TTy::Record(r) => self
+                .types
+                .record_def(r)
+                .fields
+                .iter()
+                .any(|(_, ft)| self.has_unknown(*ft)),
+            _ => false,
         }
     }
 
@@ -173,6 +228,7 @@ impl<'s, 't> FnLower<'s, 't> {
             .zip(args.iter().copied())
             .collect();
         let ret = sh.types.subst(sig.ret, &subst);
+        let ret = sh.norm(ret);
         let name = if args.is_empty() {
             f.name.name.clone()
         } else {
@@ -195,6 +251,7 @@ impl<'s, 't> FnLower<'s, 't> {
         for (lname, ty) in &info.locals {
             let lid = LocalId(l.locals.len() as u32);
             let decl = l.sh.types.subst(*ty, &l.subst);
+            let decl = l.sh.norm(decl);
             let ir = l.sh.ir_ty(decl).expect("locals never have type None");
             l.locals.push(ir);
             l.local_ids.insert(lname.clone(), lid);
@@ -228,7 +285,8 @@ impl<'s, 't> FnLower<'s, 't> {
     /// 式の型（この関数インスタンスの型引数で置き換えた後）。
     fn ty(&mut self, e: &ast::Expr) -> TTy {
         let t = self.sh.tc.ty(e);
-        self.sh.types.subst(t, &self.subst)
+        let t = self.sh.types.subst(t, &self.subst);
+        self.sh.norm(t)
     }
 
     /// 呼び出し先の関数インスタンスと、その引数・戻り値の型。
@@ -252,9 +310,13 @@ impl<'s, 't> FnLower<'s, 't> {
             .collect();
         let params = params
             .iter()
-            .map(|t| self.sh.types.subst(*t, &map))
+            .map(|t| {
+                let t = self.sh.types.subst(*t, &map);
+                self.sh.norm(t)
+            })
             .collect();
         let ret = self.sh.types.subst(ret, &map);
+        let ret = self.sh.norm(ret);
         (self.sh.request(index, args), params, ret)
     }
 
@@ -564,6 +626,23 @@ impl<'s, 't> FnLower<'s, 't> {
                 };
                 Some(self.construct(r, kwargs))
             }
+            ExprKind::Call { callee, args, .. }
+                if matches!(callee.name.as_str(), "arg_count" | "arg" | "parse_scalar") =>
+            {
+                Some(match callee.name.as_str() {
+                    "arg_count" => {
+                        let d = self.temp(Ty::Int);
+                        self.emit(Inst::Call {
+                            dst: Some(d),
+                            callee: Callee::Builtin(Builtin::ArgCount),
+                            args: vec![],
+                        });
+                        d
+                    }
+                    "arg" => self.lower_arg(&args[0], e),
+                    _ => self.lower_parse_scalar(&args[0], e),
+                })
+            }
             ExprKind::Call { callee, args, .. } => {
                 if callee.name == "print" {
                     let v = self.expr(&args[0]).expect("print arguments have values");
@@ -599,6 +678,132 @@ impl<'s, 't> FnLower<'s, 't> {
                 dst
             }
         }
+    }
+
+    // ---- external input (ADR-0011) ----
+
+    fn builtin(&mut self, b: Builtin, args: Vec<TempId>) -> TempId {
+        let d = self.temp(b.ret().expect("input builtins return a value"));
+        self.emit(Inst::Call {
+            dst: Some(d),
+            callee: Callee::Builtin(b),
+            args,
+        });
+        d
+    }
+
+    fn result_union(&mut self, e: &ast::Expr) -> (wys_typeck::UnionId, LocalId) {
+        let TTy::Union(u) = self.ty(e) else {
+            panic!("input builtins return unions")
+        };
+        let iu = self.sh.ir_union(u);
+        (u, self.hidden_local(Ty::Union(iu)))
+    }
+
+    /// `arg(i)`: 引数があれば `str`、なければ `None` の `str | None`。
+    fn lower_arg(&mut self, index: &ast::Expr, e: &ast::Expr) -> TempId {
+        let (u, out) = self.result_union(e);
+        let i = self.expr(index).expect("the index has a value");
+        let i_slot = self.hidden_local(Ty::Int);
+        self.emit(Inst::Store {
+            dst: i_slot,
+            src: i,
+        });
+        let exists = self.builtin(Builtin::ArgExists, vec![i]);
+        let (some_b, none_b, join) = (self.new_block(), self.new_block(), self.new_block());
+        self.terminate(Terminator::Branch {
+            cond: exists,
+            then_block: some_b,
+            else_block: none_b,
+        });
+        self.switch_to(some_b);
+        let li = self.temp(Ty::Int);
+        self.emit(Inst::Load {
+            dst: li,
+            src: i_slot,
+        });
+        let s = self.builtin(Builtin::ArgStr, vec![li]);
+        let v = self.make_union(u, TTy::Str, Some(s));
+        self.emit(Inst::Store { dst: out, src: v });
+        self.terminate(Terminator::Jump(join));
+        self.switch_to(none_b);
+        let v = self.make_union(u, TTy::None, None);
+        self.emit(Inst::Store { dst: out, src: v });
+        self.terminate(Terminator::Jump(join));
+        self.switch_to(join);
+        let d = self.temp(Ty::Union(self.locals[out.0 as usize].union_id()));
+        self.emit(Inst::Load { dst: d, src: out });
+        d
+    }
+
+    /// `parse_scalar(s)`: ランタイムで種類を判定し（0 = int、1 = bool、2 = str、3 = null）、該当する値を詰める。
+    fn lower_parse_scalar(&mut self, text: &ast::Expr, e: &ast::Expr) -> TempId {
+        let (u, out) = self.result_union(e);
+        let s = self.expr(text).expect("the text has a value");
+        let s_slot = self.hidden_local(Ty::Str);
+        self.emit(Inst::Store {
+            dst: s_slot,
+            src: s,
+        });
+        let k = self.builtin(Builtin::ScalarKind, vec![s]);
+        let k_slot = self.hidden_local(Ty::Int);
+        self.emit(Inst::Store {
+            dst: k_slot,
+            src: k,
+        });
+        let join = self.new_block();
+        for (code, member) in [(0, TTy::Int), (1, TTy::Bool), (3, TTy::None), (2, TTy::Str)] {
+            let last = member == TTy::Str;
+            let next = if last {
+                None
+            } else {
+                let lk = self.temp(Ty::Int);
+                self.emit(Inst::Load {
+                    dst: lk,
+                    src: k_slot,
+                });
+                let c = self.konst(Const::Int(code), Ty::Int);
+                let is = self.temp(Ty::Bool);
+                self.emit(Inst::Binary {
+                    dst: is,
+                    op: BinOp::Eq,
+                    lhs: lk,
+                    rhs: c,
+                });
+                let (body, next) = (self.new_block(), self.new_block());
+                self.terminate(Terminator::Branch {
+                    cond: is,
+                    then_block: body,
+                    else_block: next,
+                });
+                self.switch_to(body);
+                Some(next)
+            };
+            let payload = if member == TTy::None {
+                None
+            } else {
+                let ls = self.temp(Ty::Str);
+                self.emit(Inst::Load {
+                    dst: ls,
+                    src: s_slot,
+                });
+                Some(match member {
+                    TTy::Int => self.builtin(Builtin::ScalarInt, vec![ls]),
+                    TTy::Bool => self.builtin(Builtin::ScalarBool, vec![ls]),
+                    _ => ls,
+                })
+            };
+            let v = self.make_union(u, member, payload);
+            self.emit(Inst::Store { dst: out, src: v });
+            self.terminate(Terminator::Jump(join));
+            if let Some(n) = next {
+                self.switch_to(n);
+            }
+        }
+        self.switch_to(join);
+        let d = self.temp(Ty::Union(self.locals[out.0 as usize].union_id()));
+        self.emit(Inst::Load { dst: d, src: out });
+        d
     }
 
     // ---- unions ----
@@ -642,6 +847,7 @@ impl<'s, 't> FnLower<'s, 't> {
     /// 値 `v`（型 `from`）を型 `to` の値に変換する。型検査で `from` の値が `to` に収まることは保証済み
     /// （絞り込みの結果、`to` が `from` より狭い場合を含む）。
     fn coerce(&mut self, v: Option<TempId>, from: TTy, to: TTy) -> Option<TempId> {
+        let (from, to) = (self.sh.norm(from), self.sh.norm(to));
         if from == to {
             return v;
         }
@@ -709,7 +915,11 @@ impl<'s, 't> FnLower<'s, 't> {
 
     /// 関数でも組み込み関数でもない名前の呼び出しは、`type` で定義したレコードの作成。
     fn is_record_constructor(&self, name: &str) -> bool {
-        !self.sh.func_index.contains_key(name) && name != "print" && name != "exit"
+        !self.sh.func_index.contains_key(name)
+            && !matches!(
+                name,
+                "print" | "exit" | "arg_count" | "arg" | "parse_scalar"
+            )
     }
 
     /// `Point(x=..., y=...)`: キーワード引数をソースの順に評価してから、フィールドの順に並べる。

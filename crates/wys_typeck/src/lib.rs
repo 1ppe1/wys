@@ -26,6 +26,9 @@ pub enum Ty {
     Record(RecordId),
     /// 型パラメータ（`def f[T]` の `T`）。中身の分からない型として扱い、単相化で具体的な型に置き換える。
     Param(ParamId),
+    /// 未検証の外部値（ADR-0011）。`int` / `bool` / `str` / `None` のどれかだが、開いた型として扱い、
+    /// `match` で確かめるまで具体的な型として使えない。
+    Unknown,
     None,
     Union(UnionId),
     /// エラーから回復するための型。これを含む式では追加の診断を出さない。
@@ -86,6 +89,10 @@ impl Types {
         }
         members.sort();
         members.dedup();
+        if members.contains(&Ty::Unknown) {
+            // Unknown はスカラーの値をすべて含む
+            members.retain(|m| !matches!(m, Ty::Int | Ty::Bool | Ty::Str | Ty::None));
+        }
         match members.len() {
             0 => Ty::Error,
             1 => members[0],
@@ -117,6 +124,7 @@ impl Types {
             Ty::None => "None".into(),
             Ty::Error => "<error>".into(),
             Ty::Param(p) => self.params[p.0 as usize].clone(),
+            Ty::Unknown => "Unknown".into(),
             Ty::Record(r) => {
                 let def = &self.records[r.0 as usize];
                 match &def.name {
@@ -177,6 +185,7 @@ impl Types {
     pub fn member_fits(&self, a: Ty, e: Ty) -> bool {
         match (a, e) {
             _ if a == e => true,
+            (Ty::Int | Ty::Bool | Ty::Str | Ty::None, Ty::Unknown) => true,
             (Ty::Record(x), Ty::Record(y)) => {
                 let have = &self.records[x.0 as usize].fields;
                 self.records[y.0 as usize]
@@ -316,7 +325,7 @@ impl TypeckResult {
     }
 }
 
-const BUILTINS: &[&str] = &["print", "exit"];
+const BUILTINS: &[&str] = &["print", "exit", "arg_count", "arg", "parse_scalar"];
 
 pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
     let mut cx = Ctx {
@@ -558,6 +567,7 @@ impl Ctx {
                 "bool" => Ty::Bool,
                 "str" => Ty::Str,
                 "None" => Ty::None,
+                "Unknown" => Ty::Unknown,
                 other if self.aliases.contains_key(other) => self.resolve_alias(other),
                 other => {
                     self.diags.push(
@@ -698,6 +708,12 @@ impl Ctx {
         related: Option<(RelatedKind, &str, Span)>,
     ) {
         if self.types.fits(actual, expected) {
+            return;
+        }
+        if self.types.members(actual).contains(&Ty::Unknown) {
+            self.diags.push(Diagnostic::error("E0601", "this `Unknown` value has not been checked", span)
+                    .with_cause("values from outside the program must be checked before use (LANG-006, ADR-0011)")
+                    .with_hint("inspect it with `match`: `case int():`, `case str():`, ..., `case _:`"));
             return;
         }
         let d = if self.types.contains_none(actual) && {
@@ -914,7 +930,15 @@ impl<'a> FnCk<'a> {
             ExprKind::Name(n) if self.vars.contains_key(n) => Some(n.clone()),
             _ => None,
         };
-        let members = (st != Ty::Error).then(|| self.cx.types.members(st));
+        // Unknown は int / bool / str / None に加えて「将来増える種類」を持つ開いた型。
+        // 最後の Unknown は `case _:` だけが網羅できる（ADR-0011）。
+        let members = (st != Ty::Error).then(|| {
+            if st == Ty::Unknown {
+                vec![Ty::Int, Ty::Bool, Ty::Str, Ty::None, Ty::Unknown]
+            } else {
+                self.cx.types.members(st)
+            }
+        });
         let mut remaining = members.clone().unwrap_or_default();
         let mut live = Vec::new();
         for arm in arms {
@@ -986,7 +1010,20 @@ impl<'a> FnCk<'a> {
                 live.push(b);
             }
         }
-        if members.is_some() && !remaining.is_empty() {
+        if st == Ty::Unknown && !remaining.is_empty() {
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E0602",
+                    "a `match` on an `Unknown` value needs `case _:`",
+                    subject.span,
+                )
+                .with_cause(
+                    "`Unknown` is open: values of other kinds may appear in the future (ADR-0011)",
+                )
+                .with_hint("add `case _:` to handle every other value"),
+            );
+            live.push(env.clone());
+        } else if members.is_some() && !remaining.is_empty() {
             let missing: Vec<String> = remaining.iter().map(|m| case_text(*m)).collect();
             let msg = format!(
                 "non-exhaustive `match`: `{}` {} not covered",
@@ -1220,6 +1257,10 @@ impl<'a> FnCk<'a> {
                         )
                         .with_hint("use `==` to compare values"),
                     );
+                } else if lt != Ty::Error && self.cx.types.members(lt).contains(&Ty::Unknown) {
+                    self.cx.diags.push(Diagnostic::error("E0601", "this `Unknown` value has not been checked", lhs.span)
+                    .with_cause("values from outside the program must be checked before use (LANG-006, ADR-0011)")
+                    .with_hint("inspect it with `match`: `case int():`, `case str():`, ..., `case _:`"));
                 } else if lt != Ty::Error {
                     if !self.cx.types.contains_none(lt) {
                         let msg = format!(
@@ -1380,6 +1421,15 @@ impl<'a> FnCk<'a> {
         ok: impl Fn(&[Ty]) -> bool,
         span: Span,
     ) {
+        if operands
+            .iter()
+            .any(|t| self.cx.types.members(*t).contains(&Ty::Unknown))
+        {
+            self.cx.diags.push(Diagnostic::error("E0601", "this `Unknown` value has not been checked", span)
+                    .with_cause("values from outside the program must be checked before use (LANG-006, ADR-0011)")
+                    .with_hint("inspect it with `match`: `case int():`, `case str():`, ..., `case _:`"));
+            return;
+        }
         let stripped: Vec<Ty> = operands
             .iter()
             .map(|t| self.cx.types.without_none(*t))
@@ -1462,6 +1512,12 @@ impl<'a> FnCk<'a> {
     /// 検査のために Union 型を登録しない（使われない Union が IR に入らないようにする）。
     fn require_printable(&mut self, t: Ty, span: Span) {
         if t == Ty::Error {
+            return;
+        }
+        if self.cx.types.members(t).contains(&Ty::Unknown) {
+            self.cx.diags.push(Diagnostic::error("E0601", "this `Unknown` value has not been checked", span)
+                    .with_cause("values from outside the program must be checked before use (LANG-006, ADR-0011)")
+                    .with_hint("inspect it with `match`: `case int():`, `case str():`, ..., `case _:`"));
             return;
         }
         let printable = |m: &Ty| matches!(m, Ty::Int | Ty::Bool | Ty::Str);
@@ -1597,6 +1653,12 @@ impl<'a> FnCk<'a> {
         let bt = self.expr(base, env);
         match bt {
             Ty::Error => Ty::Error,
+            Ty::Unknown => {
+                self.cx.diags.push(Diagnostic::error("E0601", "this `Unknown` value has not been checked", base.span)
+                    .with_cause("values from outside the program must be checked before use (LANG-006, ADR-0011)")
+                    .with_hint("inspect it with `match`: `case int():`, `case str():`, ..., `case _:`"));
+                Ty::Error
+            }
             Ty::Record(id) => match self.cx.types.record_def(id).field(&name.name) {
                 Some((_, t)) => t,
                 None => {
@@ -1721,6 +1783,32 @@ impl<'a> FnCk<'a> {
                     self.require_printable(arg_tys[0], args[0].span);
                 }
                 return Ty::None;
+            }
+            "arg_count" | "arg" | "parse_scalar" => {
+                // 外部入力の入口（ADR-0011）
+                let (params, ret): (&[Ty], Ty) = match callee.name.as_str() {
+                    "arg_count" => (&[], Ty::Int),
+                    "arg" => (&[Ty::Int], self.cx.types.union([Ty::Str, Ty::None])),
+                    _ => (&[Ty::Str], Ty::Unknown),
+                };
+                if args.len() != params.len() {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!(
+                            "`{}` takes {} argument(s) but {} were given",
+                            callee.name,
+                            params.len(),
+                            args.len()
+                        ),
+                        span,
+                    ));
+                } else {
+                    for ((a, &at), &pt) in args.iter().zip(&arg_tys).zip(params) {
+                        let ctx = format!("argument of `{}`", callee.name);
+                        self.cx.require(at, pt, a.span, &ctx, None);
+                    }
+                }
+                return ret;
             }
             "exit" => {
                 if args.len() != 1 {
@@ -2182,5 +2270,37 @@ mod tests {
         )));
         let d = check(&m).1;
         assert!(d[0].message.contains("Pair[int, str]"), "{}", d[0].message);
+    }
+
+    #[test]
+    fn unknown_must_be_checked_with_match() {
+        let ok = "def f() -> None:\n    v = parse_scalar(\"1\")\n    match v:\n        case int():\n            print(v + 1)\n        case str():\n            print(v)\n        case _:\n            pass\n    u: Unknown = 1\n    a = arg(0)\n    if a is not None:\n        print(a)\n    print(arg_count())\n";
+        assert_eq!(run(&with_main(ok)), Vec::<&str>::new());
+        let cases = [
+            (
+                "def f() -> None:\n    print(parse_scalar(\"1\"))\n",
+                "E0601",
+            ),
+            (
+                "def f() -> None:\n    x = parse_scalar(\"1\") + 1\n",
+                "E0601",
+            ),
+            (
+                "def f() -> None:\n    n: int = parse_scalar(\"1\")\n",
+                "E0601",
+            ),
+            (
+                "def f() -> bool:\n    return parse_scalar(\"1\") is None\n",
+                "E0601",
+            ),
+            (
+                "def f() -> None:\n    v = parse_scalar(\"1\")\n    match v:\n        case int():\n            pass\n        case bool():\n            pass\n        case str():\n            pass\n        case None:\n            pass\n",
+                "E0602",
+            ),
+            ("def f() -> None:\n    a = arg(\"x\")\n", "E0201"),
+        ];
+        for (src, code) in cases {
+            assert_eq!(run(&with_main(src)), vec![code], "{src}");
+        }
     }
 }

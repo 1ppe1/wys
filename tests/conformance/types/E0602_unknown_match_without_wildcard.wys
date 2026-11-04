@@ -1,0 +1,13 @@
+# Unknown は開いた型なので、すべての種類を書いても case _: が必要
+# expect-error: E0602 5:11
+def main() -> None:
+    v = parse_scalar("1")
+    match v:
+        case int():
+            pass
+        case bool():
+            pass
+        case str():
+            pass
+        case None:
+            pass

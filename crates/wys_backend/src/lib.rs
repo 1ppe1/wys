@@ -81,6 +81,14 @@ declare void @wys_exit(i64) noreturn
 declare void @wys_panic_overflow() noreturn
 declare i64 @wys_floordiv(i64, i64)
 declare i64 @wys_mod(i64, i64)
+declare void @wys_runtime_init(i32, ptr)
+declare i64 @wys_arg_count()
+declare zeroext i1 @wys_arg_exists(i64)
+declare ptr @wys_arg_ptr(i64)
+declare i64 @wys_arg_len(i64)
+declare i64 @wys_scalar_kind(ptr, i64)
+declare i64 @wys_scalar_int(ptr, i64)
+declare zeroext i1 @wys_scalar_bool(ptr, i64)
 declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
@@ -179,7 +187,7 @@ pub fn emit_llvm_ir(p: &Program) -> String {
     let entry = &p.funcs[p.entry.0 as usize];
     let _ = write!(
         out,
-        "\ndefine i32 @main() {{\n  call void {}()\n  ret i32 0\n}}\n",
+        "\ndefine i32 @main(i32 %argc, ptr %argv) {{\n  call void @wys_runtime_init(i32 %argc, ptr %argv)\n  call void {}()\n  ret i32 0\n}}\n",
         fn_symbol(&entry.name)
     );
     out
@@ -379,12 +387,53 @@ fn emit_function(out: &mut String, p: &Program, f: &Function) {
                             "  %s{k}.p = extractvalue {STR_TY} {a}, 0\n  %s{k}.n = extractvalue {STR_TY} {a}, 1\n  call void @wys_print_str(ptr %s{k}.p, i64 %s{k}.n)"
                         );
                     }
+                    Callee::Builtin(
+                        b @ (Builtin::ArgCount
+                        | Builtin::ArgExists
+                        | Builtin::ArgStr
+                        | Builtin::ScalarKind
+                        | Builtin::ScalarInt
+                        | Builtin::ScalarBool),
+                    ) => {
+                        let d = t(dst.expect("input builtins return a value"));
+                        match b {
+                            Builtin::ArgCount => {
+                                let _ = writeln!(out, "  {d} = call i64 @wys_arg_count()");
+                            }
+                            Builtin::ArgExists => {
+                                let _ = writeln!(
+                                    out,
+                                    "  {d} = call zeroext i1 @wys_arg_exists(i64 {})",
+                                    t(args[0])
+                                );
+                            }
+                            Builtin::ArgStr => {
+                                let a = t(args[0]);
+                                let _ = writeln!(
+                                    out,
+                                    "  {d}.p = call ptr @wys_arg_ptr(i64 {a})\n  {d}.n = call i64 @wys_arg_len(i64 {a})\n  {d}.a = insertvalue {STR_TY} poison, ptr {d}.p, 0\n  {d} = insertvalue {STR_TY} {d}.a, i64 {d}.n, 1"
+                                );
+                            }
+                            _ => {
+                                let (sym, ret) = match b {
+                                    Builtin::ScalarKind => ("@wys_scalar_kind", "i64"),
+                                    Builtin::ScalarInt => ("@wys_scalar_int", "i64"),
+                                    _ => ("@wys_scalar_bool", "zeroext i1"),
+                                };
+                                let a = t(args[0]);
+                                let _ = writeln!(
+                                    out,
+                                    "  {d}.p = extractvalue {STR_TY} {a}, 0\n  {d}.n = extractvalue {STR_TY} {a}, 1\n  {d} = call {ret} {sym}(ptr {d}.p, i64 {d}.n)"
+                                );
+                            }
+                        }
+                    }
                     Callee::Builtin(b) => {
                         let (sym, arg_ty) = match b {
                             Builtin::PrintInt => ("@wys_print_int", "i64"),
                             Builtin::PrintBool => ("@wys_print_bool", "i1 zeroext"),
                             Builtin::Exit => ("@wys_exit", "i64"),
-                            Builtin::PrintStr => unreachable!(),
+                            _ => unreachable!("handled by the arms above"),
                         };
                         let _ = writeln!(out, "  call void {sym}({arg_ty} {})", t(args[0]));
                     }
@@ -473,6 +522,13 @@ mod tests {
         };
         let ll = emit_llvm_ir(&p);
         assert!(ll.contains("define void @wys_fn_main()"), "{ll}");
-        assert!(ll.contains("define i32 @main()"), "{ll}");
+        assert!(
+            ll.contains("define i32 @main(i32 %argc, ptr %argv)"),
+            "{ll}"
+        );
+        assert!(
+            ll.contains("call void @wys_runtime_init(i32 %argc, ptr %argv)"),
+            "{ll}"
+        );
     }
 }

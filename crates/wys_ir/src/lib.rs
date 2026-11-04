@@ -21,6 +21,14 @@ pub enum Ty {
 }
 
 impl Ty {
+    /// Union 型の ID。Union でなければパニックする。
+    pub fn union_id(self) -> UnionId {
+        match self {
+            Ty::Union(u) => u,
+            other => panic!("{other:?} is not a union"),
+        }
+    }
+
     pub fn name(self) -> String {
         match self {
             Ty::Int => "int".into(),
@@ -139,6 +147,15 @@ pub enum Builtin {
     PrintBool,
     PrintStr,
     Exit,
+    /// 外部入力（ADR-0011）。`arg` と `parse_scalar` は lowering がこれらを組み合わせて作る。
+    ArgCount,
+    ArgExists,
+    /// `ArgExists` が真の番号にだけ使う。
+    ArgStr,
+    /// 0 = int、1 = bool、2 = str、3 = null
+    ScalarKind,
+    ScalarInt,
+    ScalarBool,
 }
 
 impl Builtin {
@@ -148,6 +165,22 @@ impl Builtin {
             Builtin::PrintBool => "print_bool",
             Builtin::PrintStr => "print_str",
             Builtin::Exit => "exit",
+            Builtin::ArgCount => "arg_count",
+            Builtin::ArgExists => "arg_exists",
+            Builtin::ArgStr => "arg_str",
+            Builtin::ScalarKind => "scalar_kind",
+            Builtin::ScalarInt => "scalar_int",
+            Builtin::ScalarBool => "scalar_bool",
+        }
+    }
+
+    /// 戻り値の型（なければ `None`）。
+    pub fn ret(self) -> Option<Ty> {
+        match self {
+            Builtin::PrintInt | Builtin::PrintBool | Builtin::PrintStr | Builtin::Exit => None,
+            Builtin::ArgCount | Builtin::ScalarKind | Builtin::ScalarInt => Some(Ty::Int),
+            Builtin::ArgExists | Builtin::ScalarBool => Some(Ty::Bool),
+            Builtin::ArgStr => Some(Ty::Str),
         }
     }
 
@@ -156,6 +189,9 @@ impl Builtin {
             Builtin::PrintInt | Builtin::Exit => &[Ty::Int],
             Builtin::PrintBool => &[Ty::Bool],
             Builtin::PrintStr => &[Ty::Str],
+            Builtin::ArgCount => &[],
+            Builtin::ArgExists | Builtin::ArgStr => &[Ty::Int],
+            Builtin::ScalarKind | Builtin::ScalarInt | Builtin::ScalarBool => &[Ty::Str],
         }
     }
 }
@@ -463,7 +499,7 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                 }
                 Inst::Call { dst, callee, args } => {
                     let (params, ret): (Vec<Ty>, Option<Ty>) = match callee {
-                        Callee::Builtin(b) => (b.signature().to_vec(), None),
+                        Callee::Builtin(b) => (b.signature().to_vec(), b.ret()),
                         Callee::Func(id) => {
                             let g = p
                                 .funcs

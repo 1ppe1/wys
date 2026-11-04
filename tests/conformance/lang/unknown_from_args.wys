@@ -1,0 +1,40 @@
+# 外部入力（コマンドライン引数）を parse_scalar で Unknown にし、match で確かめてから使う（AC-003）
+# expect-args: 41 true hello null -5
+# expect-stdout: 5
+# expect-stdout: int
+# expect-stdout: 42
+# expect-stdout: bool
+# expect-stdout: True
+# expect-stdout: str
+# expect-stdout: hello
+# expect-stdout: null
+# expect-stdout: int
+# expect-stdout: -4
+# expect-stdout: missing
+def describe(i: int) -> None:
+    a = arg(i)
+    if a is None:
+        print("missing")
+        return
+    v = parse_scalar(a)
+    match v:
+        case int():
+            print("int")
+            print(v + 1)
+        case bool():
+            print("bool")
+            print(v)
+        case str():
+            print("str")
+            print(v)
+        case None:
+            print("null")
+        case _:
+            print("other")
+
+def main() -> None:
+    print(arg_count())
+    i = 0
+    while i <= arg_count():
+        describe(i)
+        i = i + 1
