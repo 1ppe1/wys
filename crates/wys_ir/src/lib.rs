@@ -6,6 +6,8 @@
 //!   **定義したブロック内でのみ** 使える。ブロックをまたぐ値はローカルを経由する。
 //! - 整数演算（Add/Sub/Mul/FloorDiv/Mod）はオーバーフローと0除算を実行時に検査する意味論を持つ。
 //! - 値を持たない（`None` 型の）式は一時値を作らない。
+//! - Union はタグ付き値（ADR-0009）。`Program::unions` に構成要素を登録し、構成要素の番号がタグになる。
+//!   `None` の構成要素は中身（payload）を持たない。
 
 use std::fmt;
 
@@ -14,16 +16,28 @@ pub enum Ty {
     Int,
     Bool,
     Str,
+    Union(UnionId),
 }
 
 impl Ty {
-    pub fn name(self) -> &'static str {
+    pub fn name(self) -> String {
         match self {
-            Ty::Int => "int",
-            Ty::Bool => "bool",
-            Ty::Str => "str",
+            Ty::Int => "int".into(),
+            Ty::Bool => "bool".into(),
+            Ty::Str => "str".into(),
+            Ty::Union(u) => format!("u{}", u.0),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UnionId(pub u32);
+
+/// Union の構成要素。`None` は中身を持たない構成要素。
+pub type Member = Option<Ty>;
+
+fn member_name(m: Member) -> String {
+    m.map_or("None".into(), Ty::name)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,6 +54,8 @@ pub struct StrId(pub u32);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
     pub strings: Vec<String>,
+    /// Union 型の構成要素。`Ty::Union(UnionId(i))` は `unions[i]` を指す。構成要素は Union を含まない。
+    pub unions: Vec<Vec<Member>>,
     pub funcs: Vec<Function>,
     /// エントリポイント（引数なし・戻り値なし）。
     pub entry: FuncId,
@@ -171,6 +187,25 @@ pub enum Inst {
         callee: Callee,
         args: Vec<TempId>,
     },
+    /// 構成要素 `variant` の Union 値を作る。`None` の構成要素なら `payload` は `None`。
+    MakeUnion {
+        dst: TempId,
+        union: UnionId,
+        variant: u32,
+        payload: Option<TempId>,
+    },
+    /// Union 値のタグが `variant` かどうか（`bool`）。
+    UnionIs {
+        dst: TempId,
+        src: TempId,
+        variant: u32,
+    },
+    /// Union 値から構成要素 `variant` の中身を取り出す。タグが違う値に使ってはならない（lowering が保証する）。
+    UnionPayload {
+        dst: TempId,
+        src: TempId,
+        variant: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,13 +231,43 @@ pub fn verify(p: &Program) -> Result<(), String> {
     if entry.param_count != 0 || entry.ret.is_some() {
         return Err("entry function must take no parameters and return nothing".into());
     }
+    for (i, members) in p.unions.iter().enumerate() {
+        if members.len() < 2 || members.iter().any(|m| matches!(m, Some(Ty::Union(_)))) {
+            return Err(format!(
+                "union u{i} must have at least two non-union members"
+            ));
+        }
+    }
     for f in &p.funcs {
         verify_function(p, f).map_err(|e| format!("in function `{}`: {e}", f.name))?;
     }
     Ok(())
 }
 
+fn union_member(p: &Program, u: UnionId, variant: u32) -> Result<Member, String> {
+    let members = p
+        .unions
+        .get(u.0 as usize)
+        .ok_or_else(|| format!("unknown union u{}", u.0))?;
+    members
+        .get(variant as usize)
+        .copied()
+        .ok_or_else(|| format!("union u{} has no variant {variant}", u.0))
+}
+
+fn verify_types(p: &Program, f: &Function) -> Result<(), String> {
+    for t in f.locals.iter().chain(&f.temps).chain(f.ret.iter()) {
+        if let Ty::Union(u) = t
+            && u.0 as usize >= p.unions.len()
+        {
+            return Err(format!("unknown union u{}", u.0));
+        }
+    }
+    Ok(())
+}
+
 fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
+    verify_types(p, f)?;
     if f.param_count as usize > f.locals.len() {
         return Err("param_count exceeds number of locals".into());
     }
@@ -300,6 +365,45 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                     expect("binary result", temp_ty(*dst)?, rty)?;
                     define(*dst, &mut defined_in)?;
                 }
+                Inst::MakeUnion {
+                    dst,
+                    union,
+                    variant,
+                    payload,
+                } => {
+                    let member = union_member(p, *union, *variant)?;
+                    match (member, payload) {
+                        (None, None) => {}
+                        (Some(want), Some(t)) => {
+                            expect("union payload", use_(*t, &defined_in)?, want)?
+                        }
+                        _ => {
+                            return Err(format!(
+                                "bb{bi}: union payload does not match the variant"
+                            ));
+                        }
+                    }
+                    expect("make_union result", temp_ty(*dst)?, Ty::Union(*union))?;
+                    define(*dst, &mut defined_in)?;
+                }
+                Inst::UnionIs { dst, src, variant } => {
+                    let Ty::Union(u) = use_(*src, &defined_in)? else {
+                        return Err(format!("bb{bi}: union_is on a non-union value"));
+                    };
+                    union_member(p, u, *variant)?;
+                    expect("union_is result", temp_ty(*dst)?, Ty::Bool)?;
+                    define(*dst, &mut defined_in)?;
+                }
+                Inst::UnionPayload { dst, src, variant } => {
+                    let Ty::Union(u) = use_(*src, &defined_in)? else {
+                        return Err(format!("bb{bi}: union_payload on a non-union value"));
+                    };
+                    let Some(want) = union_member(p, u, *variant)? else {
+                        return Err(format!("bb{bi}: the None variant has no payload"));
+                    };
+                    expect("union_payload result", temp_ty(*dst)?, want)?;
+                    define(*dst, &mut defined_in)?;
+                }
                 Inst::Not { dst, src } => {
                     expect("not operand", use_(*src, &defined_in)?, Ty::Bool)?;
                     expect("not result", temp_ty(*dst)?, Ty::Bool)?;
@@ -370,6 +474,10 @@ impl fmt::Display for Program {
         for (i, s) in self.strings.iter().enumerate() {
             writeln!(f, "string s{i} = {s:?}")?;
         }
+        for (i, members) in self.unions.iter().enumerate() {
+            let names: Vec<String> = members.iter().map(|m| member_name(*m)).collect();
+            writeln!(f, "union u{i} = {}", names.join(" | "))?;
+        }
         writeln!(f, "entry f{}", self.entry.0)?;
         for (i, func) in self.funcs.iter().enumerate() {
             writeln!(f)?;
@@ -409,6 +517,27 @@ impl fmt::Display for Program {
                             writeln!(f, "t{} = {} t{}, t{}", dst.0, op.name(), lhs.0, rhs.0)?
                         }
                         Inst::Not { dst, src } => writeln!(f, "t{} = not t{}", dst.0, src.0)?,
+                        Inst::MakeUnion {
+                            dst,
+                            union,
+                            variant,
+                            payload,
+                        } => match payload {
+                            Some(t) => writeln!(
+                                f,
+                                "t{} = make_union u{}.{variant}(t{})",
+                                dst.0, union.0, t.0
+                            )?,
+                            None => {
+                                writeln!(f, "t{} = make_union u{}.{variant}()", dst.0, union.0)?
+                            }
+                        },
+                        Inst::UnionIs { dst, src, variant } => {
+                            writeln!(f, "t{} = union_is t{}, {variant}", dst.0, src.0)?
+                        }
+                        Inst::UnionPayload { dst, src, variant } => {
+                            writeln!(f, "t{} = union_payload t{}, {variant}", dst.0, src.0)?
+                        }
                         Inst::Call { dst, callee, args } => {
                             if let Some(d) = dst {
                                 write!(f, "t{} = ", d.0)?;
@@ -456,6 +585,7 @@ mod tests {
     fn hello() -> Program {
         Program {
             strings: vec!["hi".into()],
+            unions: vec![],
             entry: FuncId(0),
             funcs: vec![Function {
                 name: "main".into(),
@@ -506,6 +636,50 @@ mod tests {
         });
         let err = verify(&p).unwrap_err();
         assert!(err.contains("outside its defining block"), "{err}");
+    }
+
+    #[test]
+    fn union_instructions_verify_and_dump() {
+        let mut p = hello();
+        p.unions = vec![vec![Some(Ty::Str), None]];
+        let f = &mut p.funcs[0];
+        f.temps.extend([Ty::Union(UnionId(0)), Ty::Bool, Ty::Str]);
+        f.blocks[0].insts.insert(
+            1,
+            Inst::MakeUnion {
+                dst: TempId(1),
+                union: UnionId(0),
+                variant: 0,
+                payload: Some(TempId(0)),
+            },
+        );
+        f.blocks[0].insts.insert(
+            2,
+            Inst::UnionIs {
+                dst: TempId(2),
+                src: TempId(1),
+                variant: 1,
+            },
+        );
+        f.blocks[0].insts.insert(
+            3,
+            Inst::UnionPayload {
+                dst: TempId(3),
+                src: TempId(1),
+                variant: 0,
+            },
+        );
+        verify(&p).unwrap();
+        let text = p.to_string();
+        assert!(text.contains("union u0 = str | None"), "{text}");
+        assert!(text.contains("t1 = make_union u0.0(t0)"), "{text}");
+        // None の構成要素から中身は取り出せない
+        p.funcs[0].blocks[0].insts[3] = Inst::UnionPayload {
+            dst: TempId(3),
+            src: TempId(1),
+            variant: 1,
+        };
+        assert!(verify(&p).is_err());
     }
 
     #[test]

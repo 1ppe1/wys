@@ -1,0 +1,14 @@
+# None を含まない Union の値を print する（タグで分岐）
+# expect-stdout: 42
+# expect-stdout: forty-two
+# expect-stdout: True
+def pick(as_text: bool) -> int | str:
+    if as_text:
+        return "forty-two"
+    return 42
+
+def main() -> None:
+    print(pick(False))
+    print(pick(True))
+    x: int | str | bool = True
+    print(x)

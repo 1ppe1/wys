@@ -1,0 +1,17 @@
+# Union から Union への変換（広げる: int | None → int | str | None、狭める: 絞り込み後の int | str）
+# expect-stdout: 7
+# expect-stdout: seven
+# expect-stdout: absent
+def show(v: int | str | None) -> None:
+    if v is None:
+        print("absent")
+    else:
+        print(v)
+
+def main() -> None:
+    a: int | None = 7
+    show(a)
+    b: str | None = "seven"
+    show(b)
+    c: int | None = None
+    show(c)

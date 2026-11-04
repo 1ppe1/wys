@@ -116,6 +116,11 @@ impl Types {
     pub fn is_union(&self, t: Ty) -> bool {
         matches!(t, Ty::Union(_))
     }
+
+    /// 登録済みの Union の構成要素（`UnionId` の順）。
+    pub fn unions(&self) -> &[Vec<Ty>] {
+        &self.unions
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -145,19 +150,6 @@ pub struct TypeckResult {
 impl TypeckResult {
     pub fn ty(&self, e: &Expr) -> Ty {
         self.expr_types[e.id.0 as usize]
-    }
-
-    /// シグネチャかローカル変数に Union 型を含む関数の番号（コード生成が未対応かどうかの判定用）。
-    pub fn first_function_using_unions(&self) -> Option<usize> {
-        (0..self.sigs.len()).find(|&i| {
-            let sig = &self.sigs[i];
-            self.types.is_union(sig.ret)
-                || sig.params.iter().any(|t| self.types.is_union(*t))
-                || self.funcs[i]
-                    .locals
-                    .iter()
-                    .any(|(_, t)| self.types.is_union(*t))
-        })
     }
 }
 
@@ -871,6 +863,37 @@ impl<'a> FnCk<'a> {
         Ty::Error
     }
 
+    /// `print` の引数は `int` / `bool` / `str` とその Union。
+    /// 検査のために Union 型を登録しない（使われない Union が IR に入らないようにする）。
+    fn require_printable(&mut self, t: Ty, span: Span) {
+        if t == Ty::Error {
+            return;
+        }
+        let printable = |m: &Ty| matches!(m, Ty::Int | Ty::Bool | Ty::Str);
+        let members = self.cx.types.members(t);
+        if members.iter().all(printable) {
+            return;
+        }
+        let found = self.cx.name(t);
+        let d = if members.iter().all(|m| printable(m) || *m == Ty::None) {
+            Diagnostic::error(
+                "E0301",
+                format!("this value may be `None`: `print` cannot print `{found}`"),
+                span,
+            )
+            .with_cause("`print` accepts `int`, `bool` or `str`")
+            .with_hint("check it first, e.g. `if x is not None:`")
+        } else {
+            Diagnostic::error(
+                "E0201",
+                format!("mismatched types: `print` cannot print `{found}`"),
+                span,
+            )
+            .with_cause("`print` accepts `int`, `bool` or `str`")
+        };
+        self.cx.diags.push(d);
+    }
+
     fn call(&mut self, callee: &Ident, args: &[Expr], span: Span, env: &Env) -> Ty {
         let arg_tys: Vec<Ty> = args.iter().map(|a| self.expr(a, env)).collect();
         match callee.name.as_str() {
@@ -882,14 +905,7 @@ impl<'a> FnCk<'a> {
                         span,
                     ));
                 } else {
-                    let printable = self.cx.types.union([Ty::Int, Ty::Bool, Ty::Str]);
-                    self.cx.require(
-                        arg_tys[0],
-                        printable,
-                        args[0].span,
-                        "`print` accepts `int`, `bool` or `str`",
-                        None,
-                    );
+                    self.require_printable(arg_tys[0], args[0].span);
                 }
                 return Ty::None;
             }
@@ -1071,12 +1087,7 @@ mod tests {
         assert_eq!(run(&src), vec!["E0301"]);
         let (m, _) = wys_parser::parse_source(&src);
         let d = check(&m).1;
-        assert!(
-            d[0].message.contains("expected `bool | int | str`")
-                || d[0].message.contains("found `str | None`"),
-            "{}",
-            d[0].message
-        );
+        assert!(d[0].message.contains("`str | None`"), "{}", d[0].message);
     }
 
     #[test]

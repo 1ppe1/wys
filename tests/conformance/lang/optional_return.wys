@@ -1,0 +1,27 @@
+# Optional を返す関数と、呼び出し結果の None 検査
+# expect-stdout: two
+# expect-stdout: not found
+# expect-stdout: 2
+def name_of(n: int) -> str | None:
+    if n == 1:
+        return "one"
+    elif n == 2:
+        return "two"
+    return None
+
+def show(s: str | None) -> None:
+    if s is None:
+        print("not found")
+    else:
+        print(s)
+
+def main() -> None:
+    show(name_of(2))
+    show(name_of(5))
+    found = 0
+    i = 0
+    while i < 4:
+        if name_of(i) is not None:
+            found = found + 1
+        i = i + 1
+    print(found)

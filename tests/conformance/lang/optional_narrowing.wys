@@ -1,0 +1,21 @@
+# T | None の絞り込み（is None / elif / and / 早期 return、None に絞り込まれた変数の受け渡し）
+# expect-stdout: nothing
+# expect-stdout: positive even
+# expect-stdout: other
+# expect-stdout: other
+# expect-stdout: nothing
+def describe(n: int | None) -> str:
+    if n is None:
+        return "nothing"
+    elif n > 0 and n % 2 == 0:
+        return "positive even"
+    return "other"
+
+def main() -> None:
+    print(describe(None))
+    print(describe(4))
+    print(describe(3))
+    print(describe(-2))
+    m: int | None = None
+    if m is None:
+        print(describe(m))

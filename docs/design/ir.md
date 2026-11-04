@@ -1,4 +1,4 @@
-# 共通IR 設計メモ（PoC1 時点の草案）
+# 共通IR 設計メモ（M2 T1b 時点）
 
 実装: `crates/wys_ir`。AST からの変換は `crates/wys_lower`、LLVM IR への変換は `crates/wys_backend`。
 
@@ -19,7 +19,15 @@
 
 ## 型
 
-`int`（i64）、`bool`、`str`（定数文字列へのポインタと長さ）。`None` 型の式は一時値を作らない。
+`int`（i64）、`bool`、`str`（定数文字列へのポインタと長さ）、Union（`u0`, `u1`...）。`None` 型の式は一時値を作らない。
+
+## Union（M2 T1b、ADR-0009）
+
+- `Program.unions` に構成要素を登録する（例: `union u0 = int | str | None`）。構成要素の番号がタグ。`None` の構成要素は中身を持たない。
+- 命令: `make_union uN.k(t)`（構成要素 k の値を作る）、`union_is t, k`（タグが k か）、`union_payload t, k`（中身を取り出す。タグが k の値にだけ使う）。
+- 型が変わる地点（代入、引数、戻り値、絞り込まれた変数の読み出し）で、lowering が変換を挿入する。基本型 → Union は `make_union`、Union → 基本型は `union_payload`、Union → Union はタグで分岐して詰め直す。
+- LLVM では `%union.N = type { i8, [W x i64] }`（W は最大の中身の語数。`str` は2語）。命令が使う作業領域は関数の入口で `alloca` する。
+- ランタイム（C ABI）には Union を渡さない。`print` は Union のタグで分岐して、構成要素ごとの組み込み関数を呼ぶ。
 
 ## 意味論
 
