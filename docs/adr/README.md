@@ -25,6 +25,7 @@
 | [0009](0009-m2-interim-value-representation.md) | M2 の暫定値表現（ヒープを使わない） | Accepted | 2026-11-04 |
 | [0010](0010-modules-and-visibility.md) | モジュールと可視性 | Accepted | 2026-11-04 |
 | [0011](0011-unknown-and-validation.md) | `Unknown` の実行時表現と検証 API | Accepted | 2026-11-04 |
+| [0012](0012-heap-objects-and-arc-pass.md) | ヒープオブジェクトと、IR パスによる ARC | Proposed | 2026-11-04 |
 
 ## 未決定事項との対応
 
