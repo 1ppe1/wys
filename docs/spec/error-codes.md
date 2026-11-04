@@ -77,6 +77,8 @@
 | integer modulo by zero | `%` の除数が 0 |
 | assertion failed at ファイル:行:列 | `assert(cond)` の条件が偽 |
 
+プログラムの終了時に解放されていないオブジェクトが残っていた場合は、`runtime error: N object(s) were not freed (this is a compiler bug)` を出して終了コード 102 で終わる（ARC の誤りを検出するための検査、ADR-0012）。
+
 ## 組み込み関数（外部入力は ADR-0011）
 
 | 関数 | 型 | 内容 |

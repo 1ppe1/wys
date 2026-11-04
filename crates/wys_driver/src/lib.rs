@@ -155,7 +155,10 @@ fn run_frontend(
             return failed(file, diagnostics);
         }
     };
-    if let Err(e) = wys_ir::verify(&program) {
+    let mut program = program;
+    // ARC: retain / release を挿入し（ADR-0012）、IR と参照カウントの釣り合いを検証する
+    wys_ir::arc::insert(&mut program);
+    if let Err(e) = wys_ir::verify(&program).and_then(|()| wys_ir::arc::verify(&program)) {
         panic!("internal compiler error: IR verification failed: {e}\n{program}");
     }
     (
