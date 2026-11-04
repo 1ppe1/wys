@@ -107,3 +107,28 @@ fn every_error_code_has_a_case() {
         "error codes without a conformance case: {missing:?}"
     );
 }
+
+/// AC-005: すべてのケースの診断 JSON が `docs/spec/diagnostics-schema.json` に従う。
+#[test]
+fn all_diagnostics_match_schema() {
+    let root = repo_root();
+    let schema: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("docs/spec/diagnostics-schema.json")).unwrap(),
+    )
+    .unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let mut checked = 0;
+    for case in collect_cases(&root.join("tests/conformance")) {
+        let name = rel(&root, &case);
+        let fe = wys_driver::frontend(&name, &std::fs::read_to_string(&case).unwrap());
+        let json: serde_json::Value =
+            serde_json::from_str(&wys_driver::to_json(&fe.file, &fe.diagnostics)).unwrap();
+        let errors: Vec<String> = validator
+            .iter_errors(&json)
+            .map(|e| e.to_string())
+            .collect();
+        assert!(errors.is_empty(), "{name}: schema violations: {errors:?}");
+        checked += 1;
+    }
+    assert!(checked > 40, "too few cases checked: {checked}");
+}

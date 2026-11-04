@@ -1004,6 +1004,8 @@ name = "wys_testharness"
 version = "0.0.0"
 dependencies = [
  "insta",
+ "jsonschema",
+ "serde_json",
  "wys_driver",
 ]
 

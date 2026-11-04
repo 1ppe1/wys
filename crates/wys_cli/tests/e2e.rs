@@ -74,6 +74,19 @@ fn ac004_hello_world_builds_a_standalone_executable() {
     let run = Command::new(&exe).output().unwrap();
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Hello, world!\n");
     assert_eq!(run.status.code(), Some(0));
+
+    // 外部インタプリタやランタイムの共有ライブラリに依存しない（OS 標準のライブラリだけ）
+    if cfg!(target_os = "macos") {
+        let libs = Command::new("otool").arg("-L").arg(&exe).output().unwrap();
+        let libs = String::from_utf8(libs.stdout).unwrap();
+        for line in libs.lines().skip(1) {
+            let lib = line.trim();
+            assert!(
+                lib.starts_with("/usr/lib/") || lib.starts_with("/System/"),
+                "unexpected dynamic dependency: {lib}"
+            );
+        }
+    }
 }
 
 #[test]

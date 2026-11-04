@@ -15,3 +15,5 @@ wys_driver = { path = "../wys_driver" }
 
 [dev-dependencies]
 insta = "1"
+jsonschema = { version = "0.30", default-features = false }
+serde_json = "1"
