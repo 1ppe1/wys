@@ -23,6 +23,7 @@
 | [0007](0007-structural-vs-nominal-typing.md) | 構造的型付けと名目的型付けの境界 | Accepted | 2026-11-04 |
 | [0008](0008-runtime-static-linking.md) | ランタイムは Rust staticlib として静的リンクする | Accepted | 2026-11-04 |
 | [0009](0009-m2-interim-value-representation.md) | M2 の暫定値表現（ヒープを使わない） | Accepted | 2026-11-04 |
+| [0010](0010-modules-and-visibility.md) | モジュールと可視性 | Proposed | 2026-11-04 |
 
 ## 未決定事項との対応
 
@@ -30,7 +31,7 @@
 
 | # | 未決定事項 | 決定が必要な時期 | 関連要件 | ADR |
 |---|---|---|---|---|
-| 1 | 言語名、拡張子、パッケージ名、ファイル単位の可視性規則 | Phase 1（可視性規則）／公開前（名称） | LANG-001 | — |
+| 1 | 言語名、拡張子、パッケージ名、ファイル単位の可視性規則 | Phase 1（可視性規則）／公開前（名称） | LANG-001 | [0010](0010-modules-and-visibility.md)（可視性のみ。Proposed） |
 | 2 | 構造的型付けと名目的型付けを適用する境界 | Phase 1 | LANG-005 | [0007](0007-structural-vs-nominal-typing.md) |
 | 3 | Union/Null、Generics、エラー処理の正確な構文 | Phase 1 | LANG-003, 004, 008 | [0006](0006-union-null-generics-error-syntax.md) |
 | 4 | ARC/ORC相当の方式、循環参照回収、Ownership/Borrowの詳細 | Phase 1 | MEM-001〜005 | [0005](0005-memory-model-arc-move.md) |
