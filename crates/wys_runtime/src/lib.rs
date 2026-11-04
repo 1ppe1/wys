@@ -374,9 +374,14 @@ pub extern "C" fn wys_mod(a: i64, b: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// 生存オブジェクト数（プロセス全体で共有）を使うテストは、並列に動かすと互いの確保を数えてしまうので順番に実行する。
+    static LIVE_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn objects_are_counted_and_freed() {
+        let _guard = LIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let before = LIVE.load(Ordering::Relaxed);
         let p = new_object(5);
         assert_eq!(LIVE.load(Ordering::Relaxed), before + 1);
@@ -403,6 +408,7 @@ mod tests {
 
     #[test]
     fn string_operations() {
+        let _guard = LIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let before = LIVE.load(Ordering::Relaxed);
         let a = new_immortal("あい".as_bytes());
         let b = new_immortal(b"u");
