@@ -89,6 +89,13 @@ bb0:
 - 比較は構造的: `list` は長さと順序どおりの要素、`dict` は要素数と、各キーが相手にあって値が等しいこと（順序は問わない）、Union（`Result` を含む）はタグと payload、レコードはフィールドごと。
 - 被演算子は借用で読み、参照カウントは変えない。型の違う値の比較（`o == 1`）は、lowering が広い方の Union に揃えてから比べる。
 
+## Python のハンドル（M4 T5、ADR-0018）
+
+- 型 `py` は、Python のオブジェクトを包んだハンドル（ヒープオブジェクトへのポインタ1語）。retain は本言語の参照カウントだけを増やし、release は `@wys_py_release`（参照カウントが 0 になったら `Py_DecRef` してから解放する）。比較と表示はできない（型検査が E1202 で止める）。
+- 組み込み関数 `py_import(str)`、`py_getattr(py, str)`、`py_call(py, list[py])`、`py_from_int` / `py_from_bool` / `py_from_str`、`py_none()` は、新しいハンドルを +1 所有で返す。`py_to_int` / `py_to_bool` / `py_to_str`（+1 所有の文字列）は値を読み、`py_is_none` は失敗しない。
+- 失敗し得る操作の直後に `py_failed()` で確かめ、失敗なら `py_err_kind()` / `py_err_message()` / `py_err_traceback()`（+1 所有の文字列）で理由を読む。lowering がこれで `Result[.., PyError]` を作る（T6 / T7）。失敗したときの戻り値（null のハンドル、`0` など）は使わない。null のハンドルの retain / release は何もしない。
+- Python を使うプログラム（`wys_ir::uses_python`: Python の組み込みを呼ぶか、`py` 型を使う）だけ、バックエンドが Python のランタイムの宣言と、`main` の終わりの `@wys_py_finish`（`Py_FinalizeEx`）を入れ、driver が `libwys_runtime_python.a` と `libpython3.14` をリンクする。それ以外のプログラムの生成コードとリンクは変わらない。
+
 ## 構造を持つ値の表示（M3 T10c、ADR-0016）
 
 - 組み込み関数 `print_value` は、レコード・`list`・`dict`・Union（`Result` を含む）の値を1つ受け取り、表示して改行する。`int` / `bool` / `str` は従来どおり `print_int` / `print_bool` / `print_str`。トップレベルの Union は、lowering がタグで分岐して、構成要素ごとにどちらかを呼ぶ。

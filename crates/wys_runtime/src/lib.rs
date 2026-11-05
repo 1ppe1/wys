@@ -212,6 +212,19 @@ pub mod embed {
     pub fn runtime_error(msg: &str) -> ! {
         super::runtime_error(msg)
     }
+
+    /// 要素が1語（ポインタ）のリストの要素を、先頭から順に読む。
+    ///
+    /// # Safety
+    /// `l` は生存している、要素の大きさが 8 バイトのリスト。
+    pub unsafe fn list_words(l: *const super::ListObj) -> Vec<usize> {
+        // SAFETY: 関数の安全条件どおり。
+        unsafe {
+            let n = (*l).len as usize;
+            let data = (*l).data as *const usize;
+            (0..n).map(|i| *data.add(i)).collect()
+        }
+    }
 }
 
 // ---------------------------------------------------------------- strings (M3 T2b)

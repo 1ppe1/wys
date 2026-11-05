@@ -39,7 +39,7 @@ impl DropInfo {
     fn needs_drop(&mut self, p: &Program, t: Ty) -> bool {
         match t {
             Ty::Int | Ty::Bool => false,
-            Ty::Str | Ty::List(_) | Ty::Dict(_) => true,
+            Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py => true,
             Ty::Union(u) => {
                 if let Some(v) = self.unions[u.0 as usize] {
                     return v;
@@ -69,7 +69,7 @@ impl DropInfo {
     pub fn get(&self, t: Ty) -> bool {
         match t {
             Ty::Int | Ty::Bool => false,
-            Ty::Str | Ty::List(_) | Ty::Dict(_) => true,
+            Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py => true,
             Ty::Union(u) => self.unions[u.0 as usize].unwrap_or(false),
             Ty::Record(r) => self.records[r.0 as usize].unwrap_or(false),
         }

@@ -188,7 +188,7 @@ fn llty(t: Ty) -> String {
         Ty::Str => "ptr".into(),
         Ty::Union(u) => format!("%union.{}", u.0),
         Ty::Record(r) => format!("%record.{}", r.0),
-        Ty::List(_) | Ty::Dict(_) => "ptr".into(),
+        Ty::List(_) | Ty::Dict(_) | Ty::Py => "ptr".into(),
     }
 }
 
@@ -197,7 +197,7 @@ fn llty(t: Ty) -> String {
 fn words(p: &Program, t: Ty) -> u32 {
     match t {
         Ty::Int | Ty::Bool => 1,
-        Ty::Str | Ty::List(_) | Ty::Dict(_) => 1,
+        Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py => 1,
         Ty::Union(u) => 1 + union_payload_words(p, u),
         // フィールドのないレコードは埋め草の 1 バイト（`type_defs`）を持つので 1 語
         Ty::Record(r) => p.records[r.0 as usize]
@@ -318,14 +318,46 @@ fn emit_module(p: &Program) -> String {
         emit_function(&mut out, p, f, &drops);
     }
     emit_glue(&mut out, p, &drops);
+    // Python を使うプログラムだけ、Python のランタイムの宣言と終了処理を入れる（ADR-0018 論点 4・7）
+    let python = wys_ir::uses_python(p);
+    if python {
+        out.push_str(PYTHON_DECLS);
+    }
+    let finish = if python {
+        "  call void @wys_py_finish()\n"
+    } else {
+        ""
+    };
     let entry = &p.funcs[p.entry.0 as usize];
     let _ = write!(
         out,
-        "\ndefine i32 @main(i32 %argc, ptr %argv) {{\n  call void @wys_runtime_init(i32 %argc, ptr %argv)\n  call void {}()\n  call void @wys_runtime_finish()\n  ret i32 0\n}}\n",
-        fn_symbol(&entry.name)
+        "\ndefine i32 @main(i32 %argc, ptr %argv) {{\n  call void @wys_runtime_init(i32 %argc, ptr %argv)\n  call void {}()\n{}  call void @wys_runtime_finish()\n  ret i32 0\n}}\n",
+        fn_symbol(&entry.name),
+        finish
     );
     out
 }
+
+/// Python のランタイム（`wys_runtime_python`）の関数の宣言。
+const PYTHON_DECLS: &str = "
+declare ptr @wys_py_import(ptr)
+declare ptr @wys_py_getattr(ptr, ptr)
+declare ptr @wys_py_call(ptr, ptr)
+declare ptr @wys_py_from_int(i64)
+declare ptr @wys_py_from_bool(i1 zeroext)
+declare ptr @wys_py_from_str(ptr)
+declare ptr @wys_py_none()
+declare i64 @wys_py_to_int(ptr)
+declare zeroext i1 @wys_py_to_bool(ptr)
+declare ptr @wys_py_to_str(ptr)
+declare zeroext i1 @wys_py_is_none(ptr)
+declare zeroext i1 @wys_py_failed()
+declare ptr @wys_py_err_kind()
+declare ptr @wys_py_err_message()
+declare ptr @wys_py_err_traceback()
+declare void @wys_py_release(ptr)
+declare void @wys_py_finish()
+";
 
 /// 参照カウントの操作の関数名（`kind` は "retain" か "release"）。
 fn glue(kind: &str, t: Ty) -> String {
@@ -338,6 +370,9 @@ fn glue(kind: &str, t: Ty) -> String {
         Ty::Dict(d) => format!("@wys_release_dict{}", d.0),
         Ty::Union(u) => format!("@wys_{kind}_u{}", u.0),
         Ty::Record(r) => format!("@wys_{kind}_r{}", r.0),
+        // Python のハンドル: retain は参照カウントだけ、最後の release が Python の参照を手放す（ADR-0018 論点 6）
+        Ty::Py if kind == "retain" => "@wys_rc_retain".to_string(),
+        Ty::Py => "@wys_py_release".to_string(),
         Ty::Int | Ty::Bool => unreachable!("scalars have no reference counts"),
     }
 }
@@ -463,6 +498,7 @@ fn eq_inst(t: Ty, dst: &str, a: &str, b: &str) -> String {
     match t {
         Ty::Int | Ty::Bool => format!("  {dst} = icmp eq {} {a}, {b}", llty(t)),
         Ty::Str => format!("  {dst} = call zeroext i1 @wys_str_eq(ptr {a}, ptr {b})"),
+        Ty::Py => unreachable!("Python handles cannot be compared (E1202)"),
         Ty::List(l) => format!("  {dst} = call i1 @wys_eq_list{}(ptr {a}, ptr {b})", l.0),
         Ty::Dict(d) => format!("  {dst} = call i1 @wys_eq_dict{}(ptr {a}, ptr {b})", d.0),
         Ty::Union(u) => format!(
@@ -506,7 +542,7 @@ fn eq_types(p: &Program) -> Vec<Ty> {
             Ty::Dict(d) => work.push(p.dicts[d.0 as usize].1),
             Ty::Union(u) => work.extend(p.unions[u.0 as usize].iter().flatten()),
             Ty::Record(r) => work.extend(p.records[r.0 as usize].iter().map(|(_, t)| *t)),
-            Ty::Int | Ty::Bool | Ty::Str => {}
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Py => {}
         }
     }
     seen
@@ -584,7 +620,7 @@ fn emit_eq_glue(out: &mut String, p: &Program) {
                 }
                 let _ = writeln!(out, "  ret i1 {acc}\n}}");
             }
-            Ty::Int | Ty::Bool | Ty::Str => {}
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Py => {}
         }
     }
 }
@@ -620,7 +656,7 @@ fn show_types(p: &Program) -> Vec<Ty> {
             }
             Ty::Union(u) => work.extend(p.unions[u.0 as usize].iter().flatten()),
             Ty::Record(r) => work.extend(p.records[r.0 as usize].iter().map(|(_, t)| *t)),
-            Ty::Int | Ty::Bool | Ty::Str => {}
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Py => {}
         }
     }
     seen
@@ -664,6 +700,7 @@ fn show_inst(t: Ty, v: &str) -> String {
         Ty::Int => format!("  call void @wys_write_int(i64 {v})"),
         Ty::Bool => format!("  call void @wys_write_bool(i1 zeroext {v})"),
         Ty::Str => format!("  call void @wys_write_str(ptr {v})"),
+        Ty::Py => unreachable!("Python handles cannot be printed (E1202)"),
         Ty::List(l) => format!("  call void @wys_show_list{}(ptr {v})", l.0),
         Ty::Dict(d) => format!("  call void @wys_show_dict{}(ptr {v})", d.0),
         Ty::Union(u) => format!("  call void @wys_show_u{}({} {v})", u.0, llty(t)),
@@ -770,7 +807,7 @@ fn emit_show_glue(out: &mut String, p: &Program) {
                 }
                 let _ = writeln!(out, "{}\n  ret void\n}}", texts.write(")"));
             }
-            Ty::Int | Ty::Bool | Ty::Str => {}
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Py => {}
         }
     }
     texts.emit(out);
@@ -1292,6 +1329,40 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                     }
                     Callee::Builtin(Builtin::PrintStr) => {
                         let _ = writeln!(out, "  call void @wys_print_str(ptr {})", t(args[0]));
+                    }
+                    Callee::Builtin(b) if b.is_python() => {
+                        // Python のランタイムの関数（ADR-0018）。引数と戻り値の型は IR の型から決まる
+                        let params: Vec<String> = args
+                            .iter()
+                            .map(|a| {
+                                let ty = f.temps[a.0 as usize];
+                                let lt = if ty == Ty::Bool {
+                                    "i1 zeroext".into()
+                                } else {
+                                    llty(ty)
+                                };
+                                format!("{lt} {}", t(*a))
+                            })
+                            .collect();
+                        let sym = format!("@wys_{}", b.name());
+                        match (dst, b.ret()) {
+                            (Some(d), Some(rt)) => {
+                                let rt = if rt == Ty::Bool {
+                                    "zeroext i1".into()
+                                } else {
+                                    llty(rt)
+                                };
+                                let _ = writeln!(
+                                    out,
+                                    "  {} = call {rt} {sym}({})",
+                                    t(*d),
+                                    params.join(", ")
+                                );
+                            }
+                            _ => {
+                                let _ = writeln!(out, "  call void {sym}({})", params.join(", "));
+                            }
+                        }
                     }
                     Callee::Builtin(Builtin::PrintValue) => {
                         let _ = writeln!(
