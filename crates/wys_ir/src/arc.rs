@@ -289,6 +289,60 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
     f.temps = temps;
 }
 
+/// 引数のスロットの参照の釣り合い（M4 T3 の Move 最適化の検査）: 解放が必要な型の引数ごとに、入口の
+/// `param_slot_entry` の retain と、すべての `return` のブロックの `slot_at_function_exit` の release が、両方あるか
+/// 両方ないこと。両方ないのは、関数の中で代入しない引数だけ（呼び出し側の参照を借りる）。
+/// ブロックごとの釣り合いの検査は、スロットから読んだ一時値の release を数えないので、この組の片方だけが
+/// 残る誤りをここで見つける（PR #89 のレビュー）。
+fn verify_param_slots(f: &Function, drops: &DropInfo) -> Result<(), String> {
+    let pair = |insts: &[Inst], p: LocalId, want: RcReason, retain: bool| {
+        insts.windows(2).any(|w| match (&w[0], &w[1]) {
+            (Inst::Load { dst, src }, Inst::Retain { src: t, reason }) if retain => {
+                *src == p && t == dst && *reason == want
+            }
+            (Inst::Load { dst, src }, Inst::Release { src: t, reason }) if !retain => {
+                *src == p && t == dst && *reason == want
+            }
+            _ => false,
+        })
+    };
+    for p in (0..f.param_count).map(LocalId) {
+        if !drops.get(f.locals[p.0 as usize]) {
+            continue;
+        }
+        let stored = f
+            .blocks
+            .iter()
+            .flat_map(|b| &b.insts)
+            .any(|i| matches!(i, Inst::Store { dst, .. } if *dst == p));
+        let entry = f
+            .blocks
+            .first()
+            .is_some_and(|b| pair(&b.insts, p, RcReason::ParamSlotEntry, true));
+        if stored && !entry {
+            return Err(format!(
+                "parameter l{} is reassigned but its slot does not own a reference on entry",
+                p.0
+            ));
+        }
+        for (bi, b) in f.blocks.iter().enumerate() {
+            if !matches!(b.term, Terminator::Return(_)) {
+                continue;
+            }
+            let exit = pair(&b.insts, p, RcReason::SlotAtFunctionExit, false);
+            if exit != entry {
+                return Err(format!(
+                    "bb{bi}: parameter l{} has {} on entry but {} on exit",
+                    p.0,
+                    if entry { "a retain" } else { "no retain" },
+                    if exit { "a release" } else { "no release" }
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Move 最適化（M4 T3、memory-model 2.3）: `insert` が保守的に入れた retain / release のうち、冗長な組を取り除く。
 /// 取り除いた操作は `Function::elided_rc` に記録する。`verify` はこの後に実行する（最適化の釣り合いも検査する）。
 ///
@@ -497,6 +551,7 @@ fn optimize_function(f: &mut Function) {
 pub fn verify(p: &Program) -> Result<(), String> {
     let drops = DropInfo::new(p);
     for f in &p.funcs {
+        verify_param_slots(f, &drops).map_err(|e| format!("in function `{}`: {e}", f.name))?;
         for (bi, b) in f.blocks.iter().enumerate() {
             let mut bal: std::collections::HashMap<TempId, i64> = Default::default();
             let mut loaded: std::collections::HashSet<TempId> = Default::default();
@@ -678,6 +733,42 @@ mod tests {
                 .all(|e| e.elision == ElisionReason::ParamNeverReassigned)
         );
         assert_eq!(elided[0].local, Some(LocalId(0)));
+    }
+
+    #[test]
+    fn verify_rejects_a_parameter_slot_with_only_one_half_of_its_pair() {
+        // P4 の組の片方（入口の retain）だけを取り除いた誤りを、検証器が見つける
+        let mut p = str_fn(
+            vec![Inst::Load {
+                dst: TempId(0),
+                src: LocalId(0),
+            }],
+            vec![Ty::Str],
+            vec![Ty::Str],
+            1,
+            Some(Ty::Str),
+            Terminator::Return(Some(TempId(0))),
+        );
+        insert(&mut p);
+        let insts = &mut p.funcs[0].blocks[0].insts;
+        let pos = insts
+            .iter()
+            .position(|i| {
+                matches!(
+                    i,
+                    Inst::Retain {
+                        reason: RcReason::ParamSlotEntry,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        insts.remove(pos);
+        let err = verify(&p).unwrap_err();
+        assert!(
+            err.contains("no retain on entry but a release on exit"),
+            "{err}"
+        );
     }
 
     #[test]

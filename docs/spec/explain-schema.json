@@ -303,7 +303,7 @@
           "minimum": 0
         },
         "index": {
-          "description": "ブロックの中の命令の添字（0始まり）。",
+          "description": "ブロックの中の命令の添字（0始まり）。Move 最適化（M4 T3）の後の IR（`dump-ir` と同じ）での位置。",
           "type": "integer",
           "minimum": 0
         },
@@ -499,7 +499,7 @@
           "minimum": 0
         },
         "index": {
-          "description": "最適化の前の IR での命令の位置。",
+          "description": "最適化の前の IR での命令の位置（取り除いた命令は最適化の後の IR にないため）。`ops` の `index` とは座標が違う。",
           "type": "integer",
           "minimum": 0
         },
