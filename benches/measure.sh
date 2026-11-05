@@ -16,9 +16,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-cargo build -q --release -p wys_cli -p wys_runtime
+cargo build -q --release -p wys_cli -p wys_runtime -p wys_runtime_python
 cli=target/release/wys
 export WYS_RUNTIME_LIB="$PWD/target/release/libwys_runtime.a"
+# Python を使うプログラム（py_*.wys、ADR-0018）のランタイム。Python 3.14（WYS_PYTHON）がなければ、それらは飛ばす
+export WYS_RUNTIME_PYTHON_LIB="$PWD/target/release/libwys_runtime_python.a"
+python_ok=1
+"${WYS_PYTHON:-python3.14}" -c 'import sys; sys.exit(sys.version_info[:2] != (3, 14))' 2>/dev/null || python_ok=0
 runs=${RUNS:-10}
 
 if [ $# -gt 0 ]; then
@@ -86,6 +90,10 @@ PY
 
 for src in "${programs[@]}"; do
   name=$(basename "$src" .wys)
+  if [[ "$name" == py_* ]] && [ "$python_ok" = 0 ]; then
+    echo "skipping $src: Python 3.14 was not found (set WYS_PYTHON)" >&2
+    continue
+  fi
   exe="$tmp/$name"
   read -r compile_ms run_ms rss retains releases < <(measure "$cli" "$src" "$exe" "$tmp/$name.stats" "$runs")
   size=$(stat -f %z "$exe" 2>/dev/null || stat -c %s "$exe")

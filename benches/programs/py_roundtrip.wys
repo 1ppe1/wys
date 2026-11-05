@@ -1,0 +1,16 @@
+# Python の呼び出しの往復（M4 T8、ADR-0018）: math.gcd を呼び、結果を int に戻す。絶対値だけを記録する
+def total(n: int) -> Result[int, PyError] uses python:
+    math = py_import("math")?
+    gcd = math.attr("gcd")?
+    acc = 0
+    for i in range(n):
+        r = gcd.call([py_value(i), py_value(12)])?
+        acc = acc + r.to_int()?
+    return Ok(acc)
+
+def main() -> None:
+    match total(200000):
+        case Ok(n):
+            print(n)
+        case Err(e):
+            print(e.kind)

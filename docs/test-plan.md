@@ -13,7 +13,7 @@
 | 診断スナップショット | `crates/wys_testharness/tests/snapshots/` | 同上（insta） | 診断 JSON の形を固定する |
 | e2e テスト | `crates/wys_cli/tests/e2e.rs` | `cargo test -p wys_cli` | CLI の挙動（終了コード、出力形式、ビルドした実行ファイル） |
 | explain のスナップショットとスキーマ検証（M3 T8、ADR-0017） | `tests/conformance/explain/*.wys`、`crates/wys_testharness/tests/snapshots/conformance__explain_*.snap` | `cargo test -p wys_testharness`（`explain_json_snapshots`、`all_explain_reports_match_schema`） | `explain/` のケースは通常の実行ケースとしても動き、`wys explain` の JSON を insta で固定する。エラーのない全ケースの JSON を `docs/spec/explain-schema.json` で検証する |
-| ベンチ計測（M3 T7） | `benches/measure.sh`、`benches/programs/*.wys` | 手動（結果は `benches/results/bench-YYYYMMDD.tsv`、git 管理外）。CI はベンチ用プログラムの `fmt --check` と `check` だけ | コンパイル時間、バイナリサイズ、実行時間、最大常駐メモリ、retain / release の回数（`WYS_RC_STATS=1` でビルドした計測用の実行ファイル）。絶対値と計測環境だけを記録し、倍率は書かない。計数の仕組みは e2e の `rc_stats_count_reference_count_operations` |
+| ベンチ計測（M3 T7） | `benches/measure.sh`、`benches/programs/*.wys` | 手動（結果は `benches/results/bench-YYYYMMDD.tsv`、git 管理外）。CI はベンチ用プログラムの `fmt --check` と `check` だけ | コンパイル時間、バイナリサイズ、実行時間、最大常駐メモリ、retain / release の回数（`WYS_RC_STATS=1` でビルドした計測用の実行ファイル）。絶対値と計測環境だけを記録し、倍率は書かない。計数の仕組みは e2e の `rc_stats_count_reference_count_operations`。Python を使う `py_*.wys`（M4 T8）は、Python 3.14 がなければ飛ばす。Python のハンドルの release もランタイムが数える |
 
 CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は `scripts/ci.sh`（fmt / clippy / test、`examples/` の `wys fmt --check`、PoC5 のケース検証）を実行する。
 
@@ -66,7 +66,11 @@ CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は 
 | Linux x86_64 での CI | **M2 T0 で追加済み** |
 | メモリ安全性の境界テスト（NFR-001）、AddressSanitizer での実行 | M3（ADR-0005） |
 | コンパイル時間・バイナリサイズの継続計測 | M3 |
-| AC-006〜AC-010（AI Runtime、Python 連携） | Phase 2 |
+| AC-010（Python 境界の例外と型の不一致は、定義済みの失敗として伝搬する） | **検査済み（M4 T6〜T8）**。`python/exceptions.wys`（例外の種類ごとの `Err(PyError)`、トレースバック、NUL を含む名前）・`python/conversions.wys`（変換の型の不一致は `Err(TypeError)`）・`python/conversion_edge_cases.wys`（変換の途中の例外、同じ文字列になるキー、UTF-8 にできないキー）、e2e の `python_libraries_can_be_called_and_exceptions_are_values`。判定は M4 の出口（T11） |
+| INTEROP-001（CPython の埋め込みで既存のライブラリを使える） | **検査済み（M4 T5〜T8）**。`json` / `math` / `operator` / `builtins` を使う `python/` のケース、`wys_driver/tests/python_link.rs`、macOS arm64 と Linux x86_64 の CI（Python 3.14 必須）。往復の時間は `benches/programs/py_roundtrip.wys`（絶対値だけ） |
+| INTEROP-002（型・例外・所有権・スレッド制約の変換） | **検査済み（M4 T5〜T8）**。型: `python/conversions.wys`（`list` / `dict` / Union のコピー、厳密な `to_*`）。例外: AC-010 の行。所有権: ハンドルの解放で `Py_DecRef`（`wys_runtime_python/tests/embed.rs` の解放漏れの検出 102、すべての `python/` ケースを3つのモードで生存オブジェクト 0）。スレッド: GIL は1スレッドが持ったまま（ADR-0018 論点 3） |
+| INTEROP-003（数値バッファのゼロコピー） | Phase 3（ADR-0018 論点 14） |
+| AC-006〜AC-009（AI Runtime） | Phase 2（M5 / M6） |
 
 ## 4. 運用ルール
 
