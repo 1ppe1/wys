@@ -1,0 +1,8 @@
+# 型パラメータを含む値は表示できない（ADR-0016 論点 15）
+# expect-error: E0201 5:11
+
+def show[T](xs: list[T]) -> None:
+    print(xs)
+
+def main() -> None:
+    show([1])

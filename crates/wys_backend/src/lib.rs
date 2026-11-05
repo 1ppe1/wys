@@ -136,6 +136,11 @@ const PRELUDE: &str = "\
 declare void @wys_print_int(i64)
 declare void @wys_print_bool(i1 zeroext)
 declare void @wys_print_str(ptr)
+declare void @wys_write_int(i64)
+declare void @wys_write_bool(i1 zeroext)
+declare void @wys_write_str(ptr)
+declare void @wys_write_bytes(ptr, i64)
+declare void @wys_write_newline()
 declare void @wys_free_object(ptr)
 declare ptr @wys_list_new(i64, i64)
 declare ptr @wys_list_push_slot(ptr, i64)
@@ -577,9 +582,197 @@ fn emit_eq_glue(out: &mut String, p: &Program) {
     }
 }
 
+/// `print` で表示する構造を持つ型と、その構成要素の型（表示関数を作る必要があるもの）。
+fn show_types(p: &Program) -> Vec<Ty> {
+    let mut work: Vec<Ty> = Vec::new();
+    for f in &p.funcs {
+        for b in &f.blocks {
+            for inst in &b.insts {
+                if let Inst::Call {
+                    callee: Callee::Builtin(Builtin::PrintValue),
+                    args,
+                    ..
+                } = inst
+                {
+                    work.push(f.temps[args[0].0 as usize]);
+                }
+            }
+        }
+    }
+    let mut seen: Vec<Ty> = Vec::new();
+    while let Some(t) = work.pop() {
+        if matches!(t, Ty::Int | Ty::Bool | Ty::Str) || seen.contains(&t) {
+            continue;
+        }
+        seen.push(t);
+        match t {
+            Ty::List(l) => work.push(p.lists[l.0 as usize]),
+            Ty::Dict(d) => {
+                let (k, v) = p.dicts[d.0 as usize];
+                work.extend([k, v]);
+            }
+            Ty::Union(u) => work.extend(p.unions[u.0 as usize].iter().flatten()),
+            Ty::Record(r) => work.extend(p.records[r.0 as usize].iter().map(|(_, t)| *t)),
+            Ty::Int | Ty::Bool | Ty::Str => {}
+        }
+    }
+    seen
+}
+
+/// 表示関数が書く定数のバイト列（`[`、`P(`、`x=` など）。同じ内容は1つにまとめる。
+#[derive(Default)]
+struct Texts(Vec<String>);
+
+impl Texts {
+    /// `text` を書き出す命令。
+    fn write(&mut self, text: &str) -> String {
+        let i = match self.0.iter().position(|t| t == text) {
+            Some(i) => i,
+            None => {
+                self.0.push(text.to_string());
+                self.0.len() - 1
+            }
+        };
+        format!(
+            "  call void @wys_write_bytes(ptr @.txt.{i}, i64 {})",
+            text.len()
+        )
+    }
+
+    fn emit(&self, out: &mut String) {
+        for (i, t) in self.0.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "@.txt.{i} = private unnamed_addr constant [{} x i8] c\"{}\"",
+                t.len(),
+                escape_bytes(t)
+            );
+        }
+    }
+}
+
+/// 構造の中の値を、改行せずに書き出す命令（ADR-0016 論点 16）。文字列は引用符で囲む。
+fn show_inst(t: Ty, v: &str) -> String {
+    match t {
+        Ty::Int => format!("  call void @wys_write_int(i64 {v})"),
+        Ty::Bool => format!("  call void @wys_write_bool(i1 zeroext {v})"),
+        Ty::Str => format!("  call void @wys_write_str(ptr {v})"),
+        Ty::List(l) => format!("  call void @wys_show_list{}(ptr {v})", l.0),
+        Ty::Dict(d) => format!("  call void @wys_show_dict{}(ptr {v})", d.0),
+        Ty::Union(u) => format!("  call void @wys_show_u{}({} {v})", u.0, llty(t)),
+        Ty::Record(r) => format!("  call void @wys_show_r{}({} {v})", r.0, llty(t)),
+    }
+}
+
+/// 構造を持つ値の型ごとの表示関数（ADR-0016 論点 16・17）。値は借用で読み、参照カウントは変えない。
+fn emit_show_glue(out: &mut String, p: &Program) {
+    let mut texts = Texts::default();
+    for t in show_types(p) {
+        match t {
+            Ty::List(l) => {
+                let elem = p.lists[l.0 as usize];
+                let (size, lt) = (elem_size(p, elem), llty(elem));
+                let _ = writeln!(
+                    out,
+                    "\ndefine private void @wys_show_list{i}(ptr %p) {{\nentry:\n{open}\n  %len = call i64 @wys_list_len(ptr %p)\n  br label %loop\nloop:\n  %i = phi i64 [0, %entry], [%i2, %elem]\n  %more = icmp slt i64 %i, %len\n  br i1 %more, label %body, label %fin\nbody:\n  %first = icmp eq i64 %i, 0\n  br i1 %first, label %elem, label %sep\nsep:\n{sep}\n  br label %elem\nelem:\n  %s = call ptr @wys_list_slot(ptr %p, i64 %i, i64 {size})\n  %x = load {lt}, ptr %s\n{show}\n  %i2 = add i64 %i, 1\n  br label %loop\nfin:\n{close}\n  ret void\n}}",
+                    i = l.0,
+                    open = texts.write("["),
+                    sep = texts.write(", "),
+                    show = show_inst(elem, "%x"),
+                    close = texts.write("]"),
+                );
+            }
+            Ty::Dict(d) => {
+                let (k, v) = p.dicts[d.0 as usize];
+                let vt = llty(v);
+                // 挿入順（ADR-0015）
+                let _ = writeln!(
+                    out,
+                    "\ndefine private void @wys_show_dict{i}(ptr %p) {{\nentry:\n{open}\n  %len = call i64 @wys_dict_len(ptr %p)\n  br label %loop\nloop:\n  %pos = phi i64 [0, %entry], [%pos2, %elem]\n  %first = phi i1 [1, %entry], [0, %elem]\n  %e = call i64 @wys_dict_iter_next(ptr %p, i64 %pos, i64 %len)\n  %more = icmp sge i64 %e, 0\n  br i1 %more, label %body, label %fin\nbody:\n  br i1 %first, label %elem, label %sep\nsep:\n{sep}\n  br label %elem\nelem:\n  %kr = call i64 @wys_dict_key(ptr %p, i64 %e)\n{key}\n{show_k}\n{colon}\n  %s = call ptr @wys_dict_val(ptr %p, i64 %e)\n  %x = load {vt}, ptr %s\n{show_v}\n  %pos2 = add i64 %e, 1\n  br label %loop\nfin:\n{close}\n  ret void\n}}",
+                    i = d.0,
+                    open = texts.write("{"),
+                    sep = texts.write(", "),
+                    key = raw_to_key(k, "%key", "%kr"),
+                    show_k = show_inst(k, "%key"),
+                    colon = texts.write(": "),
+                    show_v = show_inst(v, "%x"),
+                    close = texts.write("}"),
+                );
+            }
+            Ty::Union(u) => {
+                let ut = llty(t);
+                let members = &p.unions[u.0 as usize];
+                // `Result` は `Ok(...)` / `Err(...)`、ほかの Union は構成要素の値をそのまま書く
+                let wrap: [(&str, &str); 2] = if p.display.results.contains(&u) {
+                    [("Ok(", ")"), ("Err(", ")")]
+                } else {
+                    [("", ""); 2]
+                };
+                let _ = writeln!(
+                    out,
+                    "\ndefine private void @wys_show_u{i}({ut} %v) {{\nentry:\n  %sv = alloca {ut}\n  store {ut} %v, ptr %sv\n  %tp = getelementptr inbounds {ut}, ptr %sv, i32 0, i32 0\n  %tag = load i8, ptr %tp\n  %pp = getelementptr inbounds {ut}, ptr %sv, i32 0, i32 1\n  br label %c0",
+                    i = u.0
+                );
+                for (j, m) in members.iter().enumerate() {
+                    let (pre, post) = wrap.get(j).copied().unwrap_or(("", ""));
+                    let mut body = Vec::new();
+                    if !pre.is_empty() {
+                        body.push(texts.write(pre));
+                    }
+                    match m {
+                        Some(mt) => {
+                            body.push(format!("  %x{j} = load {}, ptr %pp", llty(*mt)));
+                            body.push(show_inst(*mt, &format!("%x{j}")));
+                        }
+                        None => body.push(texts.write("None")),
+                    }
+                    if !post.is_empty() {
+                        body.push(texts.write(post));
+                    }
+                    let _ = writeln!(
+                        out,
+                        "c{j}:\n  %m{j} = icmp eq i8 %tag, {j}\n  br i1 %m{j}, label %d{j}, label %c{n}\nd{j}:\n{}\n  ret void",
+                        body.join("\n"),
+                        n = j + 1
+                    );
+                }
+                let _ = writeln!(out, "c{}:\n  unreachable\n}}", members.len());
+            }
+            Ty::Record(r) => {
+                let rt = llty(t);
+                let name = &p.display.record_names[r.0 as usize];
+                let _ = writeln!(
+                    out,
+                    "\ndefine private void @wys_show_r{i}({rt} %v) {{\nentry:\n{open}",
+                    i = r.0,
+                    open = texts.write(&format!("{name}("))
+                );
+                // フィールドは名前の順に並んでいる（ADR-0016 論点 16）
+                for (k, (fname, ft)) in p.records[r.0 as usize].iter().enumerate() {
+                    let label = if k == 0 {
+                        format!("{fname}=")
+                    } else {
+                        format!(", {fname}=")
+                    };
+                    let _ = writeln!(
+                        out,
+                        "{}\n  %f{k} = extractvalue {rt} %v, {k}\n{}",
+                        texts.write(&label),
+                        show_inst(*ft, &format!("%f{k}"))
+                    );
+                }
+                let _ = writeln!(out, "{}\n  ret void\n}}", texts.write(")"));
+            }
+            Ty::Int | Ty::Bool | Ty::Str => {}
+        }
+    }
+    texts.emit(out);
+}
+
 fn emit_glue(out: &mut String, p: &Program, drops: &DropInfo) {
     emit_dict_glue(out, p, drops);
     emit_eq_glue(out, p);
+    emit_show_glue(out, p);
     // リストの release: 参照カウントが 0 になったら、要素を release してからバッファを返す
     for (i, elem) in p.lists.iter().enumerate() {
         let size = elem_size(p, *elem);
@@ -1093,6 +1286,13 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                     Callee::Builtin(Builtin::PrintStr) => {
                         let _ = writeln!(out, "  call void @wys_print_str(ptr {})", t(args[0]));
                     }
+                    Callee::Builtin(Builtin::PrintValue) => {
+                        let _ = writeln!(
+                            out,
+                            "{}\n  call void @wys_write_newline()",
+                            show_inst(f.temps[args[0].0 as usize], &t(args[0]))
+                        );
+                    }
                     Callee::Builtin(
                         b @ (Builtin::ArgCount
                         | Builtin::ArgExists
@@ -1213,6 +1413,7 @@ mod tests {
             records: vec![],
             lists: vec![],
             dicts: vec![],
+            display: Default::default(),
             entry: FuncId(0),
             funcs: vec![Function {
                 name: "main".into(),
@@ -1248,6 +1449,7 @@ mod tests {
             records: vec![],
             lists: vec![],
             dicts: vec![],
+            display: Default::default(),
             entry: FuncId(0),
             funcs: vec![Function {
                 name: "f".into(),

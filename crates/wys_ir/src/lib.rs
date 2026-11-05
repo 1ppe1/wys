@@ -90,9 +90,20 @@ pub struct Program {
     pub lists: Vec<Ty>,
     /// `dict[K, V]` のキーと値の型。`Ty::Dict(DictId(i))` は `dicts[i]` を指す。キーは `int` / `bool` / `str`。
     pub dicts: Vec<(Ty, Ty)>,
+    /// 表示用の情報（`print`、ADR-0016 論点 16）。型の同一性や配置には関係しない。
+    pub display: DisplayInfo,
     pub funcs: Vec<Function>,
     /// エントリポイント（引数なし・戻り値なし）。
     pub entry: FuncId,
+}
+
+/// 表示用の情報。IR の型は構造だけを持つので、`print` に要る名前をここに置く。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DisplayInfo {
+    /// レコード型の名前（`records` と同じ順）。最初に定義した `type` の名前で、型引数は含まない。
+    pub record_names: Vec<String>,
+    /// `Result` を表す Union（構成要素 0 が `Ok`、1 が `Err`）。
+    pub results: Vec<UnionId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,6 +194,9 @@ pub enum Builtin {
     PrintInt,
     PrintBool,
     PrintStr,
+    /// 構造を持つ値（レコード・`list`・`dict`・Union）の表示と改行（ADR-0016 論点 15〜17）。
+    /// 引数は1つで、型は問わない。値は借用で読む。
+    PrintValue,
     Exit,
     /// 外部入力（ADR-0011）。`arg` と `parse_scalar` は lowering がこれらを組み合わせて作る。
     ArgCount,
@@ -213,6 +227,7 @@ impl Builtin {
             Builtin::PrintInt => "print_int",
             Builtin::PrintBool => "print_bool",
             Builtin::PrintStr => "print_str",
+            Builtin::PrintValue => "print_value",
             Builtin::Exit => "exit",
             Builtin::ArgCount => "arg_count",
             Builtin::ArgExists => "arg_exists",
@@ -240,6 +255,7 @@ impl Builtin {
             Builtin::PrintInt
             | Builtin::PrintBool
             | Builtin::PrintStr
+            | Builtin::PrintValue
             | Builtin::Exit
             | Builtin::AssertFail
             | Builtin::Panic => None,
@@ -257,6 +273,9 @@ impl Builtin {
             Builtin::PrintInt | Builtin::Exit => &[Ty::Int],
             Builtin::PrintBool => &[Ty::Bool],
             Builtin::PrintStr => &[Ty::Str],
+            Builtin::PrintValue => {
+                unreachable!("print_value takes any type; verify checks it separately")
+            }
             Builtin::ArgCount | Builtin::TestIndex => &[],
             Builtin::AssertFail | Builtin::StrLen => &[Ty::Str],
             Builtin::StrConcat | Builtin::StrEq | Builtin::Panic => &[Ty::Str, Ty::Str],
@@ -456,6 +475,17 @@ pub fn verify(p: &Program) -> Result<(), String> {
                 "union u{i} must have at least two members, and nested unions must be registered before it"
             ));
         }
+    }
+    if p.display.record_names.len() != p.records.len() {
+        return Err("every record type must have a display name".into());
+    }
+    if let Some(u) = p
+        .display
+        .results
+        .iter()
+        .find(|u| p.unions.get(u.0 as usize).is_none_or(|m| m.len() != 2))
+    {
+        return Err(format!("result u{} must be a union of two members", u.0));
     }
     for f in &p.funcs {
         verify_function(p, f).map_err(|e| format!("in function `{}`: {e}", f.name))?;
@@ -800,6 +830,10 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                 }
                 Inst::Call { dst, callee, args } => {
                     let (params, ret): (Vec<Ty>, Option<Ty>) = match callee {
+                        Callee::Builtin(Builtin::PrintValue) => match args.as_slice() {
+                            [a] => (vec![use_(*a, &defined_in)?], None),
+                            _ => return Err(format!("bb{bi}: print_value takes one argument")),
+                        },
                         Callee::Builtin(b) => (b.signature().to_vec(), b.ret()),
                         Callee::Func(id) => {
                             let g = p
@@ -1084,6 +1118,7 @@ mod tests {
             records: vec![],
             lists: vec![],
             dicts: vec![],
+            display: DisplayInfo::default(),
             entry: FuncId(0),
             funcs: vec![Function {
                 name: "main".into(),

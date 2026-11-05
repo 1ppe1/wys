@@ -398,6 +398,7 @@ mod tests {
             records: vec![],
             lists: vec![],
             dicts: vec![],
+            display: Default::default(),
             entry: FuncId(0),
             funcs: vec![Function {
                 name: "f".into(),

@@ -29,7 +29,7 @@
 - LLVM では `%union.N = type { i8, [W x i64] }`（W は最大の中身の語数。`str` は2語）。命令が使う作業領域は関数の入口で `alloca` する。
 - `Result[T, E]`（M3 T5a、ADR-0013）は、構成要素が2つの Union として表す（構成要素 0 が `Ok`、1 が `Err`。`T` と `E` が同じ型でも別の構成要素）。`Result` は Union の構成要素になれるので、Union の構成要素に別の Union が入ることがある。検証器は、構成要素の Union が自分より前に登録されていること（循環しないこと）を確かめる。
 - `dict[K, V]`（M3 T6a、ADR-0015）は `Program.dicts` に登録し、ポインタ1語で表す。命令は `dict_new` / `dict_len` / `dict_contains` / `dict_get`（キーがなければパニック）/ `dict_set` / `dict_pop`（T6b。値を +1 所有で返す）/ `dict_key_at` / `dict_iter_next`。削除したエントリは墓標にし、表の伸長で詰め直す。ハッシュ表（挿入順のエントリ配列と開番地法の索引表）はランタイムが持ち、キーと値の参照カウント操作は、バックエンドが型ごとに生成する `@wys_dict_set{i}` / `@wys_dict_get{i}` / `@wys_release_dict{i}` が行う。`dict_get` と `dict_key_at` の結果は、`list_get` と同じく ARC パスがすぐ retain する（借用の安全条件）。
-- ランタイム（C ABI）には Union を渡さない。`print` は Union のタグで分岐して、構成要素ごとの組み込み関数を呼ぶ。
+- ランタイム（C ABI）には Union を渡さない。`print` は Union のタグで分岐して、構成要素ごとの組み込み関数を呼ぶ（構造を持つ値は、生成した表示関数。下の「構造を持つ値の表示」）。
 
 ## 意味論
 
@@ -88,6 +88,12 @@ bb0:
 - `eq` / `ne` は、`int` / `bool` に加えて、すべての型の値どうしに使える（被演算子の型は同じ）。`str` は `@wys_str_eq`、`list` / `dict` / Union / レコードは、バックエンドが型ごとに生成する `@wys_eq_list{i}` / `@wys_eq_dict{i}` / `@wys_eq_u{i}` / `@wys_eq_r{i}` を呼ぶ。生成するのは、比較に使われる型とその構成要素の型だけ。
 - 比較は構造的: `list` は長さと順序どおりの要素、`dict` は要素数と、各キーが相手にあって値が等しいこと（順序は問わない）、Union（`Result` を含む）はタグと payload、レコードはフィールドごと。
 - 被演算子は借用で読み、参照カウントは変えない。型の違う値の比較（`o == 1`）は、lowering が広い方の Union に揃えてから比べる。
+
+## 構造を持つ値の表示（M3 T10c、ADR-0016）
+
+- 組み込み関数 `print_value` は、レコード・`list`・`dict`・Union（`Result` を含む）の値を1つ受け取り、表示して改行する。`int` / `bool` / `str` は従来どおり `print_int` / `print_bool` / `print_str`。トップレベルの Union は、lowering がタグで分岐して、構成要素ごとにどちらかを呼ぶ。
+- IR の型は構造だけを持つので、表示に要る名前は `Program.display` に置く。`record_names` はレコード型の名前（`records` と同じ順。最初に定義した `type` の名前で、型引数は含まない）、`results` は `Result` を表す Union の一覧（構成要素 0 が `Ok`、1 が `Err`）。型の同一性や配置には関係しない。検証器は、名前の数がレコード型の数と同じこと、`results` が構成要素2つの Union を指すことを確かめる。`dump-ir` には出さない。
+- バックエンドは、表示に使われる型とその構成要素の型ごとに `@wys_show_list{i}` / `@wys_show_dict{i}` / `@wys_show_u{i}` / `@wys_show_r{i}` を生成する。これらは改行せずに書き出し、構造の中の `str` は `@wys_write_str`（引用符とエスケープ）、区切りや名前は定数のバイト列を `@wys_write_bytes` で書く。文字列を組み立てないので確保がなく、値は借用で読む（参照カウントは変えない）。
 
 ## ARC（M3 T2a、ADR-0012）
 
