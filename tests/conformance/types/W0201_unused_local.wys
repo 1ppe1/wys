@@ -1,0 +1,26 @@
+# 一度も読まれないローカル変数は警告（W0201、ADR-0016 論点 20）。警告だけならビルドして実行する
+# expect-warning: W0201 13:5
+# expect-warning: W0201 14:9
+# expect-warning: W0201 17:17
+# expect-stdout: 3
+def half(n: int) -> Result[int, str]:
+    if n % 2 == 1:
+        return Err("odd")
+    return Ok(n // 2)
+
+def main() -> None:
+    # 引数・`_` で始まる名前・読まれた変数は対象外
+    unused = 1
+    for i in range(2):
+        pass
+    match half(6):
+        case Ok(v):
+            pass
+        case Err(_e):
+            pass
+    xs = [1]
+    xs.append(2)
+    total = 0
+    for x in xs:
+        total = total + x
+    print(total)

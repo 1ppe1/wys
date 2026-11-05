@@ -1,0 +1,9 @@
+# 使われない import は警告（W0202、ADR-0016 論点 21）
+# expect-warning: W0202 4:1
+# expect-warning: W0202 6:30
+import util.lib
+import util.lib as l
+from util.lib import f, g as gg
+
+def main() -> None:
+    print(l.f() + f())
