@@ -3481,13 +3481,24 @@ impl<'a> FnCk<'a> {
         Ty::Error
     }
 
-    /// `py_value` に渡せる型（ADR-0018 論点 10）: `int` / `bool` / `str` / `float` / `None` / `PyObject`。
-    /// （`list` / `dict` のコピーは M4 T7 で足す）
+    /// `py_value` に渡せる型（ADR-0018 論点 10）: `int` / `bool` / `str` / `float` / `None` / `PyObject` と、
+    /// それらを要素に持つ `list` / `dict`、構成要素がすべて渡せる Union（M4 T7）。
     fn require_py_convertible(&mut self, t: Ty, span: Span) {
-        if matches!(
-            t,
-            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::None | Ty::PyObject | Ty::Error
-        ) {
+        fn ok(ts: &Types, t: Ty) -> bool {
+            match t {
+                Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::None | Ty::PyObject | Ty::Error => {
+                    true
+                }
+                Ty::List(l) => ok(ts, ts.list_elem(l)),
+                Ty::Dict(d) => {
+                    let (k, v) = ts.dict_args(d);
+                    ok(ts, k) && ok(ts, v)
+                }
+                Ty::Union(_) => ts.members(t).into_iter().all(|m| ok(ts, m)),
+                _ => false,
+            }
+        }
+        if ok(&self.cx.types, t) {
             return;
         }
         let found = self.cx.name(t);
@@ -3497,7 +3508,7 @@ impl<'a> FnCk<'a> {
                 format!("`py_value` cannot convert `{found}` to a Python object"),
                 span,
             )
-            .with_cause("`py_value` accepts `int`, `bool`, `str`, `float`, `None` and `PyObject` (ADR-0018)")
+            .with_cause("`py_value` accepts `int`, `bool`, `str`, `float`, `None`, `PyObject`, and `list`, `dict` and unions of them (ADR-0018)")
             .with_hint("pass the fields one by one, or convert the value to one of these types first"),
         );
     }
@@ -3506,12 +3517,17 @@ impl<'a> FnCk<'a> {
     fn py_method(&mut self, m: &str, mspan: Span, args: &[Expr], span: Span, env: &Env) -> Ty {
         let err = self.cx.types.py_error();
         let list_of_py = self.cx.types.list(Ty::PyObject);
+        let dict_of_py = self.cx.types.dict(Ty::Str, Ty::PyObject);
         let (params, ok): (Vec<Ty>, Option<Ty>) = match m {
             "attr" => (vec![Ty::Str], Some(Ty::PyObject)),
             "call" => (vec![list_of_py], Some(Ty::PyObject)),
+            "call_kw" => (vec![list_of_py, dict_of_py], Some(Ty::PyObject)),
             "to_int" => (vec![], Some(Ty::Int)),
             "to_bool" => (vec![], Some(Ty::Bool)),
             "to_str" => (vec![], Some(Ty::Str)),
+            "to_float" => (vec![], Some(Ty::Float)),
+            "to_list" => (vec![], Some(list_of_py)),
+            "to_dict" => (vec![], Some(dict_of_py)),
             "is_none" => (vec![], None),
             _ => {
                 for a in args {
@@ -3519,7 +3535,7 @@ impl<'a> FnCk<'a> {
                 }
                 self.cx.diags.push(
                     Diagnostic::error("E0905", format!("`PyObject` has no method `{m}`"), mspan)
-                        .with_cause("the methods of `PyObject` are `attr`, `call`, `to_int`, `to_bool`, `to_str` and `is_none` (ADR-0018)"),
+                        .with_cause("the methods of `PyObject` are `attr`, `call`, `call_kw`, `to_int`, `to_bool`, `to_str`, `to_float`, `to_list`, `to_dict` and `is_none` (ADR-0018)"),
                 );
                 return Ty::Error;
             }

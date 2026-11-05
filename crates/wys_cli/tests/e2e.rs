@@ -695,6 +695,23 @@ fn python_libraries_can_be_called_and_exceptions_are_values() {
 }
 
 #[test]
+fn python_values_are_copied_across_the_boundary() {
+    if wys_driver::python_link_flags().is_err() {
+        assert!(
+            std::env::var_os("WYS_REQUIRE_PYTHON").is_none(),
+            "WYS_REQUIRE_PYTHON is set but Python 3.14 was not found"
+        );
+        return;
+    }
+    let (code, stdout, stderr) = run(
+        "python_conv",
+        "def round_trip(d: dict[str, list[float]]) -> Result[int, PyError] uses python:\n    json = py_import(\"json\")?\n    text = (json.attr(\"dumps\")?).call([py_value(d)])?\n    back = ((json.attr(\"loads\")?).call([text])?).to_dict()?\n    return Ok(len(back[\"xs\"].to_list()?))\n\ndef main() -> None:\n    match round_trip({\"xs\": [1.5, 2.0, -0.0]}):\n        case Ok(n):\n            print(n)\n        case Err(e):\n            print(e.kind)\n",
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "3\n");
+}
+
+#[test]
 fn floats_follow_ieee_754_and_print_like_python() {
     let (code, stdout, stderr) = run(
         "floats",

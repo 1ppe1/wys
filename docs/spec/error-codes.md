@@ -84,7 +84,7 @@
 | E1102 | Effect | 呼び出し先の Effect を、呼び出し元の `uses` が宣言していない（修正案で `uses` 節を書き換える） |
 | E1103 | Effect | `uses` を書いた関数から、`uses` のない関数を呼んでいる |
 | E1104 | Effect | `uses` の並びが正しくない（同じ名前の重複、`pure` とほかの名前の併記） |
-| E1201 | Python | `py_value` に渡せない型（レコード、`Result`、`Unknown`、型パラメータを含む値など。M4 T6 の時点では `int` / `bool` / `str` / `float` / `None` / `PyObject` だけで、Union（`int \| None`）と `list` / `dict` は T7 で決める。ADR-0018） |
+| E1201 | Python | `py_value` に渡せない型（レコード、`Result`、`Unknown`、型パラメータを含む値など。渡せるのは `int` / `bool` / `str` / `float` / `None` / `PyObject` と、それらを要素に持つ `list` / `dict`、構成要素がすべて渡せる Union（M4 T7）。ADR-0018） |
 | E1202 | Python | `PyObject` か `PyError`（同じフィールドの構造的なレコードを含む）を、具体的な値が要る場所（`print`、`==` / `!=`、演算、`dict` のキー）で使っている。`PyError` はフィールド（`e.kind`、`e.message`、`e.traceback`）を読む。Python のコード（`__str__`、`__eq__`）を動かすことになるので、`to_int()` などで変換してから使う（ADR-0018） |
 | W0201 | 未使用（警告） | 代入されたが一度も読まれないローカル変数（`for` の変数、`case Ok(x)` の束縛を含む。ADR-0016）。`_` で始まる名前と引数は対象外。読まれたかは関数の中の名前で判定する。エラーのある関数（署名のエラーを含む）では出さない。同じ関数のほかの警告とは位置の順に並ぶ |
 | W0202 | 未使用（警告） | 使われない import（`import m`、`from m import f`、別名を含む。ADR-0016）。名前解決のエラーがあるモジュールでは出さない（型検査のエラーでは止めない）。型パラメータと同じ名前の import は、型パラメータに隠されるので使われない扱い |
@@ -123,9 +123,10 @@
 | `range(n)` / `range(a, b)` | — | `for` の中だけで使える整数の範囲 |
 | `parse_scalar(s)` | `Unknown` | 10進の整数 → `int`、JSON の数値の文法で小数点か指数を含むもの（`1.5`、`-0.5`、`1e3`。無限大になるものは除く）→ `float`、`true` / `false` → `bool`、`null` → `None`、それ以外 → `str`（ADR-0019） |
 | `py_import(name)` | `Result[PyObject, PyError]` | Python のモジュールを import する。Effect `python`（ADR-0018） |
-| `py_value(x)` | `PyObject` | `int` / `bool` / `str` / `float` / `None` を Python のオブジェクトにする（`PyObject` はそのまま）。Effect `python` |
-| `h.attr(name)` / `h.call(args)` | `Result[PyObject, PyError]` | 属性の参照と呼び出し（`args` は `list[PyObject]`）。Effect `python` |
-| `h.to_int()` / `h.to_bool()` / `h.to_str()` | `Result[int / bool / str, PyError]` | Python の値を本言語の値にする。暗黙の変換はしない（`to_bool` は `bool` だけ、`to_int` は `int` と `bool` だけ）。Effect `python` |
+| `py_value(x)` | `PyObject` | `int` / `bool` / `str` / `float` / `None`、それらの `list` / `dict`（挿入順）と Union を、新しい Python のオブジェクトにコピーする（`PyObject` はそのまま）。Effect `python` |
+| `h.attr(name)` / `h.call(args)` / `h.call_kw(args, kwargs)` | `Result[PyObject, PyError]` | 属性の参照と呼び出し（`args` は `list[PyObject]`、`kwargs` は `dict[str, PyObject]`）。Effect `python` |
+| `h.to_int()` / `h.to_bool()` / `h.to_str()` / `h.to_float()` | `Result[int / bool / str / float, PyError]` | Python の値を本言語の値にする。暗黙の変換はしない（`to_bool` は `bool` だけ、`to_int` は `int` と `bool` だけ、`to_float` は `float` だけ）。Effect `python` |
+| `h.to_list()` / `h.to_dict()` | `Result[list[PyObject] / dict[str, PyObject], PyError]` | Python の `list` / `tuple`、キーがすべて `str` の `dict` を、要素のハンドルの `list` / `dict` にする（要素はコピーしない）。Effect `python` |
 | `h.is_none()` | `bool` | Python の `None` か。Effect `python` |
 | `float(n)` | `float` | `int` を `float` にする（2^53 を超える値は最も近い値に丸める。ADR-0019） |
 | `int(x)` | `int` | `float` を 0 の方向に切り捨てて `int` にする。NaN・無限大・範囲外は実行時エラー（ADR-0019） |

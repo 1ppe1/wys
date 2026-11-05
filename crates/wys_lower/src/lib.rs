@@ -1148,9 +1148,10 @@ impl<'s, 't> FnLower<'s, 't> {
                             TTy::Bool => Builtin::PyFromBool,
                             TTy::Str => Builtin::PyFromStr,
                             TTy::Float => Builtin::PyFromFloat,
-                            other => panic!("py_value of {other:?} passed type checking"),
+                            // list / dict / Union は型ごとの変換関数（M4 T7）
+                            _ => Builtin::PyFromValue,
                         };
-                        self.builtin(b, vec![v.expect("scalars have values")])
+                        self.builtin(b, vec![v.expect("convertible values have values")])
                     }
                 })
             }
@@ -1855,6 +1856,10 @@ impl<'s, 't> FnLower<'s, 't> {
             "to_int" => Builtin::PyToInt,
             "to_bool" => Builtin::PyToBool,
             "to_str" => Builtin::PyToStr,
+            "to_float" => Builtin::PyToFloat,
+            "to_list" => Builtin::PyToList,
+            "to_dict" => Builtin::PyToDict,
+            "call_kw" => Builtin::PyCallKw,
             "is_none" => return self.builtin(Builtin::PyIsNone, vals),
             other => panic!("PyObject method `{other}` passed type checking"),
         };
@@ -1867,12 +1872,18 @@ impl<'s, 't> FnLower<'s, 't> {
         let TTy::Result(r) = self.ty(e) else {
             panic!("Python operations return a Result")
         };
-        let (_, err) = self.sh.types.result_args(r);
+        let (ok_t, err) = self.sh.types.result_args(r);
         let union = self.sh.ir_result(r);
         let out = self.hidden_local(Ty::Union(union));
-        // 値は失敗したときも（使わない値として）返るので、いったんローカルに置き、成功の側でだけ読む
-        let v = self.builtin(b, args);
-        let vt = self.temps[v.0 as usize];
+        // 値は失敗したときも（使わない値として）返るので、いったんローカルに置き、成功の側でだけ読む。
+        // 値の型は `Ok` の型から決める（`py_to_list` / `py_to_dict` は型の ID が呼び出しごとに違う）
+        let vt = self.sh.ir_ty(ok_t).expect("Python results have values");
+        let v = self.temp(vt);
+        self.emit(Inst::Call {
+            dst: Some(v),
+            callee: Callee::Builtin(b),
+            args,
+        });
         let slot = self.hidden_local(vt);
         self.emit(Inst::Store { dst: slot, src: v });
         let failed = self.builtin(Builtin::PyFailed, vec![]);
