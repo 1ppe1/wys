@@ -1,6 +1,6 @@
 # ADR-0009: M2 の暫定値表現（ヒープを使わない）
 
-- **状態:** Accepted
+- **状態:** Superseded by [ADR-0012](0012-heap-objects-and-arc-pass.md)（`str` / `list` / `dict` はヒープ上の参照型になった。レコードと Union を値型にする決定は、ADR-0012 と M3 計画が引き継いでいる）
 - **日付:** 2026-11-04
 - **関連:** ADR-0005（メモリモデル）、ADR-0006、ADR-0007、`docs/design/memory-model.md` 2.7・2.8、`docs/plans/m2.md`
 
