@@ -95,6 +95,24 @@ struct InstanceJson<'a> {
     retains: usize,
     releases: usize,
     ops: Vec<OpJson<'a>>,
+    /// Move 最適化が取り除いた操作（M4 T3）。項目の追加なので版は上げない（ADR-0017 論点 1）。なければ出さない
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    elided: Vec<ElidedJson<'a>>,
+}
+
+#[derive(Serialize)]
+struct ElidedJson<'a> {
+    op: &'static str,
+    reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    site: Option<&'static str>,
+    block: u32,
+    index: usize,
+    temp: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local: Option<&'a str>,
+    elision: &'static str,
+    message: &'static str,
 }
 
 #[derive(Serialize)]
@@ -290,11 +308,30 @@ fn instance_json<'a>(
             });
         }
     }
+    let elided = f
+        .elided_rc
+        .iter()
+        .map(|e| ElidedJson {
+            op: if e.retain { "retain" } else { "release" },
+            reason: e.reason.id(),
+            site: e.reason.site().map(|s| s.id()),
+            block: e.block,
+            index: e.index,
+            temp: e.src.0,
+            local: e
+                .local
+                .and_then(|l| locals.get(l.0 as usize))
+                .map(|(name, _)| name.as_str()),
+            elision: e.elision.id(),
+            message: e.elision.message(),
+        })
+        .collect();
     InstanceJson {
         instance: &f.name,
         retains: ops.iter().filter(|o| o.op == "retain").count(),
         releases: ops.iter().filter(|o| o.op == "release").count(),
         ops,
+        elided,
     }
 }
 
@@ -431,22 +468,27 @@ mod tests {
         let v = report(
             "def first(xs: list[str]) -> str:\n    return xs[0]\n\ndef main() -> None:\n    names = [\"a\", \"b\"]\n    print(first(names))\n",
         );
-        let ops = func(&v, "first")["arc"][0]["ops"]
-            .as_array()
-            .unwrap()
-            .clone();
+        let arc = &func(&v, "first")["arc"][0];
+        let ops = arc["ops"].as_array().unwrap().clone();
         let reasons: Vec<&str> = ops.iter().map(|o| o["reason"].as_str().unwrap()).collect();
-        assert!(reasons.contains(&"param_slot_entry"), "{reasons:?}");
+        // `xs[0]` は return で消費されるので、可変な場所からの借用の保持は残る
         assert!(
             reasons.contains(&"borrow_from_mutable_place"),
             "{reasons:?}"
         );
-        assert!(reasons.contains(&"slot_at_function_exit"), "{reasons:?}");
-        let entry = ops
+        // `xs` は代入されないので、入口と出口の組は Move 最適化が取り除く（M4 T3）
+        let elided = arc["elided"].as_array().unwrap();
+        let entry = elided
             .iter()
             .find(|o| o["reason"] == "param_slot_entry")
             .unwrap();
         assert_eq!(entry["local"], "xs");
+        assert_eq!(entry["elision"], "param_never_reassigned");
+        assert!(
+            elided
+                .iter()
+                .any(|o| o["reason"] == "slot_at_function_exit")
+        );
         let main = func(&v, "main");
         let store = main["arc"][0]["ops"]
             .as_array()

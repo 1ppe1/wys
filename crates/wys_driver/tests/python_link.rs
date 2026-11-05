@@ -145,6 +145,7 @@ fn program() -> Program {
                 insts: b.insts,
                 term: Terminator::Return(None),
             }],
+            elided_rc: Vec::new(),
             effects: None,
         }],
     };
@@ -209,6 +210,7 @@ fn programs_without_python_do_not_need_python() {
                 insts: vec![],
                 term: Terminator::Return(None),
             }],
+            elided_rc: Vec::new(),
             effects: None,
         }],
     };

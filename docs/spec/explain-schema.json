@@ -230,7 +230,7 @@
           "minLength": 1
         },
         "retains": {
-          "description": "挿入した retain の数（静的な数。実行時の回数ではない）。",
+          "description": "最適化の後に残った retain の数（静的な数。実行時の回数ではない）。",
           "type": "integer",
           "minimum": 0
         },
@@ -242,6 +242,13 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/op"
+          }
+        },
+        "elided": {
+          "description": "Move 最適化（M4 T3）が取り除いた retain / release。なければ出さない。項目の追加なので版は 0 のまま。",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/elided_op"
           }
         }
       }
@@ -296,7 +303,7 @@
           "minimum": 0
         },
         "index": {
-          "description": "ブロックの中の命令の添字（0始まり）。",
+          "description": "ブロックの中の命令の添字（0始まり）。Move 最適化（M4 T3）の後の IR（`dump-ir` と同じ）での位置。",
           "type": "integer",
           "minimum": 0
         },
@@ -438,6 +445,84 @@
         "annotated": {
           "description": "呼び出し先が組み込み関数か、`uses` 節のある関数なら真。",
           "type": "boolean"
+        }
+      }
+    },
+    "elided_op": {
+      "type": "object",
+      "required": [
+        "op",
+        "reason",
+        "block",
+        "index",
+        "temp",
+        "elision",
+        "message"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "enum": [
+            "retain",
+            "release"
+          ]
+        },
+        "reason": {
+          "description": "挿入した理由（`docs/design/ir.md` の表）。",
+          "enum": [
+            "param_slot_entry",
+            "consume_borrowed",
+            "consume_shared_owned",
+            "borrow_from_mutable_place",
+            "store_overwrites_slot",
+            "unconsumed_owned_at_block_end",
+            "slot_at_function_exit"
+          ]
+        },
+        "site": {
+          "description": "`consume_*` のとき、値を消費する地点。",
+          "enum": [
+            "store",
+            "return",
+            "make_union",
+            "make_record",
+            "list_new",
+            "list_set",
+            "list_push",
+            "dict_new",
+            "dict_set"
+          ]
+        },
+        "block": {
+          "description": "`dump-ir` の `bb` の番号。",
+          "type": "integer",
+          "minimum": 0
+        },
+        "index": {
+          "description": "最適化の前の IR での命令の位置（取り除いた命令は最適化の後の IR にないため）。`ops` の `index` とは座標が違う。",
+          "type": "integer",
+          "minimum": 0
+        },
+        "temp": {
+          "description": "対象の一時値（`dump-ir` の `t` の番号）。",
+          "type": "integer",
+          "minimum": 0
+        },
+        "local": {
+          "description": "スロットに関わる操作のとき、そのローカル変数の名前。",
+          "type": "string",
+          "minLength": 1
+        },
+        "elision": {
+          "description": "取り除けた理由（`docs/design/ir.md` の表）。",
+          "enum": [
+            "param_never_reassigned",
+            "borrow_guard_unneeded"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }

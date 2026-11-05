@@ -160,8 +160,12 @@ fn run_frontend(
         }
     };
     let mut program = program;
-    // ARC: retain / release を挿入し（ADR-0012）、IR と参照カウントの釣り合いを検証する
+    // ARC: retain / release を挿入し（ADR-0012）、冗長な組を取り除いて（Move 最適化、M4 T3）、
+    // IR と参照カウントの釣り合いを検証する。`WYS_ARC_OPT=0` で最適化を止められる（前後の比較と、誤りの切り分け用）
     wys_ir::arc::insert(&mut program);
+    if std::env::var("WYS_ARC_OPT").map_or(true, |v| v != "0") {
+        wys_ir::arc::optimize(&mut program);
+    }
     if let Err(e) = wys_ir::verify(&program).and_then(|()| wys_ir::arc::verify(&program)) {
         panic!("internal compiler error: IR verification failed: {e}\n{program}");
     }

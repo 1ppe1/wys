@@ -409,6 +409,7 @@ fn test_dispatcher(tests: &[FuncId]) -> Function {
         ret: None,
         temps,
         blocks,
+        elided_rc: Vec::new(),
         effects: None,
     }
 }
@@ -501,6 +502,7 @@ impl<'s, 't> FnLower<'s, 't> {
             ret,
             temps: l.temps,
             blocks,
+            elided_rc: Vec::new(),
             effects: sig.effects.map(|es| {
                 es.iter()
                     .into_iter()

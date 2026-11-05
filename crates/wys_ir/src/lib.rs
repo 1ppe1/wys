@@ -125,6 +125,54 @@ pub struct Function {
     /// `uses` 節で宣言した Effect（ADR-0014）。注釈がなければ `None`、`uses pure` なら空。
     /// バックエンドは読まない（生成コードは変わらない）。
     pub effects: Option<Vec<Effect>>,
+    /// Move 最適化（`arc::optimize`、M4 T3）が取り除いた retain / release の記録。`wys explain` が報告する
+    /// （ADR-0017 の見直し条件）。バックエンドは読まない。
+    pub elided_rc: Vec<ElidedRcOp>,
+}
+
+/// Move 最適化が取り除いた参照カウントの操作（M4 T3）。挿入した理由（`reason`）と取り除けた理由（`elision`）の両方を持つ。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElidedRcOp {
+    /// `true` なら retain、`false` なら release
+    pub retain: bool,
+    pub reason: RcReason,
+    /// 操作の対象だった一時値（取り除いた後の IR には残らないことがある）
+    pub src: TempId,
+    /// 操作があったブロックと、最適化の前の命令の位置
+    pub block: u32,
+    pub index: usize,
+    /// 対象がローカル変数のスロットから読んだ値なら、そのスロット
+    pub local: Option<LocalId>,
+    pub elision: ElisionReason,
+}
+
+/// 参照カウントの操作を取り除けた理由（M4 T3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ElisionReason {
+    /// 引数のスロットに関数の中で代入しないので、スロットは呼び出し側の参照を借りるだけでよい
+    ParamNeverReassigned,
+    /// 可変な場所から読んだ値を、使い終わるまでに場所を変え得る命令（関数の呼び出し、要素の書き換え、release）がない
+    BorrowGuardUnneeded,
+}
+
+impl ElisionReason {
+    pub fn id(self) -> &'static str {
+        match self {
+            ElisionReason::ParamNeverReassigned => "param_never_reassigned",
+            ElisionReason::BorrowGuardUnneeded => "borrow_guard_unneeded",
+        }
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            ElisionReason::ParamNeverReassigned => {
+                "the parameter is never reassigned, so its slot can borrow the caller's reference"
+            }
+            ElisionReason::BorrowGuardUnneeded => {
+                "nothing that could change the list or dict runs before the value's last use"
+            }
+        }
+    }
 }
 
 /// 関数の Effect（ADR-0014）。型検査の `Effect` と同じ種類を持つ。
@@ -590,6 +638,40 @@ pub enum Inst {
         src: TempId,
         variant: u32,
     },
+}
+
+impl Inst {
+    /// 命令が読む一時値（Move 最適化の判定用）。
+    pub fn operands(&self) -> Vec<TempId> {
+        match self {
+            Inst::Const { .. } | Inst::Load { .. } => vec![],
+            Inst::Store { src, .. }
+            | Inst::Not { src, .. }
+            | Inst::Retain { src, .. }
+            | Inst::Release { src, .. }
+            | Inst::ListLen { src, .. }
+            | Inst::DictLen { src, .. }
+            | Inst::Field { src, .. }
+            | Inst::UnionIs { src, .. }
+            | Inst::UnionPayload { src, .. } => vec![*src],
+            Inst::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
+            Inst::Call { args, .. } => args.clone(),
+            Inst::MakeUnion { payload, .. } => payload.iter().copied().collect(),
+            Inst::ListNew { items, .. } => items.clone(),
+            Inst::ListGet { src, index, .. } | Inst::DictKeyAt { src, index, .. } => {
+                vec![*src, *index]
+            }
+            Inst::ListSet { list, index, value } => vec![*list, *index, *value],
+            Inst::ListPush { list, value } => vec![*list, *value],
+            Inst::DictNew { keys, vals, .. } => keys.iter().chain(vals).copied().collect(),
+            Inst::DictContains { src, key, .. }
+            | Inst::DictGet { src, key, .. }
+            | Inst::DictPop { src, key, .. } => vec![*src, *key],
+            Inst::DictSet { dict, key, value } => vec![*dict, *key, *value],
+            Inst::DictIterNext { src, pos, len0, .. } => vec![*src, *pos, *len0],
+            Inst::MakeRecord { fields, .. } => fields.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1406,6 +1488,7 @@ mod tests {
                     ],
                     term: Terminator::Return(None),
                 }],
+                elided_rc: Vec::new(),
                 effects: None,
             }],
         }
