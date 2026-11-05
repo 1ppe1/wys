@@ -1,0 +1,6 @@
+# expect-error: E1303 6:5
+async def work() -> None:
+    print(1)
+
+async def main() -> None:
+    work()

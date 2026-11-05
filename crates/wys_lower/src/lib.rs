@@ -63,6 +63,8 @@ impl Shared<'_> {
                 Some(Ty::Union(self.ir_union(u)))
             }
             TTy::Error => panic!("lowering received a type error; run the type checker first"),
+            // async のコード生成は M4 T10c。それまでドライバが lowering の前で止める
+            TTy::Task(_) => panic!("async reached lowering; the driver should have stopped it"),
         }
     }
 
@@ -1098,6 +1100,9 @@ impl<'s, 't> FnLower<'s, 't> {
             }
             ExprKind::Binary { op, lhs, rhs } => Some(self.binary(*op, lhs, rhs)),
             ExprKind::Try(inner) => self.try_expr(inner),
+            ExprKind::Await(_) => {
+                panic!("async reached lowering; the driver should have stopped it")
+            }
             ExprKind::Field { base, name } => {
                 let v = self.expr(base).expect("records have values");
                 let TTy::Record(r) = self.ty(base) else {

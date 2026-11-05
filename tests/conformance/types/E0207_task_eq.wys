@@ -1,0 +1,8 @@
+# expect-error: E0207 7:8
+async def f() -> int:
+    return 1
+
+async def main() -> None:
+    t = spawn(f())
+    if t == t:
+        print(await t)

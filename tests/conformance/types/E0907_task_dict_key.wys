@@ -1,0 +1,7 @@
+# expect-error: E0907 6:13
+async def f() -> int:
+    return 1
+
+async def main() -> None:
+    d: dict[Task[int], int] = {}
+    print(len(d))

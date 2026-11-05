@@ -1,0 +1,6 @@
+# expect-error: E1304 6:15
+def g() -> int:
+    return 1
+
+async def main() -> None:
+    t = spawn(g())

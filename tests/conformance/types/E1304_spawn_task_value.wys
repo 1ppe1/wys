@@ -1,0 +1,8 @@
+# expect-error: E1304 7:15
+async def f() -> int:
+    return 1
+
+async def main() -> None:
+    t = spawn(f())
+    u = spawn(t)
+    print(await t)

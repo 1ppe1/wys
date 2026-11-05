@@ -1,4 +1,5 @@
 (* wys 文法 v0.3-draft — M3 作業中（v0.2 = M2 完了時点（v0.1 = M1 サブセット。実装: crates/wys_lexer, crates/wys_parser, crates/wys_resolve）
+ * M4 の変更: async def と await（T10b、ADR-0020）
  * v0.3 の変更: for / in、リストのリテラル、添字、添字への代入（M3 T4a）、束縛パターン Ok(x) / Err(e)（M3 T5a）、後置の ?（M3 T5b、ADR-0013）、辞書のリテラルと in / not in（M3 T6a、ADR-0015）、関数の uses 節（M3 T9a、ADR-0014）
  * v0.2 の変更: Union 型（A | B）、is / is not（T1a）、match / case（T2）、type 定義・レコード・キーワード引数・フィールド参照（T3）、Generics（T4）、モジュール（T6）
  *
@@ -15,7 +16,7 @@ dotted      = IDENT { "." IDENT } ;                     (* a.b は エントリ�
 type_def    = "type" IDENT [ type_params ] "=" ( record_type | type ) NEWLINE ;   (* type は予約語ではない（トップレベルの `type 名前 =` のときだけ） *)
 record_type = "{" [ field_decl { "," field_decl } [ "," ] ] "}" ;
 field_decl  = IDENT ":" type ;
-func_def    = "def" IDENT [ type_params ] "(" [ params ] ")" "->" type [ effects ] ":" block ;
+func_def    = [ "async" ] "def" IDENT [ type_params ] "(" [ params ] ")" "->" type [ effects ] ":" block ;   (* async def（ADR-0020） *)
 effects     = "uses" IDENT { "," IDENT } ;                (* Effect の宣言（ADR-0014）。名前は io / exit / python（ADR-0018）、Effect なしは pure。
                                                             uses と pure は予約語ではない（この位置でだけ意味を持つ）。`-> uses:` は型名 uses *)
 type_params = "[" IDENT { "," IDENT } [ "," ] "]" ;          (* 型パラメータ。呼び出し時に引数から推論する *)
@@ -52,7 +53,8 @@ comparison  = additive [ cmp_op additive | "is" [ "not" ] additive ] ;   (* 連�
 cmp_op      = "==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not" "in" ;   (* in の右辺は dict（E0909、ADR-0015） *)
 additive    = term { ( "+" | "-" ) term } ;
 term        = unary { ( "*" | "/" | "//" | "%" ) unary } ;   (* "/" は型検査で拒否（E0207） *)
-unary       = "-" unary | postfix ;
+unary       = "-" unary | "await" chain { "?" } | postfix ;   (* await の被演算子は ? を含まない chain。await f()? は (await f())?（ADR-0020 論点 4・13） *)
+chain       = primary { "." IDENT [ "(" [ args ] ")" ] | "[" expr "]" } ;
 postfix     = primary { "." IDENT [ "(" [ args ] ")" ] | "[" expr "]" | "?" } ;   (* 添字 xs[i] *)   (* フィールド参照。名前の並びの後の ( は修飾付きの呼び出し m.f(...) *)
             (* "?" は Result の伝搬（ADR-0013）。-f()? は -(f()?)。"?" の直後に "." / "[" は書けない（E0101。括弧で囲む） *)
 primary     = INT | FLOAT | STRING | "True" | "False" | "None"
@@ -72,7 +74,7 @@ STRING      = '"' { char | escape } '"' | "'" { char | escape } "'" ;
 escape      = "\" ( "n" | "t" | "r" | "0" | "\" | '"' | "'" ) ;   (* その他は E0006 *)
 comment     = "#" { any character except newline } ;
 
-(* 予約語: def return if elif else while pass True False None and or not is match case pub import from as for in
+(* 予約語: def async await return if elif else while pass True False None and or not is match case pub import from as for in
  * （match / case は Python と違いソフトキーワードではない。ユーザー決定、docs/plans/m2.md）
  *
  * レイアウト規則:

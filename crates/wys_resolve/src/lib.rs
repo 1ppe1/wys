@@ -724,7 +724,7 @@ impl Resolver<'_> {
                 self.expr(rhs);
             }
             ExprKind::Field { base, .. } => self.expr(base),
-            ExprKind::Try(inner) => self.expr(inner),
+            ExprKind::Try(inner) | ExprKind::Await(inner) => self.expr(inner),
             ExprKind::List(items) => {
                 for i in items {
                     self.expr(i);

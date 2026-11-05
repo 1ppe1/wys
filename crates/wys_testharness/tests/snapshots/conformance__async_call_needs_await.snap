@@ -1,0 +1,33 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: "wys_driver::to_json(&fe.file, &fe.diagnostics)"
+---
+{
+  "schema_version": "0",
+  "diagnostics": [
+    {
+      "code": "E1303",
+      "severity": "error",
+      "message": "`fetch` is an `async` function; its call must be awaited or spawned",
+      "span": {
+        "file": "tests/conformance/diagnostics/async_call_needs_await.wys",
+        "start": {
+          "line": 6,
+          "column": 9,
+          "byte": 106
+        },
+        "end": {
+          "line": 6,
+          "column": 17,
+          "byte": 114
+        }
+      },
+      "hints": [
+        {
+          "message": "write `await fetch(...)` to wait for it, or `spawn(fetch(...))` to run it as a task"
+        }
+      ],
+      "related": []
+    }
+  ]
+}

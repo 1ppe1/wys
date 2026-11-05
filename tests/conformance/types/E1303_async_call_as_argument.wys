@@ -1,0 +1,6 @@
+# expect-error: E1303 6:11
+async def f() -> int:
+    return 1
+
+async def main() -> None:
+    print(f() + 1)

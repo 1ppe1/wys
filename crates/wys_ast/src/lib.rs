@@ -52,6 +52,9 @@ pub const BUILTINS: &[&str] = &[
     "range",
     "Ok",
     "Err",
+    // async（ADR-0020 論点 4）
+    "spawn",
+    "sleep_ms",
     // 数値の変換（ADR-0019 論点 3）
     "float",
     "int",
@@ -126,6 +129,8 @@ pub struct Param {
 pub struct FuncDef {
     /// `pub def`（ほかのモジュールから使える、ADR-0010）
     pub public: bool,
+    /// `async def`（ADR-0020）
+    pub is_async: bool,
     pub name: Ident,
     /// `def f[T](...)` の型パラメータ。
     pub type_params: Vec<Ident>,
@@ -275,6 +280,8 @@ pub enum ExprKind {
     },
     /// `operand?`: `Err` なら関数からそのまま返し、`Ok` なら中身（ADR-0013）
     Try(Box<Expr>),
+    /// `await operand`（ADR-0020）: `async def` の呼び出しか `Task[T]`。`await f()?` は `(await f())?`
+    Await(Box<Expr>),
     /// `base.name`（レコードのフィールド参照）
     Field {
         base: Box<Expr>,

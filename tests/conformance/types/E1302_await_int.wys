@@ -1,0 +1,4 @@
+# expect-error: E1302 3:15
+async def main() -> None:
+    x = await 1
+    print(x)

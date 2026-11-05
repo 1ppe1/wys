@@ -1,0 +1,10 @@
+# expect-error: E1301 6:9
+async def f() -> int:
+    return 1
+
+def g() -> int:
+    x = await f()
+    return x
+
+async def main() -> None:
+    print(g())

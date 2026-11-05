@@ -1,0 +1,7 @@
+# expect-error: E1301 6:9
+async def work() -> None:
+    print(1)
+
+def main() -> None:
+    t = spawn(work())
+    print(0)

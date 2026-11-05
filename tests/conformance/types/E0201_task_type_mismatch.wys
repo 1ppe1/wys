@@ -1,0 +1,11 @@
+# expect-error: E0201 10:9
+async def f() -> int:
+    return 1
+
+async def g() -> str:
+    return "a"
+
+async def main() -> None:
+    t = spawn(f())
+    t = spawn(g())
+    print(await t)
