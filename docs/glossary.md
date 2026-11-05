@@ -32,7 +32,7 @@
 | LLVM / MLIR | コンパイラ基盤。LLVMはNativeコード生成、MLIRはGPU/SIMDなど多層の最適化に使う | COMP-004, COMP-007 |
 | 実行境界 | 動的値・Native・アクセラレータ・FFIの間でデータや制御を受け渡す地点。検証と変換を行う | COMP-008, P-02 |
 | FFI | 他言語の関数を呼び出すための仕組み。本言語では主にCPython連携 | INTEROP-001 |
-| GIL | CPythonのグローバルインタプリタロック。Python連携時のスレッド制約になる | 未決定事項 8 |
+| GIL | CPythonのグローバルインタプリタロック。Python連携時のスレッド制約になる。本言語では起動時に取得し、手放さない | 未決定事項 8、ADR-0018 |
 | Conformance test | 言語仕様どおりに動くかを確かめる適合性テスト | 13章 成果物 5 |
 | Conformance ランナー | `tests/conformance/` の `.wys` ケースを実行し、コメントで宣言した期待値（診断・出力・終了コード）と突き合わせる仕組み（`crates/wys_testharness`） | 13章 成果物 5 |
 | スナップショットテスト | 出力（診断 JSON など）をファイルに保存し、変化を差分としてレビューするテスト。insta を使う | DX-002 |
