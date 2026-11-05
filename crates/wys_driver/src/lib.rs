@@ -343,8 +343,12 @@ impl TempDir {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("wys-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).map_err(|e| BuildError::Io(e.to_string()))?;
+        // 同じプロセスの複数のスレッド（並列のテスト）が同時に作っても重ならないように、連番も入れる。
+        // 時刻だけだと、時計の分解能の中で同じ名前になり、互いの `module.o` を上書きしていた
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("wys-{}-{nanos}-{n}", std::process::id()));
+        std::fs::create_dir(&dir).map_err(|e| BuildError::Io(e.to_string()))?;
         Ok(Self(dir))
     }
 }
