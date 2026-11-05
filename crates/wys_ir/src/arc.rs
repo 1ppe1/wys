@@ -708,6 +708,43 @@ fn move_from_slots(
                 if read_later {
                     continue;
                 }
+                // 同じスロットを先に読んだ借用（とそこから取り出した値）が、この後でまだ使われるなら移さない。
+                // 移すとスロットが値を持たなくなり、先の借用が宙に浮く（`s + replace([s])`、PR #91 のレビュー）。
+                // 一時値はブロックの中でだけ使えるので、このブロックだけを調べればよい
+                let mut earlier: std::collections::HashSet<TempId> = Default::default();
+                for k in 0..i {
+                    match &b.insts[k] {
+                        Inst::Load { dst, src } | Inst::Take { dst, src } if *src == l => {
+                            earlier.insert(*dst);
+                        }
+                        Inst::Field { dst, src, .. } | Inst::UnionPayload { dst, src, .. }
+                            if earlier.contains(src) =>
+                        {
+                            earlier.insert(*dst);
+                        }
+                        _ => {}
+                    }
+                }
+                let mut outstanding = false;
+                for x in &b.insts[i + 1..] {
+                    if x.operands().iter().any(|o| earlier.contains(o)) {
+                        outstanding = true;
+                        break;
+                    }
+                    if let Inst::Field { dst, src, .. } | Inst::UnionPayload { dst, src, .. } = x
+                        && earlier.contains(src)
+                    {
+                        earlier.insert(*dst);
+                    }
+                }
+                let term_uses = match &b.term {
+                    Terminator::Return(Some(r)) => vec![*r],
+                    Terminator::Branch { cond, .. } => vec![*cond],
+                    _ => vec![],
+                };
+                if outstanding || term_uses.iter().any(|r| earlier.contains(r)) {
+                    continue;
+                }
                 if !killed {
                     let live = lives.entry(l).or_insert_with(|| live_out(f, l));
                     if live[bi] {
@@ -1059,6 +1096,47 @@ mod tests {
             insts: tail,
             term: Terminator::Jump(BlockId(1)),
         });
+        let (text, _) = optimized(p);
+        assert!(!text.contains("take"), "{text}");
+    }
+
+    #[test]
+    fn a_local_with_an_outstanding_earlier_borrow_is_not_moved() {
+        // l0 = "s"; t1 = l0; t2 = l0; l1 = t2; print(t1): t1 がまだ l0 から借りているので、t2 は移さない（PR #91）
+        let p = str_fn(
+            vec![
+                Inst::Const {
+                    dst: TempId(0),
+                    value: Const::Str(StrId(0)),
+                },
+                Inst::Store {
+                    dst: LocalId(0),
+                    src: TempId(0),
+                },
+                Inst::Load {
+                    dst: TempId(1),
+                    src: LocalId(0),
+                },
+                Inst::Load {
+                    dst: TempId(2),
+                    src: LocalId(0),
+                },
+                Inst::Store {
+                    dst: LocalId(1),
+                    src: TempId(2),
+                },
+                Inst::Call {
+                    dst: None,
+                    callee: Callee::Builtin(Builtin::PrintStr),
+                    args: vec![TempId(1)],
+                },
+            ],
+            vec![Ty::Str, Ty::Str, Ty::Str],
+            vec![Ty::Str, Ty::Str],
+            0,
+            None,
+            Terminator::Return(None),
+        );
         let (text, _) = optimized(p);
         assert!(!text.contains("take"), "{text}");
     }
