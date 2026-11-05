@@ -245,6 +245,28 @@ fn warnings_are_reported_but_do_not_fail() {
 }
 
 #[test]
+fn unused_names_are_warned_but_do_not_fail() {
+    scratch("unused_lib", "pub def f() -> int:\n    return 1\n");
+    let path = scratch(
+        "unused_main",
+        "import unused_lib\n\ndef main() -> None:\n    x = 1\n    _y = 2\n    print(\"ok\")\n",
+    );
+    let check = cli(&["check", "--format", "json", path.to_str().unwrap()]);
+    assert_eq!(check.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
+    let codes: Vec<&str> = v["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["W0202", "W0201"]);
+    let run = cli(&["run", path.to_str().unwrap()]);
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "ok\n");
+}
+
+#[test]
 fn run_passes_arguments_after_double_dash() {
     let path = scratch(
         "args",

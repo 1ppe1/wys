@@ -705,6 +705,131 @@ pub struct EffectSite {
 
 use wys_ast::BUILTINS;
 
+/// 一度も読まれないローカル変数（W0201、ADR-0016 論点 20）。代入先、`for` の変数、`case Ok(x)` の束縛が対象で、
+/// `_` で始まる名前と引数は除く。読まれたかどうかは関数の中の名前で判定する（スコープは区別しない）。
+fn unused_locals(f: &FuncDef) -> Vec<Diagnostic> {
+    fn bind<'a>(id: &'a Ident, out: &mut Vec<&'a Ident>) {
+        if !out.iter().any(|b| b.name == id.name) {
+            out.push(id);
+        }
+    }
+    fn stmts<'a>(ss: &'a [Stmt], binds: &mut Vec<&'a Ident>, reads: &mut HashSet<&'a str>) {
+        for s in ss {
+            match &s.kind {
+                StmtKind::Assign { target, value, .. } => {
+                    bind(target, binds);
+                    expr(value, reads);
+                }
+                StmtKind::Expr(e) => expr(e, reads),
+                StmtKind::Return(v) => {
+                    if let Some(e) = v {
+                        expr(e, reads);
+                    }
+                }
+                StmtKind::If {
+                    branches,
+                    else_body,
+                } => {
+                    for (c, b) in branches {
+                        expr(c, reads);
+                        stmts(b, binds, reads);
+                    }
+                    if let Some(b) = else_body {
+                        stmts(b, binds, reads);
+                    }
+                }
+                StmtKind::While { cond, body } => {
+                    expr(cond, reads);
+                    stmts(body, binds, reads);
+                }
+                StmtKind::For { var, iter, body } => {
+                    bind(var, binds);
+                    expr(iter, reads);
+                    stmts(body, binds, reads);
+                }
+                // `xs[i] = v` は `xs` を読んで書き換える
+                StmtKind::IndexAssign { target, value } => {
+                    expr(target, reads);
+                    expr(value, reads);
+                }
+                StmtKind::Match { subject, arms } => {
+                    expr(subject, reads);
+                    for a in arms {
+                        if let PatternKind::Bind(_, Some(v)) = &a.pattern.kind {
+                            bind(v, binds);
+                        }
+                        stmts(&a.body, binds, reads);
+                    }
+                }
+                StmtKind::Pass => {}
+            }
+        }
+    }
+    fn expr<'a>(e: &'a Expr, reads: &mut HashSet<&'a str>) {
+        match &e.kind {
+            ExprKind::Name(n) => {
+                reads.insert(n);
+            }
+            ExprKind::Call {
+                callee,
+                args,
+                kwargs,
+            } => {
+                // `xs.append(1)` はメソッドの受け手を読む
+                if let Some((recv, _)) = callee.name.split_once('.') {
+                    reads.insert(recv);
+                }
+                for a in args {
+                    expr(a, reads);
+                }
+                for (_, v) in kwargs {
+                    expr(v, reads);
+                }
+            }
+            ExprKind::Unary { operand, .. } => expr(operand, reads),
+            ExprKind::Binary { lhs, rhs, .. } | ExprKind::Is { lhs, rhs, .. } => {
+                expr(lhs, reads);
+                expr(rhs, reads);
+            }
+            ExprKind::Field { base, .. } | ExprKind::Try(base) => expr(base, reads),
+            ExprKind::List(items) => items.iter().for_each(|i| expr(i, reads)),
+            ExprKind::Dict(entries) => {
+                for (k, v) in entries {
+                    expr(k, reads);
+                    expr(v, reads);
+                }
+            }
+            ExprKind::Index { base, index } => {
+                expr(base, reads);
+                expr(index, reads);
+            }
+            ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::None => {}
+        }
+    }
+    let mut binds = Vec::new();
+    let mut reads = HashSet::new();
+    stmts(&f.body, &mut binds, &mut reads);
+    binds
+        .into_iter()
+        .filter(|b| {
+            !b.name.starts_with('_')
+                && !reads.contains(b.name.as_str())
+                && !f.params.iter().any(|p| p.name.name == b.name)
+        })
+        .map(|b| {
+            Diagnostic::warning(
+                "W0201",
+                format!("variable `{}` is assigned but never read", b.name),
+                b.span,
+            )
+            .with_hint(format!(
+                "remove it, or rename it to `_{}` if it is intentionally unused",
+                b.name
+            ))
+        })
+        .collect()
+}
+
 pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
     check_program(module, true)
 }
@@ -784,7 +909,12 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
 
     let mut funcs = Vec::new();
     for (i, f) in module.funcs.iter().enumerate() {
+        let errors = cx.diags.iter().filter(|d| d.is_error()).count();
         funcs.push(FnCk::run(&mut cx, f, i));
+        // エラーのある関数では出さない（修正の途中の雑音になる。DX-005）
+        if cx.diags.iter().filter(|d| d.is_error()).count() == errors {
+            cx.diags.extend(unused_locals(f));
+        }
     }
     (
         TypeckResult {
@@ -4258,7 +4388,7 @@ mod tests {
     fn generic_records() {
         let defs = "type Pair[A, B] = {first: A, second: B}\n\ndef swap[A, B](p: Pair[A, B]) -> Pair[B, A]:\n    return Pair(first=p.second, second=p.first)\n\n";
         let ok = format!(
-            "{defs}def f() -> None:\n    q = swap(Pair(first=1, second=\"x\"))\n    print(q.first)\n    print(q.second + 1)\n    r: Pair[str, int] = q\n"
+            "{defs}def f() -> None:\n    q = swap(Pair(first=1, second=\"x\"))\n    print(q.first)\n    print(q.second + 1)\n    _r: Pair[str, int] = q\n"
         );
         assert_eq!(run(&with_main(&ok)), Vec::<&str>::new());
         assert_eq!(
@@ -4282,7 +4412,7 @@ mod tests {
 
     #[test]
     fn unknown_must_be_checked_with_match() {
-        let ok = "def f() -> None:\n    v = parse_scalar(\"1\")\n    match v:\n        case int():\n            print(v + 1)\n        case str():\n            print(v)\n        case _:\n            pass\n    u: Unknown = 1\n    a = arg(0)\n    if a is not None:\n        print(a)\n    print(arg_count())\n";
+        let ok = "def f() -> None:\n    v = parse_scalar(\"1\")\n    match v:\n        case int():\n            print(v + 1)\n        case str():\n            print(v)\n        case _:\n            pass\n    _u: Unknown = 1\n    a = arg(0)\n    if a is not None:\n        print(a)\n    print(arg_count())\n";
         assert_eq!(run(&with_main(ok)), Vec::<&str>::new());
         let cases = [
             (

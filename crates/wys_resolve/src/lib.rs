@@ -206,6 +206,7 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
         expr_count,
     };
     for (mi, m) in mods.iter_mut().enumerate() {
+        let errors_before = diags.iter().filter(|d| d.is_error()).count();
         // このモジュールで見える名前: 自分の定義 + `from ... import` した名前
         let mut scope: HashMap<String, String> = defs[mi]
             .iter()
@@ -274,6 +275,7 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
             own_name: &m.name,
             own: &defs[mi],
             locals: HashSet::new(),
+            used: HashSet::new(),
         };
         for t in &mut m.ast.types {
             t.name.name = defs[mi][&t.name.name].internal.clone();
@@ -297,6 +299,24 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
             }
             r.type_expr(&mut f.ret);
             r.stmts(&mut f.body);
+        }
+        // 使われない import（W0202、ADR-0016 論点 21）。書いた順に報告する
+        // 名前解決のエラーがあるモジュールでは出さない（`lib.f` の E0706 なら、別名は使うつもりだった）
+        let clean = r.diags.iter().filter(|d| d.is_error()).count() == errors_before;
+        let mut unused: Vec<(&String, &Bound)> = bound
+            .iter()
+            .filter(|(local, _)| clean && !r.used.contains(local.as_str()))
+            .collect();
+        unused.sort_by_key(|(_, b)| b.span.start);
+        for (local, b) in unused {
+            r.diags.push(
+                Diagnostic::warning(
+                    "W0202",
+                    format!("`{local}` is imported but never used"),
+                    b.span,
+                )
+                .with_hint("remove the import"),
+            );
         }
         out.types.append(&mut m.ast.types);
         out.funcs.append(&mut m.ast.funcs);
@@ -472,6 +492,8 @@ struct Resolver<'a> {
     own: &'a HashMap<String, Def>,
     /// いま解決している関数のローカル変数と引数。`xs.append(1)` はメソッド呼び出しで、モジュールの参照ではない
     locals: HashSet<String>,
+    /// 参照した import の名前（使われない import の警告 W0202 用）
+    used: HashSet<String>,
 }
 
 impl Resolver<'_> {
@@ -488,6 +510,7 @@ impl Resolver<'_> {
                 return;
             }
             if let Some(target) = self.modules.get(prefix) {
+                self.used.insert(prefix.to_string());
                 let ti = self.index[target.as_str()];
                 if let Some(internal) = lookup(&self.defs[ti], target, last, span, self.diags) {
                     *name = internal;
@@ -516,6 +539,7 @@ impl Resolver<'_> {
             return;
         }
         if let Some(internal) = self.scope.get(name.as_str()) {
+            self.used.insert(name.clone());
             *name = internal.clone();
         }
     }

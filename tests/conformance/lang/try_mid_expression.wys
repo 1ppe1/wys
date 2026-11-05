@@ -14,7 +14,7 @@ def mix(n: int) -> Result[str, str]:
     s = "x" + "y"
     t = s + "z" + str_of(f(n)?)
     xs = [a, f(n)?, f(1)? * 2]
-    b = add3(a, f(n)?, len(xs))
+    _b = add3(a, f(n)?, len(xs))
     ok = n > 100 or f(n)? > 3
     if ok:
         return Ok(t + " " + "16")
