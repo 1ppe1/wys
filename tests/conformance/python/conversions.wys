@@ -1,0 +1,85 @@
+# 境界の変換（ADR-0018 論点 10・11、M4 T7）: list / dict / Union は Python の list / dict / 値にコピーし、
+# Python の list / dict は PyObject の list / dict として受け取る
+# expect-stdout: [1, null, 2]
+# expect-stdout: {"a": [1, 2], "b": []}
+# expect-stdout: {"a": 2, "b": 1}
+# expect-stdout: 2.5
+# expect-stdout: 3.141592653589793
+# expect-stdout: TypeError
+# expect-stdout: 6
+# expect-stdout: TypeError
+# expect-stdout: 1
+# expect-stdout: TypeError
+def dumps(x: PyObject) -> Result[str, PyError] uses python:
+    json = py_import("json")?
+    f = json.attr("dumps")?
+    return (f.call([x])?).to_str()
+
+def dumps_sorted(x: PyObject) -> Result[str, PyError] uses python:
+    json = py_import("json")?
+    f = json.attr("dumps")?
+    return (f.call_kw([x], {"sort_keys": py_value(True)})?).to_str()
+
+def loads(s: str) -> Result[PyObject, PyError] uses python:
+    json = py_import("json")?
+    return (json.attr("loads")?).call([py_value(s)])
+
+def sum_list(s: str) -> Result[int, PyError] uses python:
+    total = 0
+    for h in (loads(s)?).to_list()?:
+        total = total + h.to_int()?
+    return Ok(total)
+
+def first_value(s: str) -> Result[int, PyError] uses python:
+    d = (loads(s)?).to_dict()?
+    return d["a"].to_int()
+
+def print_str(r: Result[str, PyError]) -> None:
+    match r:
+        case Ok(s):
+            print(s)
+        case Err(e):
+            print(e.kind)
+
+def print_int(r: Result[int, PyError]) -> None:
+    match r:
+        case Ok(n):
+            print(n)
+        case Err(e):
+            print(e.kind)
+
+def main() -> None:
+    xs: list[int | None] = [1, None, 2]
+    print_str(dumps(py_value(xs)))
+    empty: list[int] = []
+    d = {"a": [1, 2], "b": empty}
+    print_str(dumps(py_value(d)))
+    print_str(dumps_sorted(py_value({"b": 1, "a": 2})))
+    match py_value(2.5).to_float():
+        case Ok(f):
+            print(f)
+        case Err(e):
+            print(e.kind)
+    match py_import("math"):
+        case Ok(m):
+            match m.attr("pi"):
+                case Ok(pi):
+                    match pi.to_float():
+                        case Ok(f):
+                            print(f)
+                        case Err(e):
+                            print(e.kind)
+                case Err(e):
+                    print(e.kind)
+        case Err(e):
+            print(e.kind)
+    # int は float に暗黙に変換しない
+    match py_value(1).to_float():
+        case Ok(f):
+            print(f)
+        case Err(e):
+            print(e.kind)
+    print_int(sum_list("[1, 2, 3]"))
+    print_int(sum_list("\"not a list\""))
+    print_int(first_value("{\"a\": 1}"))
+    print_int(first_value("[1]"))

@@ -1,0 +1,7 @@
+# list の要素も変換できる型でなければならない（レコードは変換しない。ADR-0018 論点 10）
+# expect-error: E1201 6:18
+type P = {x: int}
+
+def main() -> None:
+    h = py_value([P(x=1)])
+    print(h.is_none())

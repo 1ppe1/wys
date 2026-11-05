@@ -353,6 +353,14 @@ declare ptr @wys_py_from_int(i64)
 declare ptr @wys_py_from_bool(i1 zeroext)
 declare ptr @wys_py_from_str(ptr)
 declare ptr @wys_py_from_float(double)
+declare double @wys_py_to_float(ptr)
+declare ptr @wys_py_to_list(ptr)
+declare ptr @wys_py_to_dict(ptr)
+declare ptr @wys_py_call_kw(ptr, ptr, ptr)
+declare ptr @wys_py_new_list()
+declare void @wys_py_list_append(ptr, ptr)
+declare ptr @wys_py_new_dict()
+declare void @wys_py_dict_set(ptr, ptr, ptr)
 declare ptr @wys_py_none()
 declare i64 @wys_py_to_int(ptr)
 declare zeroext i1 @wys_py_to_bool(ptr)
@@ -823,10 +831,122 @@ fn emit_show_glue(out: &mut String, p: &Program) {
     texts.emit(out);
 }
 
+/// 値を新しい Python のオブジェクト（+1 のハンドル）に変換する命令（`{dst} = ...`、ADR-0018 論点 10）。
+fn pyconv_inst(t: Ty, dst: &str, v: &str) -> String {
+    match t {
+        Ty::Int => format!("  {dst} = call ptr @wys_py_from_int(i64 {v})"),
+        Ty::Bool => format!("  {dst} = call ptr @wys_py_from_bool(i1 zeroext {v})"),
+        Ty::Str => format!("  {dst} = call ptr @wys_py_from_str(ptr {v})"),
+        Ty::Float => format!("  {dst} = call ptr @wys_py_from_float(double {v})"),
+        // 同じ Python のオブジェクトを指す新しい参照
+        Ty::Py => format!(
+            "  call void @wys_rc_retain(ptr {v})\n  {dst} = getelementptr i8, ptr {v}, i64 0"
+        ),
+        Ty::List(l) => format!("  {dst} = call ptr @wys_pyconv_list{}(ptr {v})", l.0),
+        Ty::Dict(d) => format!("  {dst} = call ptr @wys_pyconv_dict{}(ptr {v})", d.0),
+        Ty::Union(u) => format!("  {dst} = call ptr @wys_pyconv_u{}({} {v})", u.0, llty(t)),
+        Ty::Record(_) => unreachable!("records cannot be converted to Python (E1201)"),
+    }
+}
+
+/// `py_from_value` で変換する型と、その構成要素の型（変換関数を作る必要があるもの）。
+fn pyconv_types(p: &Program) -> Vec<Ty> {
+    let mut work: Vec<Ty> = Vec::new();
+    for f in &p.funcs {
+        for b in &f.blocks {
+            for inst in &b.insts {
+                if let Inst::Call {
+                    callee: Callee::Builtin(Builtin::PyFromValue),
+                    args,
+                    ..
+                } = inst
+                {
+                    work.push(f.temps[args[0].0 as usize]);
+                }
+            }
+        }
+    }
+    let mut seen: Vec<Ty> = Vec::new();
+    while let Some(t) = work.pop() {
+        if !matches!(t, Ty::List(_) | Ty::Dict(_) | Ty::Union(_)) || seen.contains(&t) {
+            continue;
+        }
+        seen.push(t);
+        match t {
+            Ty::List(l) => work.push(p.lists[l.0 as usize]),
+            Ty::Dict(d) => {
+                let (k, v) = p.dicts[d.0 as usize];
+                work.extend([k, v]);
+            }
+            Ty::Union(u) => work.extend(p.unions[u.0 as usize].iter().flatten()),
+            _ => {}
+        }
+    }
+    seen
+}
+
+/// `py_value` の型ごとの変換関数（ADR-0018 論点 10）。値は借用で読み、新しい Python のオブジェクトを返す。
+/// `list` は `list`、`dict` は挿入順の `dict`、Union は構成要素の値（`None` は Python の `None`）にする。
+fn emit_pyconv_glue(out: &mut String, p: &Program) {
+    for t in pyconv_types(p) {
+        match t {
+            Ty::List(l) => {
+                let elem = p.lists[l.0 as usize];
+                let (size, lt) = (elem_size(p, elem), llty(elem));
+                let _ = writeln!(
+                    out,
+                    "\ndefine private ptr @wys_pyconv_list{i}(ptr %p) {{\nentry:\n  %r = call ptr @wys_py_new_list()\n  %len = call i64 @wys_list_len(ptr %p)\n  br label %loop\nloop:\n  %i = phi i64 [0, %entry], [%i2, %body]\n  %more = icmp slt i64 %i, %len\n  br i1 %more, label %body, label %fin\nbody:\n  %s = call ptr @wys_list_slot(ptr %p, i64 %i, i64 {size})\n  %x = load {lt}, ptr %s\n{conv}\n  call void @wys_py_list_append(ptr %r, ptr %h)\n  %i2 = add i64 %i, 1\n  br label %loop\nfin:\n  ret ptr %r\n}}",
+                    i = l.0,
+                    conv = pyconv_inst(elem, "%h", "%x"),
+                );
+            }
+            Ty::Dict(d) => {
+                let (k, v) = p.dicts[d.0 as usize];
+                let vt = llty(v);
+                let _ = writeln!(
+                    out,
+                    "\ndefine private ptr @wys_pyconv_dict{i}(ptr %p) {{\nentry:\n  %r = call ptr @wys_py_new_dict()\n  %len = call i64 @wys_dict_len(ptr %p)\n  br label %loop\nloop:\n  %pos = phi i64 [0, %entry], [%pos2, %body]\n  %e = call i64 @wys_dict_iter_next(ptr %p, i64 %pos, i64 %len)\n  %more = icmp sge i64 %e, 0\n  br i1 %more, label %body, label %fin\nbody:\n  %kr = call i64 @wys_dict_key(ptr %p, i64 %e)\n{key}\n{conv_k}\n  %s = call ptr @wys_dict_val(ptr %p, i64 %e)\n  %x = load {vt}, ptr %s\n{conv_v}\n  call void @wys_py_dict_set(ptr %r, ptr %kh, ptr %vh)\n  %pos2 = add i64 %e, 1\n  br label %loop\nfin:\n  ret ptr %r\n}}",
+                    i = d.0,
+                    key = raw_to_key(k, "%key", "%kr"),
+                    conv_k = pyconv_inst(k, "%kh", "%key"),
+                    conv_v = pyconv_inst(v, "%vh", "%x"),
+                );
+            }
+            Ty::Union(u) => {
+                let ut = llty(t);
+                let members = &p.unions[u.0 as usize];
+                let _ = writeln!(
+                    out,
+                    "\ndefine private ptr @wys_pyconv_u{i}({ut} %v) {{\nentry:\n  %sv = alloca {ut}\n  store {ut} %v, ptr %sv\n  %tp = getelementptr inbounds {ut}, ptr %sv, i32 0, i32 0\n  %tag = load i8, ptr %tp\n  %pp = getelementptr inbounds {ut}, ptr %sv, i32 0, i32 1\n  br label %c0",
+                    i = u.0
+                );
+                for (j, m) in members.iter().enumerate() {
+                    let body = match m {
+                        Some(mt) => format!(
+                            "  %x{j} = load {}, ptr %pp\n{}",
+                            llty(*mt),
+                            pyconv_inst(*mt, &format!("%h{j}"), &format!("%x{j}"))
+                        ),
+                        None => format!("  %h{j} = call ptr @wys_py_none()"),
+                    };
+                    let _ = writeln!(
+                        out,
+                        "c{j}:\n  %m{j} = icmp eq i8 %tag, {j}\n  br i1 %m{j}, label %d{j}, label %c{n}\nd{j}:\n{body}\n  ret ptr %h{j}",
+                        n = j + 1
+                    );
+                }
+                let _ = writeln!(out, "c{}:\n  unreachable\n}}", members.len());
+            }
+            _ => {}
+        }
+    }
+}
+
 fn emit_glue(out: &mut String, p: &Program, drops: &DropInfo) {
     emit_dict_glue(out, p, drops);
     emit_eq_glue(out, p);
     emit_show_glue(out, p);
+    emit_pyconv_glue(out, p);
     // リストの release: 参照カウントが 0 になったら、要素を release してからバッファを返す
     for (i, elem) in p.lists.iter().enumerate() {
         let size = elem_size(p, *elem);
@@ -1372,6 +1492,12 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                     Callee::Builtin(Builtin::PrintStr) => {
                         let _ = writeln!(out, "  call void @wys_print_str(ptr {})", t(args[0]));
                     }
+                    Callee::Builtin(Builtin::PyFromValue) => {
+                        // 構造を持つ値の Python への変換は、型ごとに生成した関数で（ADR-0018 論点 10、M4 T7）
+                        let ty = f.temps[args[0].0 as usize];
+                        let d = t(dst.expect("py_from_value returns a handle"));
+                        let _ = writeln!(out, "{}", pyconv_inst(ty, &d, &t(args[0])));
+                    }
                     Callee::Builtin(b) if b.is_python() => {
                         // Python のランタイムの関数（ADR-0018）。引数と戻り値の型は IR の型から決まる
                         let params: Vec<String> = args
@@ -1387,7 +1513,8 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                             })
                             .collect();
                         let sym = format!("@wys_{}", b.name());
-                        match (dst, b.ret()) {
+                        // 戻り値の型は dst の一時値の型（`py_to_list` / `py_to_dict` は型の ID が呼び出しごとに違う）
+                        match (dst, dst.map(|d| f.temps[d.0 as usize])) {
                             (Some(d), Some(rt)) => {
                                 let rt = if rt == Ty::Bool {
                                     "zeroext i1".into()

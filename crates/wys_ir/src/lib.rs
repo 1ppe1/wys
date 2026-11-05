@@ -254,10 +254,19 @@ pub enum Builtin {
     PyFromBool,
     PyFromStr,
     PyFromFloat,
+    /// `py_value` の `list` / `dict` / Union（型ごとの変換関数をバックエンドが生成する。引数の型は問わない。M4 T7）
+    PyFromValue,
     PyNone,
     PyToInt,
     PyToBool,
     PyToStr,
+    PyToFloat,
+    /// 戻り値は `list[py]`（型の ID は呼び出しの dst で決まる。verify が確かめる）
+    PyToList,
+    /// 戻り値は `dict[str, py]`（同上）
+    PyToDict,
+    /// `h(*args, **kwargs)`（`args` は `list[py]`、`kwargs` は `dict[str, py]`）
+    PyCallKw,
     /// 失敗しない
     PyIsNone,
     /// 直前の Python の操作が失敗したか
@@ -299,6 +308,11 @@ impl Builtin {
             Builtin::PyFromBool => "py_from_bool",
             Builtin::PyFromStr => "py_from_str",
             Builtin::PyFromFloat => "py_from_float",
+            Builtin::PyFromValue => "py_from_value",
+            Builtin::PyToFloat => "py_to_float",
+            Builtin::PyToList => "py_to_list",
+            Builtin::PyToDict => "py_to_dict",
+            Builtin::PyCallKw => "py_call_kw",
             Builtin::PyNone => "py_none",
             Builtin::PyToInt => "py_to_int",
             Builtin::PyToBool => "py_to_bool",
@@ -328,6 +342,10 @@ impl Builtin {
                 | Builtin::PyFromBool
                 | Builtin::PyFromStr
                 | Builtin::PyFromFloat
+                | Builtin::PyFromValue
+                | Builtin::PyToList
+                | Builtin::PyToDict
+                | Builtin::PyCallKw
                 | Builtin::PyNone
                 | Builtin::PyToStr
                 | Builtin::PyErrKind
@@ -361,7 +379,12 @@ impl Builtin {
             | Builtin::PyFromBool
             | Builtin::PyFromStr
             | Builtin::PyFromFloat
+            | Builtin::PyFromValue
+            | Builtin::PyCallKw
             | Builtin::PyNone => Some(Ty::Py),
+            Builtin::PyToFloat => Some(Ty::Float),
+            // 型の ID は呼び出しごとに違う（verify と lowering が扱う）
+            Builtin::PyToList | Builtin::PyToDict => None,
             Builtin::PyToInt => Some(Ty::Int),
             Builtin::PyToBool | Builtin::PyIsNone | Builtin::PyFailed => Some(Ty::Bool),
             Builtin::PyToStr
@@ -397,8 +420,13 @@ impl Builtin {
             Builtin::PyFromInt => &[Ty::Int],
             Builtin::PyFromBool => &[Ty::Bool],
             Builtin::PyFromFloat => &[Ty::Float],
-            Builtin::PyToInt | Builtin::PyToBool | Builtin::PyToStr | Builtin::PyIsNone => {
-                &[Ty::Py]
+            Builtin::PyToInt
+            | Builtin::PyToBool
+            | Builtin::PyToStr
+            | Builtin::PyToFloat
+            | Builtin::PyIsNone => &[Ty::Py],
+            Builtin::PyFromValue | Builtin::PyToList | Builtin::PyToDict | Builtin::PyCallKw => {
+                unreachable!("verify checks these separately")
             }
             Builtin::PyNone
             | Builtin::PyFailed
@@ -957,6 +985,55 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                         Callee::Builtin(Builtin::PrintValue) => match args.as_slice() {
                             [a] => (vec![use_(*a, &defined_in)?], None),
                             _ => return Err(format!("bb{bi}: print_value takes one argument")),
+                        },
+                        Callee::Builtin(b @ (Builtin::PyToList | Builtin::PyToDict)) => {
+                            let [h] = args.as_slice() else {
+                                return Err(format!("bb{bi}: {} takes one argument", b.name()));
+                            };
+                            expect("python handle", use_(*h, &defined_in)?, Ty::Py)?;
+                            let d =
+                                dst.ok_or_else(|| format!("bb{bi}: {} has a result", b.name()))?;
+                            let rt = temp_ty(d)?;
+                            let ok = match (b, rt) {
+                                (Builtin::PyToList, Ty::List(l)) => list_elem(p, l)? == Ty::Py,
+                                (Builtin::PyToDict, Ty::Dict(dd)) => {
+                                    dict_types(p, dd)? == (Ty::Str, Ty::Py)
+                                }
+                                _ => false,
+                            };
+                            if !ok {
+                                return Err(format!(
+                                    "bb{bi}: {} result has type {}",
+                                    b.name(),
+                                    rt.name()
+                                ));
+                            }
+                            (vec![Ty::Py], Some(rt))
+                        }
+                        Callee::Builtin(Builtin::PyFromValue) => match args.as_slice() {
+                            [a] => (vec![use_(*a, &defined_in)?], Some(Ty::Py)),
+                            _ => return Err(format!("bb{bi}: py_from_value takes one argument")),
+                        },
+                        Callee::Builtin(Builtin::PyCallKw) => match args.as_slice() {
+                            [h, l, d] => {
+                                let lt = use_(*l, &defined_in)?;
+                                let dt = use_(*d, &defined_in)?;
+                                let list_ok = match lt {
+                                    Ty::List(li) => list_elem(p, li)? == Ty::Py,
+                                    _ => false,
+                                };
+                                let dict_ok = match dt {
+                                    Ty::Dict(di) => dict_types(p, di)? == (Ty::Str, Ty::Py),
+                                    _ => false,
+                                };
+                                if !(list_ok && dict_ok) {
+                                    return Err(format!(
+                                        "bb{bi}: py_call_kw takes list[py] and dict[str, py]"
+                                    ));
+                                }
+                                (vec![use_(*h, &defined_in)?, lt, dt], Some(Ty::Py))
+                            }
+                            _ => return Err(format!("bb{bi}: py_call_kw takes three arguments")),
                         },
                         Callee::Builtin(Builtin::PyCall) => match args.as_slice() {
                             [h, l] => {
