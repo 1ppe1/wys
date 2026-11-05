@@ -118,7 +118,7 @@ bb0:
   | id | 内容 |
   |---|---|
   | `param_never_reassigned` | 関数の中で代入しない引数のスロットは、呼び出し側の参照を借りる。入口の `param_slot_entry` と出口の `slot_at_function_exit` の組を取り除く |
-  | `borrow_guard_unneeded` | 可変な場所から読んだ値（`list_get` / `dict_get` / `dict_key_at`）を、最後の使用までに場所を変え得る命令（関数の呼び出し、`py_*`、要素の書き換え、release）がないなら、`borrow_from_mutable_place` の retain とブロックの終わりの release の組を取り除く。最後の使用が関数の呼び出しの引数なら残す |
+  | `borrow_guard_unneeded` | 可変な場所から読んだ値（`list_get` / `dict_get` / `dict_key_at`）を、最後の使用までに場所を変え得る命令（関数の呼び出し、`py_*`、要素の書き換え、release）がないなら、`borrow_from_mutable_place` の retain とブロックの終わりの release の組を取り除く。最後の使用が関数の呼び出しの引数なら残す。値から取り出したもの（`Field` / `UnionPayload`。`xs[0].name`）の使用も、その値の使用として数え、終端命令で使う場合も残す |
 - `wys_ir::arc::verify` が、ブロックごとに参照カウントの釣り合いを検査する（driver が毎回実行する）。
 - 各 `retain` / `release` は、挿入した理由（`RcReason`、ADR-0017）を持つ。バックエンドは理由を読まないので、生成コードは変わらない。IR テキストでは `retain t3 ; borrow_from_mutable_place` のように末尾に出す（消費の理由は `consume_borrowed:store` のように消費する地点を付ける）。命令を動かしたり消したりする後続のパス（M3b の Move 最適化）は、理由を保つ。
 

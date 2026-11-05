@@ -423,13 +423,30 @@ fn optimize_function(f: &mut Function) {
             }) else {
                 continue;
             };
-            let last_use = (i + 2..k)
-                .rev()
-                .find(|&j| b.insts[j].operands().contains(&t));
-            let safe = match last_use {
-                Some(u) => (i + 2..=u).all(|j| keeps_places(&b.insts[j])),
-                None => true,
+            // `t` から取り出した値（`Field` / `UnionPayload`。その先も）は、`t` の保持に頼って生きている。
+            // それらの使用も `t` の使用として数える（`xs[0].name + replace_first(xs)`、PR #89 のレビュー）
+            let mut derived: std::collections::HashSet<TempId> = [t].into();
+            let mut last_use = None;
+            for j in i + 2..k {
+                let inst = &b.insts[j];
+                if inst.operands().iter().any(|o| derived.contains(o)) {
+                    last_use = Some(j);
+                    if let Inst::Field { dst, .. } | Inst::UnionPayload { dst, .. } = inst {
+                        derived.insert(*dst);
+                    }
+                }
+            }
+            // 終端命令（`return` / 分岐）で使う値は、ブロックの最後まで生きるので保持を残す
+            let term_uses = match &b.term {
+                Terminator::Return(Some(r)) => vec![*r],
+                Terminator::Branch { cond, .. } => vec![*cond],
+                _ => vec![],
             };
+            let safe = !term_uses.iter().any(|r| derived.contains(r))
+                && match last_use {
+                    Some(u) => (i + 2..=u).all(|j| keeps_places(&b.insts[j])),
+                    None => true,
+                };
             if !safe {
                 continue;
             }
@@ -736,6 +753,38 @@ mod tests {
                 .iter()
                 .all(|e| e.elision != ElisionReason::BorrowGuardUnneeded)
         );
+    }
+
+    #[test]
+    fn a_value_derived_from_a_list_element_keeps_the_guard() {
+        // r = xs[0]; s = r.name（Field）; f(xs); print(s): `s` は `r` の保持に頼るので、保持は残す（PR #89 のレビュー）
+        let mut p = list_fn(
+            vec![
+                Inst::Field {
+                    dst: TempId(3),
+                    src: TempId(2),
+                    index: 0,
+                },
+                Inst::Call {
+                    dst: None,
+                    callee: Callee::Func(FuncId(0)),
+                    args: vec![TempId(0)],
+                },
+                Inst::Call {
+                    dst: None,
+                    callee: Callee::Builtin(Builtin::PrintStr),
+                    args: vec![TempId(3)],
+                },
+            ],
+            vec![Ty::Str],
+        );
+        // 要素はフィールド1つのレコード
+        p.records = vec![vec![("name".into(), Ty::Str)]];
+        p.display.record_names = vec!["User".into()];
+        p.lists = vec![Ty::Record(RecordId(0))];
+        p.funcs[0].temps[2] = Ty::Record(RecordId(0));
+        let (text, _) = optimized(p);
+        assert!(text.contains("borrow_from_mutable_place"), "{text}");
     }
 
     #[test]

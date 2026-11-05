@@ -1,0 +1,23 @@
+# 可変な場所から読んだ値から取り出したフィールドも、元の値の保持に頼る（PR #89 のレビュー）。
+# `xs[0].name` を使い終わる前に `xs[0]` を置き換える呼び出しがあれば、`xs[0]` の保持は残す
+# expect-stdout: ab-new
+# expect-stdout: cd-new
+type User = {name: str}
+
+def replace_first(xs: list[User]) -> str:
+    xs[0] = User(name="new" + "")
+    return "-" + xs[0].name
+
+def payload_first(rs: list[Result[str, str]]) -> str:
+    rs[0] = Ok("new" + "")
+    return "-new"
+
+def main() -> None:
+    xs = [User(name="a" + "b")]
+    print(xs[0].name + replace_first(xs))
+    rs: list[Result[str, str]] = [Ok("c" + "d")]
+    match rs[0]:
+        case Ok(s):
+            print(s + payload_first(rs))
+        case Err(e):
+            print(e)
