@@ -31,6 +31,7 @@
 | [0015](0015-dict-keys-order-mutation.md) | `dict[K, V]` のキー、反復の順序、反復中の変更 | Accepted | 2026-11-04 |
 | [0016](0016-record-field-narrowing-and-structural-values.md) | 不変レコードのフィールドの絞り込みと、構造を持つ値の `print` / `==` | Accepted | 2026-11-04 |
 | [0017](0017-explain-report-and-arc-reasons.md) | `wys explain` の報告と、ARC 操作の理由 | Accepted | 2026-11-04 |
+| [0018](0018-cpython-ffi-embedding.md) | CPython FFI（埋め込み、Python 3.14、例外は値） | Accepted | 2026-11-05 |
 
 ## 未決定事項との対応
 
@@ -45,7 +46,7 @@
 | 5 | Effectの表現形式（型シグネチャ、注釈、推論の組合せ） | Phase 1（基礎）／Phase 2 | AI-009 | [0014](0014-effects-phase1-annotations.md)（Phase 1 の注釈。推論は M6） |
 | 6 | Runtimeの構成（静的リンク、動的リンク、最小バイナリ） | Phase 1 | COMP-002, AC-004 | [0008](0008-runtime-static-linking.md) |
 | 7 | MVPの対象OS/CPU、初期標準ライブラリ範囲 | Phase 1 | NFR-006 | [0003](0003-mvp-target-platform.md)（OS/CPU のみ） |
-| 8 | Python連携方式と対応バージョン、GIL/スレッド境界 | Phase 2 | INTEROP-001〜003 | — |
+| 8 | Python連携方式と対応バージョン、GIL/スレッド境界 | Phase 2 | INTEROP-001〜003 | [0018](0018-cpython-ffi-embedding.md) |
 | 9 | AI SDKを標準添付するか別パッケージとするか | Phase 2 | AI-001〜010 | — |
 | 10 | モデルプロバイダ抽象化、費用上限の算定方式、秘密情報保管、トレースのプライバシー方針 | Phase 2 | AI-006, AI-007, NFR-005 | — |
 | 11 | ライセンス、ガバナンス、パッケージレジストリ運用 | 公開前 | INTEROP-004 | — |
