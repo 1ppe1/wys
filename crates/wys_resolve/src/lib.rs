@@ -539,6 +539,16 @@ impl Resolver<'_> {
                     Some(a) => d.with_hint(format!("it is imported as `{a}`: write `{a}.{last}`")),
                     None => d.with_hint(format!("add `import {prefix}` at the top of this file")),
                 });
+            } else if let Some(full) = self.longer_module(prefix) {
+                // `import a.b` の後の `a.f()`: `a` はモジュールの経路の途中で、モジュールとして import していない
+                self.diags.push(
+                    Diagnostic::error(
+                        "E0706",
+                        format!("module `{prefix}` is not imported in this module"),
+                        span,
+                    )
+                    .with_hint(format!("`{full}` is imported: write `{full}.{last}`")),
+                );
             }
             return;
         }
@@ -546,6 +556,16 @@ impl Resolver<'_> {
             self.used.insert(name.clone());
             *name = internal.clone();
         }
+    }
+
+    /// `prefix.` で始まる、import したモジュールの修飾の接頭辞（`import a.b` なら `a` に対する `a.b`）。決定的にするため名前の順で最初のもの。
+    fn longer_module(&self, prefix: &str) -> Option<String> {
+        let start = format!("{prefix}.");
+        self.modules
+            .keys()
+            .filter(|k| k.starts_with(&start))
+            .min()
+            .cloned()
     }
 
     fn type_expr(&mut self, t: &mut TypeExpr) {
@@ -630,7 +650,8 @@ impl Resolver<'_> {
                 .is_some_and(|&at| at < receiver.span.start)
             && (self.modules.contains_key(&receiver.name)
                 || receiver.name == self.own_name
-                || self.index.contains_key(&receiver.name))
+                || self.index.contains_key(&receiver.name)
+                || self.longer_module(&receiver.name).is_some())
         {
             let ExprKind::MethodCall {
                 receiver,
