@@ -34,6 +34,7 @@
 | [0018](0018-cpython-ffi-embedding.md) | CPython FFI（埋め込み、Python 3.14、例外は値） | Accepted | 2026-11-05 |
 | [0019](0019-float.md) | `float`（IEEE 754 の倍精度、暗黙の変換なし） | Accepted | 2026-11-05 |
 | [0020](0020-async-model.md) | `async` のモデル（ランタイムのスタックフル・コルーチン、単一スレッド、協調的） | Accepted | 2026-11-05 |
+| [0021](0021-json-and-unknown-containers.md) | JSON と `Unknown` のコンテナ、呼び出しの型引数の明示（再帰レコードと `weak` は入れない） | Accepted | 2026-11-05 |
 
 ## 未決定事項との対応
 
