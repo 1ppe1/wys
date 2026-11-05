@@ -726,6 +726,10 @@ enum Scalar {
 /// JSON の数値の文法で、小数点か指数を含むもの（`1.5`、`-0.5`、`1e3`）。無限大になるものは含まない。
 fn json_float(bytes: &[u8]) -> Option<f64> {
     let mut i = usize::from(bytes.first() == Some(&b'-'));
+    // 整数部は `0` か、0 でない数字で始まる（`01.5` は JSON の数値ではない）
+    if bytes.get(i) == Some(&b'0') && bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
+        return None;
+    }
     let digits = |i: &mut usize| {
         let start = *i;
         while *i < bytes.len() && bytes[*i].is_ascii_digit() {
@@ -824,8 +828,18 @@ pub fn float_repr(v: f64) -> String {
     if v == 0.0 {
         return if v.is_sign_negative() { "-0.0" } else { "0.0" }.into();
     }
-    // `{:e}` は最短の桁（例: `1.2345e-7`）を出す
-    let sci = format!("{:e}", v.abs());
+    // `{:e}` で元の値に戻せる最短の桁数を知り、その桁数で正確に丸め直す。同じ長さの候補が2つあるとき、
+    // `{:e}` は Python と違う方を選ぶことがある（`1000000000000000.25` → `...0.3`、Python は `...0.2`）。
+    // 精度付きの書式は正確な値を偶数丸めするので、Python の `repr`（正確な値に最も近い最短の表記）と一致する
+    let shortest = format!("{:e}", v.abs());
+    let n = shortest
+        .split('e')
+        .next()
+        .expect("{:e} has a mantissa")
+        .chars()
+        .filter(char::is_ascii_digit)
+        .count();
+    let sci = format!("{:.*e}", n - 1, v.abs());
     let (mantissa, exp) = sci.split_once('e').expect("{:e} has an exponent");
     let exp: i32 = exp.parse().expect("the exponent is an integer");
     let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
@@ -1210,6 +1224,9 @@ mod tests {
             (-0.0, "-0.0"),
             (5e-324, "5e-324"),
             (1.7976931348623157e308, "1.7976931348623157e+308"),
+            // 同じ長さの候補が2つある（PR #83 のレビュー）: Python は正確な値に最も近い方、同点なら偶数
+            (1e15 + 0.25, "1000000000000000.2"),
+            (1e15 + 0.75, "1000000000000000.8"),
             (f64::INFINITY, "inf"),
             (f64::NEG_INFINITY, "-inf"),
             (f64::NAN, "nan"),
@@ -1234,6 +1251,12 @@ mod tests {
         assert_eq!(classify(b".5"), Scalar::Str);
         assert_eq!(classify(b"inf"), Scalar::Str);
         assert_eq!(classify(b"1e400"), Scalar::Str);
+        // JSON の数値ではない（整数部の先頭の 0。PR #83 のレビュー）
+        assert_eq!(classify(b"01.5"), Scalar::Str);
+        assert_eq!(classify(b"-01.5"), Scalar::Str);
+        assert_eq!(classify(b"00e3"), Scalar::Str);
+        assert_eq!(classify(b"0.5"), Scalar::Float(0.5));
+        assert_eq!(classify(b"-0e1"), Scalar::Float(-0.0));
         assert_eq!(classify(b"99999999999999999999"), Scalar::Str);
         assert_eq!(classify(b""), Scalar::Str);
     }
