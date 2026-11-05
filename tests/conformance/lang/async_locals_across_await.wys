@@ -1,0 +1,21 @@
+# expect-stdout: x-y
+# expect-stdout: [1, 2, 3]
+# expect-stdout: {"k": 7}
+# expect-stdout: Ok("fine")
+async def tick() -> None:
+    await sleep_ms(0)
+
+async def main() -> None:
+    s = "x" + "-"
+    xs = [1, 2]
+    d: dict[str, int] = {}
+    r: Result[str, int] = Ok("fi" + "ne")
+    await tick()
+    s = s + "y"
+    xs.append(3)
+    d["k"] = 7
+    await tick()
+    print(s)
+    print(xs)
+    print(d)
+    print(r)

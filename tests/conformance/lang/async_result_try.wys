@@ -1,0 +1,16 @@
+# expect-stdout: Ok(3)
+# expect-stdout: Err("empty")
+async def parse(s: str) -> Result[int, str]:
+    await sleep_ms(1)
+    if s == "":
+        return Err("empty")
+    return Ok(len(s))
+
+async def sum2(a: str, b: str) -> Result[int, str]:
+    x = await parse(a)?
+    y = await spawn(parse(b))?
+    return Ok(x + y)
+
+async def main() -> None:
+    print(await sum2("ab", "c"))
+    print(await sum2("ab", ""))

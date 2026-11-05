@@ -133,6 +133,7 @@ fn program() -> Program {
         records: vec![],
         lists: vec![Ty::Py],
         dicts: vec![],
+        tasks: vec![],
         display: DisplayInfo::default(),
         entry: FuncId(0),
         funcs: vec![Function {
@@ -146,6 +147,7 @@ fn program() -> Program {
                 term: Terminator::Return(None),
             }],
             elided_rc: Vec::new(),
+            is_async: false,
             effects: None,
         }],
     };
@@ -198,6 +200,7 @@ fn programs_without_python_do_not_need_python() {
         records: vec![],
         lists: vec![],
         dicts: vec![],
+        tasks: vec![],
         display: DisplayInfo::default(),
         entry: FuncId(0),
         funcs: vec![Function {
@@ -211,6 +214,7 @@ fn programs_without_python_do_not_need_python() {
                 term: Terminator::Return(None),
             }],
             elided_rc: Vec::new(),
+            is_async: false,
             effects: None,
         }],
     };

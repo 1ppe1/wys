@@ -1,0 +1,14 @@
+# expect-stdout: main
+# expect-stdout: A
+# expect-stdout: B
+# expect-stdout: done
+async def say(s: str) -> None:
+    print(s)
+
+async def main() -> None:
+    a = spawn(say("A"))
+    b = spawn(say("B"))
+    print("main")
+    await a
+    await b
+    print("done")

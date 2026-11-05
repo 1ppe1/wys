@@ -31,6 +31,9 @@ struct FileReport<'a> {
 #[derive(Serialize)]
 struct FunctionJson<'a> {
     name: &'a str,
+    /// `async def`（ADR-0020 論点 19）
+    #[serde(rename = "async")]
+    is_async: bool,
     span: SpanJson<'a>,
     signature: SignatureJson<'a>,
     locals: Vec<LocalJson<'a>>,
@@ -246,6 +249,7 @@ fn function_json<'a>(
     };
     FunctionJson {
         name: &sig.name,
+        is_async: sig.is_async,
         span: span_json(map, sig.span),
         signature: SignatureJson {
             type_params: sig

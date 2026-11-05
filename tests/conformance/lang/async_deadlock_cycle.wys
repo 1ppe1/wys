@@ -1,0 +1,12 @@
+# expect-exit: 101
+# expect-stderr-contains: runtime error: deadlock: 3 task(s) are waiting but none can run
+# a は b を、b は a を待つ（main は a を待つ）
+async def wait_other(ts: list[Task[None]], i: int) -> None:
+    await sleep_ms(1)
+    await ts[i]
+
+async def main() -> None:
+    ts: list[Task[None]] = []
+    ts.append(spawn(wait_other(ts, 1)))
+    ts.append(spawn(wait_other(ts, 0)))
+    await ts[0]

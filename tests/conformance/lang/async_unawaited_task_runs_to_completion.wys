@@ -1,0 +1,9 @@
+# expect-stdout: main returns
+# expect-stdout: background done
+async def background() -> None:
+    await sleep_ms(10)
+    print("background " + "done")
+
+async def main() -> None:
+    spawn(background())
+    print("main returns")

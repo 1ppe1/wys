@@ -103,6 +103,17 @@ bb0:
 - 失敗し得る操作の直後に `py_failed()` で確かめ、失敗なら `py_err_kind()` / `py_err_message()` / `py_err_traceback()`（+1 所有の文字列）で理由を読む。lowering がこれで `Result[.., PyError]` を作る（T6 / T7）。失敗したときの戻り値（null のハンドル、`0` など）は使わない。null のハンドルの retain / release は何もしない。
 - Python を使うプログラム（`wys_ir::uses_python`: Python の組み込みを呼ぶか、`py` 型を使う）だけ、バックエンドが Python のランタイムの宣言と、`main` の終わりの `@wys_py_finish`（`Py_FinalizeEx`）を入れ、driver が `libwys_runtime_python.a` と `libpython3.14` をリンクする。それ以外のプログラムの生成コードとリンクは変わらない。
 
+## async（M4 T10、ADR-0020）
+
+- `async def` の関数は `Function.is_async`（`dump-ir` では `async fn`）。中断点（`await`、`sleep_ms`）と `spawn` は async の関数の中にだけ書け、async の関数は async の関数からだけ直接呼べる（検証器が確かめる）。エントリが async なら（`wys_ir::uses_async`）、バックエンドは `@main` から `@wys_sched_run(エントリ)` を呼び、`main` をタスク 0 としてスケジューラの上で動かす。
+- 型 `task{i}`（`Task[T]`）はタスクのオブジェクトへのポインタ1語。結果の型は `Program.tasks`（`None` なら結果なし）。retain は参照カウントだけ、release は型ごとの `@wys_release_task{i}`（0 になったら結果を release してから `@wys_task_free`）。
+- `t = spawn task{i} f{j}(args)`: タスクを作り、引数を領域に書いて実行キューに入れる。引数は +1 で消費し（ARC の理由 `consume_*: spawn`）、`t` は +1 所有。バックエンドは対象の関数ごとに、領域の配置 `%taskargs.f{j} = { 結果, 引数... }` と入口 `@wys_task_entry_f{j}`（引数を読んで関数を呼び、結果を書き、引数を release する）を作る。結果を先頭に置くので、型ごとの release と `await` は呼んだ関数を知らなくてよい。
+- `t2 = await t`: タスクが終わるまで待ち（終わっていれば切り替えない）、結果を領域から読んで retain する（+1 所有）。`task` は借用で読む。`await f(x)`（`f` が async の関数）は普通の `call`（タスクを作らない）。
+- `call @sleep_ms(n)`: 組み込みの中断点。
+- ARC: 中断点（`spawn`、`await`、`sleep_ms`）は関数呼び出しと同じ地点として扱う。可変な場所から読んだ値の保持（`borrow_from_mutable_place`）は、中断点をまたぐなら省かない（ADR-0020 論点 11）。
+- `wys test` のエントリ（テストを呼び分ける関数）は、async のテストが 1 つでもあれば async になる。そのときは同期のテストもスケジューラの上（タスク 0、メインスタック）で動く（挙動は変わらない）。
+- AddressSanitizer のビルドでは、`@main` がスケジューラを動かす前に `@wys_set_fiber_hooks` で ASan の fiber API を登録する（論点 18）。
+
 ## 構造を持つ値の表示（M3 T10c、ADR-0016）
 
 - 組み込み関数 `print_value` は、レコード・`list`・`dict`・Union（`Result` を含む）の値を1つ受け取り、表示して改行する。`int` / `bool` / `str` は従来どおり `print_int` / `print_bool` / `print_str`。トップレベルの Union は、lowering がタグで分岐して、構成要素ごとにどちらかを呼ぶ。

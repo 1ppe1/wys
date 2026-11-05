@@ -41,6 +41,7 @@ target/debug/wys build --release examples/fib.wys   # -O2
 WYS_SANITIZE=address target/debug/wys run examples/fib.wys   # AddressSanitizer 付き
 WYS_RC_STATS=1 target/debug/wys run examples/fib.wys         # 終了時に retain / release の回数を出す
 WYS_ARC_OPT=0 target/debug/wys run examples/fib.wys          # Move 最適化を止める（前後の比較、誤りの切り分け）
+WYS_VIRTUAL_TIME=1 target/debug/wys run examples/async_hello.wys  # sleep_ms を仮想時計だけで進める（実時間を待たない。Conformance の harness が設定する）
 target/debug/wys explain examples/fib.wys   # 型・絞り込み・ARC 操作の理由を JSON で（ADR-0017）
 target/debug/wys explain E0201              # エラーコードの説明
 benches/measure.sh                                          # ベンチ計測（倍率は書かない）

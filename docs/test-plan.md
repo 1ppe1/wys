@@ -71,6 +71,7 @@ CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は 
 | INTEROP-001（CPython の埋め込みで既存のライブラリを使える） | **検査済み（M4 T5〜T8）**。`json` / `math` / `operator` / `builtins` を使う `python/` のケース、`wys_driver/tests/python_link.rs`、macOS arm64 と Linux x86_64 の CI（Python 3.14 必須）。往復の時間は `benches/programs/py_roundtrip.wys`（絶対値だけ） |
 | INTEROP-002（型・例外・所有権・スレッド制約の変換） | **検査済み（M4 T5〜T8）**。型: `python/conversions.wys`（`list` / `dict` / Union のコピー、厳密な `to_*`）。例外: AC-010 の行。所有権: ハンドルの解放で `Py_DecRef`（`wys_runtime_python/tests/embed.rs` の解放漏れの検出 102、すべての `python/` ケースを3つのモードで生存オブジェクト 0）。スレッド: GIL は1スレッドが持ったまま（ADR-0018 論点 3） |
 | INTEROP-003（数値バッファのゼロコピー） | Phase 3（ADR-0018 論点 14） |
+| LANG-008（`async` / `await` と型付きの失敗表現） | **検査済み（M4 T10、ADR-0020）**。ランタイム: `wys_runtime` の `task::tests`（FIFO、仮想時計の期限順と同じ期限の生成順、`main` の後の残りタスク、deadlock / 自分自身の `await` / ガードページ、メインスタックでのサービス呼び出し）、`wys_runtime_python/tests/embed.rs` の `python_calls_from_a_task_run_on_the_main_stack`。型検査: `types/E130x_*`、`types/E0201_print_task`・`E0207_task_eq`・`E0907_task_dict_key`・`E0209_redefine_task`、`types/async_tests_are_allowed`（`await f()?`、`Task[T]` を通した推論）。実行（3 つのモード）: `lang/async_*`（FIFO、`sleep_ms` の順序、その場の呼び出し、`Result` と `?`、2 回の `await`、待たないタスク、中断点をまたぐ借用とローカル、Generics、`Task \| None`、パニック・`exit`・deadlock）、`python/async_py_in_task`、`explain/async_function`、e2e の `async_programs_run_and_sleep_waits_real_time`・`async_tests_run_and_ir_shows_tasks` |
 | AC-006〜AC-009（AI Runtime） | Phase 2（M5 / M6） |
 
 ## 4. 運用ルール

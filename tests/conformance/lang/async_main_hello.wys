@@ -1,0 +1,3 @@
+# expect-stdout: hello from async main
+async def main() -> None:
+    print("hello from async main")

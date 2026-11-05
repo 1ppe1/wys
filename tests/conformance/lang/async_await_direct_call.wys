@@ -1,0 +1,19 @@
+# expect-stdout: before
+# expect-stdout: inside 2
+# expect-stdout: after 4
+# expect-stdout: task
+async def double(n: int) -> int:
+    print("inside " + "2")
+    return n * 2
+
+async def side() -> None:
+    print("task")
+
+async def main() -> None:
+    t = spawn(side())
+    print("before")
+    # その場で呼ぶ（タスクを作らない。spawn したタスクはまだ動かない）
+    x = await double(2)
+    print("after " + "4")
+    assert(x == 4)
+    await t

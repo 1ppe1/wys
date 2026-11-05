@@ -9,6 +9,7 @@ expression: json
   "functions": [
     {
       "name": "add",
+      "async": false,
       "span": {
         "file": "tests/conformance/explain/optional_narrowing.wys",
         "start": {
@@ -110,6 +111,7 @@ expression: json
     },
     {
       "name": "main",
+      "async": false,
       "span": {
         "file": "tests/conformance/explain/optional_narrowing.wys",
         "start": {

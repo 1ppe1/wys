@@ -1,0 +1,11 @@
+# expect-exit: 101
+# expect-stderr-contains: runtime error: a task cannot await itself
+# タスクが list 経由で自分自身を待つ
+async def wait_first(ts: list[Task[None]]) -> None:
+    await sleep_ms(1)
+    await ts[0]
+
+async def main() -> None:
+    ts: list[Task[None]] = []
+    ts.append(spawn(wait_first(ts)))
+    await ts[0]

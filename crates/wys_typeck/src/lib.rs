@@ -505,11 +505,6 @@ impl Types {
         self.tasks[k.0 as usize]
     }
 
-    /// `Task[T]` の型を 1 つでも作ったか（注釈だけで使った場合を含む）。
-    pub fn has_tasks(&self) -> bool {
-        !self.tasks.is_empty()
-    }
-
     /// `Result[ok, err]` の型を作る（同じ型引数なら同じ ID）。
     pub fn result(&mut self, ok: Ty, err: Ty) -> Ty {
         if ok == Ty::Error || err == Ty::Error {
@@ -4237,7 +4232,9 @@ impl<'a> FnCk<'a> {
             return Ty::Error;
         }
         let a = &args[0];
-        if self.is_async_call(a) {
+        let is_sleep =
+            matches!(&a.kind, ExprKind::Call { callee, .. } if callee.name == "sleep_ms");
+        if self.is_async_call(a) && !is_sleep {
             self.allow_async_call = true;
             let t = self.expr(a, env);
             return self.cx.types.task(t);
@@ -4247,6 +4244,10 @@ impl<'a> FnCk<'a> {
         self.allow_async_call = false;
         if t != Ty::Error {
             let what = match &a.kind {
+                // `sleep_ms` は組み込みの中断点で、タスクにはできない（`await sleep_ms(n)` と書く）
+                ExprKind::Call { callee, .. } if callee.name == "sleep_ms" => {
+                    "`sleep_ms` cannot run as a task; write `await sleep_ms(n)`, or spawn an `async def` function that sleeps".to_string()
+                }
                 ExprKind::Call { callee, .. } => {
                     format!("`{}` is not an `async def` function", callee.name)
                 }

@@ -140,22 +140,6 @@ fn run_frontend(
             names,
         );
     }
-    // `async`（ADR-0020）のコード生成は M4 T10c で入れる。`check` は受け付け、`build` / `run` はここで止める。
-    // `async def` がなくても、`Task` の型を注釈で使っていれば止める（lowering はすべての関数を登録する）
-    if module.funcs.iter().any(|f| f.is_async) || tc.types.has_tasks() {
-        return (
-            Frontend {
-                file,
-                diagnostics,
-                program: None,
-                unsupported: Some(
-                    "`async` cannot be compiled yet (code generation comes in M4 T10c)".into(),
-                ),
-                typeck: Some(tc),
-            },
-            names,
-        );
-    }
     let locate = |b: u32| {
         let p = file.position(b);
         format!("{}:{}:{}", file.file_name(b), p.line, p.column)

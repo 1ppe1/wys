@@ -1,0 +1,4 @@
+# expect-error: E1304 3:15
+async def main() -> None:
+    t = spawn(sleep_ms(5))
+    await t

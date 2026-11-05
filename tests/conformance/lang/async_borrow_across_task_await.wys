@@ -1,0 +1,14 @@
+# expect-stdout: ab!
+# expect-stdout: z
+# `xs[0] + await t`: xs[0] を読んでから、待っている間に別のタスクが xs[0] を置き換える（ADR-0020 論点 11 (1)）。
+# 読んだ値は中断点をまたぐ前に保持されるので、解放されない（ASan で確かめる）
+async def replace_then_suffix(xs: list[str]) -> str:
+    await sleep_ms(1)
+    xs[0] = "z"
+    return "!"
+
+async def main() -> None:
+    xs = ["a" + "b"]
+    t = spawn(replace_then_suffix(xs))
+    print(xs[0] + await t)
+    print(xs[0])

@@ -9,6 +9,7 @@ expression: json
   "functions": [
     {
       "name": "inc",
+      "async": false,
       "span": {
         "file": "tests/conformance/explain/field_narrowing.wys",
         "start": {
@@ -88,6 +89,7 @@ expression: json
     },
     {
       "name": "main",
+      "async": false,
       "span": {
         "file": "tests/conformance/explain/field_narrowing.wys",
         "start": {

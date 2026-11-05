@@ -772,23 +772,31 @@ fn structural_values_are_printed() {
     );
 }
 
-/// `async`（ADR-0020、M4 T10b）: 型検査は通る。コード生成は T10c まで未対応で、`build` / `run` は理由を出して止まる。
+/// `async`（ADR-0020、M4 T10）: 実行できる。`sleep_ms` は、`WYS_VIRTUAL_TIME` がなければ実時間を待つ。
 #[test]
-fn async_programs_type_check_but_do_not_build_yet() {
-    let src = "async def double(n: int) -> int:\n    await sleep_ms(1)\n    return n * 2\n\nasync def main() -> None:\n    t = spawn(double(2))\n    print(await double(1) + await t)\n";
-    let path = scratch("async_check", src);
-    let out = cli(&["check", path.to_str().unwrap()]);
+fn async_programs_run_and_sleep_waits_real_time() {
+    let src = "async def double(n: int) -> int:\n    await sleep_ms(50)\n    return n * 2\n\nasync def main() -> None:\n    t = spawn(double(2))\n    print(await double(1) + await t)\n";
+    let path = scratch("async_run", src);
+    let start = std::time::Instant::now();
+    let out = cli(&["run", path.to_str().unwrap()]);
+    let elapsed = start.elapsed();
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let (code, _, stderr) = run("async_run", src);
-    assert_ne!(code, 0);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "6\n");
+    // 2 つのタスクが並行に 50 ms ずつ眠る（実時間で 50 ms 以上）
     assert!(
-        stderr.contains("`async` cannot be compiled yet"),
-        "{stderr}"
+        elapsed >= std::time::Duration::from_millis(50),
+        "{elapsed:?}"
     );
+    // 仮想時計なら待たないが、結果は同じ
+    let out = cli_env(
+        &["run", path.to_str().unwrap()],
+        &[("WYS_VIRTUAL_TIME", "1")],
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "6\n");
     // `async def` の呼び出しには `await` か `spawn` が要る（E1303）
     let path = scratch(
         "async_e1303",
@@ -797,21 +805,41 @@ fn async_programs_type_check_but_do_not_build_yet() {
     let out = cli(&["check", "--format", "json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stdout).contains("\"E1303\""));
-    // `async def` がなくても、`Task` の型を使っていればコード生成の前で止まる（パニックしない）
-    let path = scratch(
+}
+
+/// 同期の `main` のプログラムが `Task` の型を注釈だけで使っても、ビルドして実行できる（スケジューラは動かない）。
+#[test]
+fn sync_programs_may_mention_task_types() {
+    let (code, stdout, stderr) = run(
         "task_annotation_only",
-        "def identity(t: Task[int]) -> Task[int]:\n    return t\n\ndef main() -> None:\n    print(1)\n",
+        "def identity(t: Task[int]) -> Task[int]:\n    return t\n\ndef main() -> None:\n    x: Task[int] | None = None\n    print(x is None)\n",
     );
-    let out = cli(&["check", path.to_str().unwrap()]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "True\n");
+}
+
+/// `wys test` の `async def test_*`（ADR-0020 論点 7）と、`dump-ir` の表記（論点 19）。
+#[test]
+fn async_tests_run_and_ir_shows_tasks() {
+    let src = "async def inc(n: int) -> int:\n    await sleep_ms(1)\n    return n + 1\n\nasync def test_spawn() -> None:\n    assert(await spawn(inc(1)) == 2)\n\nasync def test_fails() -> None:\n    assert(await inc(1) == 3)\n\ndef test_sync() -> None:\n    assert(True)\n";
+    let path = scratch("async_tests", src);
+    let out = cli_env(
+        &["test", path.to_str().unwrap()],
+        &[("WYS_VIRTUAL_TIME", "1")],
     );
-    let out = cli(&["run", path.to_str().unwrap()]);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("`async` cannot be compiled yet"),
-        "{stderr}"
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("test_spawn ... ok"), "{stdout}");
+    assert!(stdout.contains("test_fails ... FAILED"), "{stdout}");
+    assert!(stdout.contains("test_sync ... ok"), "{stdout}");
+    let path = scratch(
+        "async_ir",
+        "async def inc(n: int) -> int:\n    return n + 1\n\nasync def main() -> None:\n    t = spawn(inc(1))\n    print(await t)\n",
     );
+    let out = cli(&["dump-ir", path.to_str().unwrap()]);
+    let ir = String::from_utf8_lossy(&out.stdout);
+    assert!(ir.contains("task task0 = Task[int]"), "{ir}");
+    assert!(ir.contains("async fn f0 inc("), "{ir}");
+    assert!(ir.contains("= spawn task0 f0("), "{ir}");
+    assert!(ir.contains("= await t"), "{ir}");
 }

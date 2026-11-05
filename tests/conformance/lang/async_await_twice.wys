@@ -1,0 +1,12 @@
+# expect-stdout: hello world
+# expect-stdout: hello world
+async def greet(name: str) -> str:
+    await sleep_ms(1)
+    return "hello " + name
+
+async def main() -> None:
+    t = spawn(greet("wor" + "ld"))
+    a = await t
+    b = await t
+    print(a)
+    print(b)

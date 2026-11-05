@@ -1,0 +1,14 @@
+# expect-stdout: first
+# expect-stdout: second
+# expect-stdout: third
+async def at(ms: int, s: str) -> None:
+    await sleep_ms(ms)
+    print(s)
+
+async def main() -> None:
+    a = spawn(at(5, "first"))
+    b = spawn(at(5, "second"))
+    c = spawn(at(5, "third"))
+    await c
+    await b
+    await a

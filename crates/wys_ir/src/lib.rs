@@ -29,6 +29,9 @@ pub enum Ty {
     /// Python のオブジェクトのハンドル（ヒープオブジェクトへのポインタ1語、ADR-0018 論点 6、M4 T5）。
     /// 最後の release が Python の参照を手放す。
     Py,
+    /// `Task[T]`（タスクのオブジェクトへのポインタ1語、ADR-0020）。結果の型は `Program::tasks`。
+    /// 参照カウントの操作は型ごとの関数（最後の release が結果を release してからランタイムに返す）
+    Task(TaskId),
 }
 
 impl Ty {
@@ -51,6 +54,7 @@ impl Ty {
             Ty::List(l) => format!("list{}", l.0),
             Ty::Dict(d) => format!("dict{}", d.0),
             Ty::Py => "py".into(),
+            Ty::Task(k) => format!("task{}", k.0),
         }
     }
 }
@@ -63,6 +67,9 @@ pub struct ListId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DictId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TaskId(pub u32);
 
 /// 不変のレコード（ADR-0009: 値型、受け渡しはコピー）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -97,6 +104,8 @@ pub struct Program {
     pub lists: Vec<Ty>,
     /// `dict[K, V]` のキーと値の型。`Ty::Dict(DictId(i))` は `dicts[i]` を指す。キーは `int` / `bool` / `str`。
     pub dicts: Vec<(Ty, Ty)>,
+    /// `Task[T]` の結果の型（`None` なら結果を持たない `Task[None]`）。`Ty::Task(TaskId(i))` は `tasks[i]` を指す。
+    pub tasks: Vec<Option<Ty>>,
     /// 表示用の情報（`print`、ADR-0016 論点 16）。型の同一性や配置には関係しない。
     pub display: DisplayInfo,
     pub funcs: Vec<Function>,
@@ -128,6 +137,8 @@ pub struct Function {
     /// Move 最適化（`arc::optimize`、M4 T3）が取り除いた retain / release の記録。`wys explain` が報告する
     /// （ADR-0017 の見直し条件）。バックエンドは読まない。
     pub elided_rc: Vec<ElidedRcOp>,
+    /// `async def`（ADR-0020）。中断点（`await`、`sleep_ms`）と `spawn` はこの関数の中にだけ書ける（verify が確かめる）
+    pub is_async: bool,
 }
 
 /// Move 最適化が取り除いた参照カウントの操作（M4 T3）。挿入した理由（`reason`）と取り除けた理由（`elision`）の両方を持つ。
@@ -329,6 +340,8 @@ pub enum Builtin {
     PyErrKind,
     PyErrMessage,
     PyErrTraceback,
+    /// `sleep_ms(n)`: 現在のタスクを止める中断点（ADR-0020 論点 10）。`async` の関数の中だけ
+    SleepMs,
 }
 
 impl Builtin {
@@ -376,6 +389,7 @@ impl Builtin {
             Builtin::PyErrKind => "py_err_kind",
             Builtin::PyErrMessage => "py_err_message",
             Builtin::PyErrTraceback => "py_err_traceback",
+            Builtin::SleepMs => "sleep_ms",
         }
     }
 
@@ -418,7 +432,8 @@ impl Builtin {
             | Builtin::PrintValue
             | Builtin::Exit
             | Builtin::AssertFail
-            | Builtin::Panic => None,
+            | Builtin::Panic
+            | Builtin::SleepMs => None,
             Builtin::ArgCount | Builtin::ScalarKind | Builtin::ScalarInt | Builtin::TestIndex => {
                 Some(Ty::Int)
             }
@@ -450,7 +465,7 @@ impl Builtin {
 
     fn signature(self) -> &'static [Ty] {
         match self {
-            Builtin::PrintInt | Builtin::Exit => &[Ty::Int],
+            Builtin::PrintInt | Builtin::Exit | Builtin::SleepMs => &[Ty::Int],
             Builtin::PrintBool => &[Ty::Bool],
             Builtin::PrintStr => &[Ty::Str],
             Builtin::PrintFloat | Builtin::IntFromFloat => &[Ty::Float],
@@ -650,6 +665,20 @@ pub enum Inst {
         src: TempId,
         variant: u32,
     },
+    /// `spawn(func(args))`（ADR-0020 論点 8）: 新しいタスクを作り、実行キューの末尾に入れる。`args` を +1 で消費して
+    /// タスクに所有させ、`dst`（`Task`）を +1 所有で返す。`async` の関数の中だけ
+    Spawn {
+        dst: TempId,
+        task: TaskId,
+        func: FuncId,
+        args: Vec<TempId>,
+    },
+    /// `await task`（ADR-0020 論点 5）: タスクが終わるまで現在のタスクを止め、結果を +1 所有で返す（`Task[None]` なら
+    /// `dst` は `None`）。`task` は借用で読む。中断点で、`async` の関数の中だけ
+    Await {
+        dst: Option<TempId>,
+        task: TempId,
+    },
 }
 
 impl Inst {
@@ -666,6 +695,8 @@ impl Inst {
             | Inst::Field { src, .. }
             | Inst::UnionIs { src, .. }
             | Inst::UnionPayload { src, .. } => vec![*src],
+            Inst::Spawn { args, .. } => args.clone(),
+            Inst::Await { task, .. } => vec![*task],
             Inst::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
             Inst::Call { args, .. } => args.clone(),
             Inst::MakeUnion { payload, .. } => payload.iter().copied().collect(),
@@ -761,7 +792,7 @@ fn dict_types(p: &Program, d: DictId) -> Result<(Ty, Ty), String> {
 fn py_convertible(p: &Program, t: Ty) -> bool {
     match t {
         Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py => true,
-        Ty::Record(_) => false,
+        Ty::Record(_) | Ty::Task(_) => false,
         Ty::List(l) => p
             .lists
             .get(l.0 as usize)
@@ -775,6 +806,13 @@ fn py_convertible(p: &Program, t: Ty) -> bool {
             .get(u.0 as usize)
             .is_some_and(|ms| ms.iter().flatten().all(|m| py_convertible(p, *m))),
     }
+}
+
+fn task_result(p: &Program, k: TaskId) -> Result<Option<Ty>, String> {
+    p.tasks
+        .get(k.0 as usize)
+        .copied()
+        .ok_or_else(|| format!("unknown task type task{}", k.0))
 }
 
 fn list_elem(p: &Program, l: ListId) -> Result<Ty, String> {
@@ -798,6 +836,9 @@ fn verify_types(p: &Program, f: &Function) -> Result<(), String> {
             }
             Ty::Dict(d) if d.0 as usize >= p.dicts.len() => {
                 return Err(format!("unknown dict type dict{}", d.0));
+            }
+            Ty::Task(k) if k.0 as usize >= p.tasks.len() => {
+                return Err(format!("unknown task type task{}", k.0));
             }
             _ => {}
         }
@@ -928,6 +969,59 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                 }
                 Inst::Retain { src, .. } | Inst::Release { src, .. } => {
                     use_(*src, &defined_in)?;
+                }
+                Inst::Spawn {
+                    dst,
+                    task,
+                    func,
+                    args,
+                } => {
+                    if !f.is_async {
+                        return Err(format!("bb{bi}: spawn outside of an async function"));
+                    }
+                    let g = p
+                        .funcs
+                        .get(func.0 as usize)
+                        .ok_or_else(|| format!("unknown function f{}", func.0))?;
+                    if !g.is_async {
+                        return Err(format!("bb{bi}: spawn of a non-async function f{}", func.0));
+                    }
+                    let result = task_result(p, *task)?;
+                    if result != g.ret {
+                        return Err(format!(
+                            "bb{bi}: task{} result does not match f{}'s return type",
+                            task.0, func.0
+                        ));
+                    }
+                    if args.len() != g.param_count as usize {
+                        return Err(format!("bb{bi}: spawn argument count mismatch"));
+                    }
+                    for (a, want) in args.iter().zip(&g.locals) {
+                        expect("spawn argument", use_(*a, &defined_in)?, *want)?;
+                    }
+                    expect("spawn result", temp_ty(*dst)?, Ty::Task(*task))?;
+                    define(*dst, &mut defined_in)?;
+                }
+                Inst::Await { dst, task } => {
+                    if !f.is_async {
+                        return Err(format!("bb{bi}: await outside of an async function"));
+                    }
+                    let Ty::Task(k) = use_(*task, &defined_in)? else {
+                        return Err(format!("bb{bi}: await on a non-task value"));
+                    };
+                    match (dst, task_result(p, k)?) {
+                        (Some(d), Some(r)) => {
+                            expect("await result", temp_ty(*d)?, r)?;
+                            define(*d, &mut defined_in)?;
+                        }
+                        (None, None) => {}
+                        _ => {
+                            return Err(format!(
+                                "bb{bi}: await destination does not match task{}",
+                                k.0
+                            ));
+                        }
+                    }
                 }
                 Inst::ListNew { dst, list, items } => {
                     let elem = list_elem(p, *list)?;
@@ -1175,12 +1269,26 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                             }
                             _ => return Err(format!("bb{bi}: py_call takes two arguments")),
                         },
-                        Callee::Builtin(b) => (b.signature().to_vec(), b.ret()),
+                        Callee::Builtin(b) => {
+                            if *b == Builtin::SleepMs && !f.is_async {
+                                return Err(format!(
+                                    "bb{bi}: sleep_ms outside of an async function"
+                                ));
+                            }
+                            (b.signature().to_vec(), b.ret())
+                        }
                         Callee::Func(id) => {
                             let g = p
                                 .funcs
                                 .get(id.0 as usize)
                                 .ok_or_else(|| format!("unknown function f{}", id.0))?;
+                            // async の関数は、async の関数からだけ直接呼べる（`await f()`。ADR-0020 論点 5）
+                            if g.is_async && !f.is_async {
+                                return Err(format!(
+                                    "bb{bi}: async function f{} called from a non-async function",
+                                    id.0
+                                ));
+                            }
                             (g.locals[..g.param_count as usize].to_vec(), g.ret)
                         }
                     };
@@ -1252,10 +1360,14 @@ impl fmt::Display for Program {
         for (i, (k, v)) in self.dicts.iter().enumerate() {
             writeln!(f, "dict dict{i} = dict[{}, {}]", k.name(), v.name())?;
         }
+        for (i, r) in self.tasks.iter().enumerate() {
+            writeln!(f, "task task{i} = Task[{}]", member_name(*r))?;
+        }
         writeln!(f, "entry f{}", self.entry.0)?;
         for (i, func) in self.funcs.iter().enumerate() {
             writeln!(f)?;
-            write!(f, "fn f{i} {}(", func.name)?;
+            let kw = if func.is_async { "async fn" } else { "fn" };
+            write!(f, "{kw} f{i} {}(", func.name)?;
             for p in 0..func.param_count as usize {
                 if p > 0 {
                     write!(f, ", ")?;
@@ -1412,6 +1524,26 @@ impl fmt::Display for Program {
                         Inst::UnionPayload { dst, src, variant } => {
                             writeln!(f, "t{} = union_payload t{}, {variant}", dst.0, src.0)?
                         }
+                        Inst::Spawn {
+                            dst,
+                            task,
+                            func,
+                            args,
+                        } => {
+                            let a: Vec<String> = args.iter().map(|a| format!("t{}", a.0)).collect();
+                            writeln!(
+                                f,
+                                "t{} = spawn task{} f{}({})",
+                                dst.0,
+                                task.0,
+                                func.0,
+                                a.join(", ")
+                            )?
+                        }
+                        Inst::Await { dst, task } => match dst {
+                            Some(d) => writeln!(f, "t{} = await t{}", d.0, task.0)?,
+                            None => writeln!(f, "await t{}", task.0)?,
+                        },
                         Inst::Call { dst, callee, args } => {
                             if let Some(d) = dst {
                                 write!(f, "t{} = ", d.0)?;
@@ -1452,6 +1584,11 @@ impl fmt::Display for Program {
     }
 }
 
+/// `async`（ADR-0020）を使うプログラムか: エントリが `async` の関数なら、`main` はスケジューラの上で動かす。
+pub fn uses_async(p: &Program) -> bool {
+    p.funcs.get(p.entry.0 as usize).is_some_and(|f| f.is_async)
+}
+
 /// Python のランタイムを使うプログラムか（Python の組み込み関数を呼ぶか、ハンドルの型 `py` を使う）。
 /// driver がリンクするランタイムを選び、バックエンドが宣言と終了処理を入れる（ADR-0018 論点 4・7）。
 pub fn uses_python(p: &Program) -> bool {
@@ -1479,6 +1616,7 @@ mod tests {
             records: vec![],
             lists: vec![],
             dicts: vec![],
+            tasks: vec![],
             display: DisplayInfo::default(),
             entry: FuncId(0),
             funcs: vec![Function {
@@ -1502,6 +1640,7 @@ mod tests {
                     term: Terminator::Return(None),
                 }],
                 elided_rc: Vec::new(),
+                is_async: false,
                 effects: None,
             }],
         }
@@ -1602,6 +1741,8 @@ pub enum ConsumeSite {
     ListPush,
     DictNew,
     DictSet,
+    /// `spawn` の引数（タスクが所有する。ADR-0020）
+    Spawn,
 }
 
 impl ConsumeSite {
@@ -1617,6 +1758,7 @@ impl ConsumeSite {
             ConsumeSite::ListPush => "list_push",
             ConsumeSite::DictNew => "dict_new",
             ConsumeSite::DictSet => "dict_set",
+            ConsumeSite::Spawn => "spawn",
         }
     }
 }

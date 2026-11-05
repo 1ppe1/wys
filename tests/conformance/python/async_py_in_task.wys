@@ -1,0 +1,31 @@
+# タスクの中から Python を呼ぶ（ADR-0020 論点 16）。Python の呼び出しはメインスタックの上で動くので、
+# CPython のスタックの保護が効く（深い入れ子の json.dumps が通り、さらに深いものは RecursionError になる）
+# expect-stdout: 10002
+# expect-stdout: RecursionError
+# expect-stdout: 2
+async def eval_py(code: str) -> Result[PyObject, PyError] uses python:
+    await sleep_ms(1)
+    builtins = py_import("builtins")?
+    g: dict[str, PyObject] = {}
+    return (builtins.attr("eval")?).call([py_value(code), py_value(g)])
+
+async def dumps_len(depth: int) -> Result[int, PyError] uses python:
+    code = "len(__import__('json').dumps(__import__('functools').reduce(lambda x, _: [x], range(5000), [])))"
+    if depth != 5000:
+        code = "len(__import__('json').dumps(__import__('functools').reduce(lambda x, _: [x], range(100000), [])))"
+    return (await eval_py(code)?).to_int()
+
+async def py_int(code: str) -> Result[int, PyError] uses python:
+    return (await eval_py(code)?).to_int()
+
+async def show(t: Task[Result[int, PyError]]) -> None uses io:
+    match await t:
+        case Ok(n):
+            print(n)
+        case Err(e):
+            print(e.kind)
+
+async def main() -> None uses io, python:
+    await show(spawn(dumps_len(5000)))
+    await show(spawn(dumps_len(100000)))
+    await show(spawn(py_int("len([1, 2])")))
