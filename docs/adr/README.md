@@ -33,6 +33,7 @@
 | [0017](0017-explain-report-and-arc-reasons.md) | `wys explain` の報告と、ARC 操作の理由 | Accepted | 2026-11-04 |
 | [0018](0018-cpython-ffi-embedding.md) | CPython FFI（埋め込み、Python 3.14、例外は値） | Accepted | 2026-11-05 |
 | [0019](0019-float.md) | `float`（IEEE 754 の倍精度、暗黙の変換なし） | Accepted | 2026-11-05 |
+| [0020](0020-async-model.md) | `async` のモデル（ランタイムのスタックフル・コルーチン、単一スレッド、協調的） | Accepted | 2026-11-05 |
 
 ## 未決定事項との対応
 
