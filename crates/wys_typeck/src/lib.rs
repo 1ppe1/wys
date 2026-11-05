@@ -703,19 +703,7 @@ pub struct EffectSite {
     pub effects: Option<EffectSet>,
 }
 
-const BUILTINS: &[&str] = &[
-    "print",
-    "exit",
-    "panic",
-    "arg_count",
-    "arg",
-    "parse_scalar",
-    "assert",
-    "len",
-    "range",
-    "Ok",
-    "Err",
-];
+use wys_ast::BUILTINS;
 
 pub fn check(module: &Module) -> (TypeckResult, Vec<Diagnostic>) {
     check_program(module, true)

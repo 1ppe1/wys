@@ -1,0 +1,8 @@
+# ほかのモジュールが import していても、このモジュールで import していなければ使えない
+# （`pub` でない `lib.g` が呼べていた）
+# expect-error: E0706 7:11
+import other
+
+def main() -> None:
+    print(lib.g())
+    print(other.h())

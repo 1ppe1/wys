@@ -1,0 +1,6 @@
+# 別名がこのモジュールの定義と衝突する
+# expect-error: E0704 3:22
+from lib import f as main
+
+def main() -> None:
+    pass

@@ -1,0 +1,6 @@
+# `import lib as l` の後は、元の名前 `lib.f` では参照できない（ADR-0016 論点 19）
+# expect-error: E0706 6:11
+import lib as l
+
+def main() -> None:
+    print(lib.f())

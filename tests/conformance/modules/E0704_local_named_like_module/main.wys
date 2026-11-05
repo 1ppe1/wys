@@ -1,0 +1,8 @@
+# 別名 `l` が指すモジュール `lib` と同じ名前のローカル変数があると、`l.f()` を区別できない
+# expect-error: E0704 7:16
+import lib as l
+
+def main() -> None:
+    lib = [1]
+    lib.append(l.f())
+    print(len(lib))

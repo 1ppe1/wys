@@ -1,0 +1,7 @@
+# 2つの import が同じ名前で別の定義を指す
+# expect-error: E0704 4:22
+from lib import f
+from lib import g as f
+
+def main() -> None:
+    print(f())

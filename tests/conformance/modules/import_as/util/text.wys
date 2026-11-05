@@ -1,0 +1,7 @@
+pub type Tag = {name: str}
+
+pub def echo(s: str) -> str:
+    return s
+
+pub def shout(s: str) -> str:
+    return s + "!"

@@ -1,0 +1,6 @@
+pub def f() -> int:
+    # 自分自身のモジュール名で修飾した参照は、自分の定義を指す
+    return lib.g()
+
+def g() -> int:
+    return 2
