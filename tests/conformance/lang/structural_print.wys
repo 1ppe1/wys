@@ -1,0 +1,71 @@
+# 構造を持つ値の `print`（ADR-0016 論点 15〜17）
+# expect-stdout: P(x=1, y=2)
+# expect-stdout: [1, 2, 3]
+# expect-stdout: []
+# expect-stdout: ["a", "b\"c", "\\\t\r\n\0"]
+# expect-stdout: {"a": 1, "b": 2}
+# expect-stdout: {2: True, 1: False}
+# expect-stdout: {}
+# expect-stdout: Ok(1)
+# expect-stdout: Err("negative")
+# expect-stdout: Tagged(name="t", v=None)
+# expect-stdout: Tagged(name="u", v=3)
+# expect-stdout: Pair(first=1, second="a")
+# expect-stdout: [[1], []]
+# expect-stdout: [1, None]
+# expect-stdout: [1]
+# expect-stdout: 7
+# expect-stdout: X(x=1)
+# expect-stdout: [Ok([True]), Err(P(x=0, y=0))]
+# expect-stdout: plain
+type P = {y: int, x: int}
+type X = {x: int}
+type Tagged = {name: str, v: int | None}
+type Pair[A, B] = {first: A, second: B}
+
+def ok_or(n: int) -> Result[int, str]:
+    if n < 0:
+        return Err("negative")
+    return Ok(n)
+
+def show(p: X) -> None:
+    # 幅部分型で変換した値は、変換後の型の名前で表示する
+    print(p)
+
+def main() -> None:
+    # レコード: 型名と、フィールド名の辞書順
+    print(P(x=1, y=2))
+    print([1, 2, 3])
+    xs: list[int] = []
+    print(xs)
+    # 構造の中の str は引用符で囲み、エスケープする
+    print(["a", "b\"c", "\\\t\r\n\0"])
+    # dict は挿入順
+    print({"a": 1, "b": 2})
+    d: dict[int, bool] = {}
+    d[2] = True
+    d[1] = False
+    print(d)
+    e: dict[str, int] = {}
+    print(e)
+    print(ok_or(1))
+    print(ok_or(-1))
+    # 構造の中の None
+    print(Tagged(name="t", v=None))
+    print(Tagged(name="u", v=3))
+    # Generic なレコードは型引数を書かない
+    print(Pair(first=1, second="a"))
+    nested: list[list[int]] = [[1], []]
+    print(nested)
+    vs: list[int | None] = [1, None]
+    print(vs)
+    # トップレベルの Union: 構成要素ごとに表示する
+    u: int | list[int] = [1]
+    print(u)
+    u = 7
+    print(u)
+    show(P(x=1, y=2))
+    rs: list[Result[list[bool], P]] = [Ok([True]), Err(P(x=0, y=0))]
+    print(rs)
+    # トップレベルの str はそのまま
+    print("plain")

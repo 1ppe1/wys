@@ -621,3 +621,16 @@ fn structural_values_compare_by_content() {
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(stdout, "True\nTrue\nFalse\n");
 }
+
+#[test]
+fn structural_values_are_printed() {
+    let (code, stdout, stderr) = run(
+        "structural_print",
+        "type P = {y: int, x: str}\n\ndef main() -> None:\n    print([P(x=\"a\\n\", y=1)])\n    print({1: None, 2: [True]})\n    r: Result[int, str] = Err(\"e\")\n    print(r)\n",
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        "[P(x=\"a\\n\", y=1)]\n{1: None, 2: [True]}\nErr(\"e\")\n"
+    );
+}

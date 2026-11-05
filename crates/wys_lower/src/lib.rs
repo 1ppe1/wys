@@ -19,6 +19,7 @@ struct Shared<'t> {
     unions: Vec<Vec<Member>>,
     record_ids: HashMap<wys_typeck::RecordId, RecordId>,
     records: Vec<Vec<(String, Ty)>>,
+    display: wys_ir::DisplayInfo,
     list_ids: HashMap<wys_typeck::ListId, ListId>,
     lists: Vec<Ty>,
     /// `Result[T, E]` → 構成要素が2つの Union（0 = `Ok`、1 = `Err`。ADR-0013）
@@ -143,6 +144,7 @@ impl Shared<'_> {
         let members = vec![self.ir_ty(ok), self.ir_ty(err)];
         let id = UnionId(self.unions.len() as u32);
         self.unions.push(members);
+        self.display.results.push(id);
         self.result_ids.insert(r, id);
         id
     }
@@ -186,6 +188,8 @@ impl Shared<'_> {
             .collect();
         let id = RecordId(self.records.len() as u32);
         self.records.push(fields);
+        let name = self.types.record_def(r).name.clone().unwrap_or_default();
+        self.display.record_names.push(name);
         self.record_ids.insert(r, id);
         id
     }
@@ -264,6 +268,7 @@ pub fn lower_with(
         unions: Vec::new(),
         record_ids: HashMap::new(),
         records: Vec::new(),
+        display: Default::default(),
         list_ids: HashMap::new(),
         result_ids: HashMap::new(),
         dict_ids: HashMap::new(),
@@ -322,6 +327,7 @@ pub fn lower_with(
         records: sh.records,
         lists: sh.lists,
         dicts: sh.dicts,
+        display: sh.display,
         funcs,
         entry,
     })
@@ -2102,15 +2108,17 @@ impl<'s, 't> FnLower<'s, 't> {
     }
 
     fn print(&mut self, v: TempId, ty: TTy) {
+        // `int` / `bool` / `str` は専用の組み込み関数、構造を持つ値は型ごとの表示関数（ADR-0016 論点 17）
         fn builtin(t: TTy) -> Builtin {
             match t {
                 TTy::Int => Builtin::PrintInt,
                 TTy::Bool => Builtin::PrintBool,
                 TTy::Str => Builtin::PrintStr,
-                other => panic!("print of {other:?} passed type checking"),
+                _ => Builtin::PrintValue,
             }
         }
         match ty {
+            // トップレベルの Union は構成要素ごとに表示する（`None` の構成要素は型検査で除いている）
             TTy::Union(u) => {
                 let src_iu = self.sh.ir_union(u);
                 let src = self.hidden_local(Ty::Union(src_iu));

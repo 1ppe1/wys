@@ -3120,11 +3120,21 @@ impl<'a> FnCk<'a> {
                     .with_hint("inspect it with `match`: `case int():`, `case str():`, ..., `case _:`"));
             return;
         }
-        let printable = |m: &Ty| matches!(m, Ty::Int | Ty::Bool | Ty::Str);
+        if self.cx.types.contains_unknown(t) {
+            // 構造の中の Unknown（`list[Unknown]` など）も E0601（ADR-0016 論点 15）
+            self.cx.diags.push(Diagnostic::error("E0601", "this `Unknown` value has not been checked", span)
+                    .with_cause("values from outside the program must be checked before use (LANG-006, ADR-0011)")
+                    .with_hint("check the values with `match` before putting them into a structure"));
+            return;
+        }
+        // 構成要素がすべて表示できればよい（ADR-0016 論点 15）。構造の中の `None` は表示できるが、
+        // トップレベルの `None` は検査のし忘れとして E0301。
         let members = self.cx.types.members(t);
+        let printable = |m: &Ty| *m != Ty::None && self.cx.types.comparable(*m);
         if members.iter().all(printable) {
             return;
         }
+        const ACCEPTS: &str = "`print` accepts `int`, `bool`, `str`, records, `list`, `dict`, `Result`, and unions of them";
         let found = self.cx.name(t);
         let d = if members.iter().all(|m| printable(m) || *m == Ty::None) {
             Diagnostic::error(
@@ -3132,7 +3142,7 @@ impl<'a> FnCk<'a> {
                 format!("this value may be `None`: `print` cannot print `{found}`"),
                 span,
             )
-            .with_cause("`print` accepts `int`, `bool` or `str`")
+            .with_cause(ACCEPTS)
             .with_hint("check it first, e.g. `if x is not None:`")
         } else {
             Diagnostic::error(
@@ -3140,7 +3150,7 @@ impl<'a> FnCk<'a> {
                 format!("mismatched types: `print` cannot print `{found}`"),
                 span,
             )
-            .with_cause("`print` accepts `int`, `bool` or `str`")
+            .with_cause(ACCEPTS)
         };
         self.cx.diags.push(d);
     }

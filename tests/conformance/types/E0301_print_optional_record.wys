@@ -1,0 +1,11 @@
+# トップレベルの `T | None` は、構造を持つ型でも E0301（ADR-0016 論点 15）
+# expect-error: E0301 11:11
+type P = {x: int}
+
+def find(n: int) -> P | None:
+    if n > 0:
+        return P(x=n)
+    return None
+
+def main() -> None:
+    print(find(1))

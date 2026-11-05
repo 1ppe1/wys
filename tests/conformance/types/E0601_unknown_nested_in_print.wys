@@ -1,0 +1,5 @@
+# 構造の中の `Unknown` を表示しようとすると E0601（ADR-0016 論点 15）
+# expect-error: E0601 5:11
+
+def main() -> None:
+    print([parse_scalar("1")])

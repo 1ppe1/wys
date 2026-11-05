@@ -741,6 +741,60 @@ pub unsafe extern "C" fn wys_print_str(s: *const Header) {
     let _ = out.write_all(b"\n");
 }
 
+// 構造を持つ値の表示（ADR-0016 論点 16・17）。改行せずに書き出す。型ごとの表示関数は生成コードが作り、
+// 区切りや名前（`[`、`P(`、`x=` など）は `wys_write_bytes` で書く。文字列を組み立てないので確保しない。
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_write_int(v: i64) {
+    print!("{v}");
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_write_bool(v: bool) {
+    print!("{}", if v { "True" } else { "False" });
+}
+
+/// 構造の中の文字列: `"` で囲み、`\"` `\\` `\n` `\t` `\r` `\0` をエスケープする（本言語のリテラルと同じ表記）。
+///
+/// # Safety
+/// `s` は生存している文字列オブジェクトでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_write_str(s: *const Header) {
+    let mut out = std::io::stdout().lock();
+    let mut buf = Vec::with_capacity(2);
+    buf.push(b'"');
+    // SAFETY: 関数の安全条件どおり。
+    for &c in unsafe { bytes(s) } {
+        match c {
+            b'"' => buf.extend_from_slice(b"\\\""),
+            b'\\' => buf.extend_from_slice(b"\\\\"),
+            b'\n' => buf.extend_from_slice(b"\\n"),
+            b'\t' => buf.extend_from_slice(b"\\t"),
+            b'\r' => buf.extend_from_slice(b"\\r"),
+            0 => buf.extend_from_slice(b"\\0"),
+            c => buf.push(c),
+        }
+    }
+    buf.push(b'"');
+    let _ = out.write_all(&buf);
+}
+
+/// 生成コードが持つバイト列（区切りや名前）をそのまま書く。
+///
+/// # Safety
+/// `p` は `len` バイトの読める領域を指していなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_write_bytes(p: *const u8, len: i64) {
+    // SAFETY: 関数の安全条件どおり。
+    let b = unsafe { std::slice::from_raw_parts(p, len as usize) };
+    let _ = std::io::stdout().lock().write_all(b);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_write_newline() {
+    println!();
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_exit(code: i64) -> ! {
     let _ = std::io::stdout().flush();
