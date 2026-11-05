@@ -1482,7 +1482,7 @@ impl Ctx {
                 let span = self.type_defs[idx].name.span;
                 self.diags.push(
                     Diagnostic::error("E0504", format!("type `{name}` refers to itself"), span)
-                        .with_cause("recursive types, including recursion through `list`, are not supported yet; they will be decided with JSON and schema validation in M5 (ADR-0016 point 23)"),
+                        .with_cause("recursive types, including recursion through `list`, are not supported; for recursive JSON data, use an `Unknown` field and validate it separately (ADR-0021 point 10)"),
                 );
                 self.aliases
                     .insert(name.to_string(), (idx, AliasState::Done(Ty::Error)));
@@ -4924,6 +4924,17 @@ mod tests {
                 "{src}"
             );
         }
+    }
+
+    #[test]
+    fn recursive_type_cause_points_to_adr_0021() {
+        let src = with_main("type Node = {value: int, next: Node | None}\n");
+        let (m, d) = wys_parser::parse_source(&src);
+        assert!(d.is_empty(), "parse errors: {d:?}");
+        let diags = check(&m).1;
+        let cause = diags[0].cause.clone().unwrap_or_default();
+        assert!(cause.contains("ADR-0021"), "{cause}");
+        assert!(!cause.contains("M5"), "{cause}");
     }
 
     #[test]
