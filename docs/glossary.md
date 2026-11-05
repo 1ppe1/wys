@@ -17,7 +17,7 @@
 | ARC / ORC | 参照カウントによる自動メモリ管理。ORCは循環参照の回収を加えた方式（Nimの用語） | MEM-003, 未決定事項 4 |
 | 説明レポート（explain） | `wys explain <file>` が出す JSON。関数ごとのシグネチャ、ローカル変数の型、絞り込み、ARC 操作とその理由。静的な事実だけを含む（DX-004） | ADR-0017, docs/spec/explain-schema.json |
 | ARC 操作の理由 | ARC パスが `retain` / `release` を挿入した理由の識別子（`borrow_from_mutable_place` など7種類）。IR の命令が持ち、`dump-ir` と `wys explain` に出す | ADR-0017, docs/design/ir.md |
-| Effect | 関数が持つ副作用（ネットワーク、ファイル操作など）の種類。静的診断とRuntime強制の両方に使う。Phase 1 は `io`（`print`、`arg`）と `exit`（`exit`）の2つで、注釈だけを検査する（パニックは Effect にしない） | AI-009, 未決定事項 5, ADR-0014 |
+| Effect | 関数が持つ副作用（ネットワーク、ファイル操作など）の種類。静的診断とRuntime強制の両方に使う。Phase 1 は `io`（`print`、`arg`）と `exit`（`exit`）の2つで、注釈だけを検査する（パニックは Effect にしない）。M4 で `python`（Python のコードの実行、`io` を含意しない。ADR-0018）が加わった | AI-009, 未決定事項 5, ADR-0014 |
 | 経路（絞り込み） | ローカル変数か引数を根とし、レコードのフィールド参照だけを連ねた式（`p.x`、`a.b.c`）。変数と同じく `is None` や `match` で絞り込め、根に代入すると絞り込みは消える | ADR-0016 |
 | `uses` 節 | 関数の戻り値の型の後ろに書く Effect の宣言（`def f() -> None uses io:`）。Effect がなければ `uses pure`。書いた関数だけを検査し、書かない関数は検査しない | ADR-0014 |
 | Capability | エージェントやコードが使ってよい能力（ファイル、ネットワーク、外部サービスなど）を表す権限。Runtimeが強制する | AI-004, P-05 |
@@ -50,5 +50,8 @@
 | 内部名 | モジュールの定義に付ける、プログラム全体で一意な名前（`util/text.wys` の `f` は `util.text.f`）。エントリファイルの定義は元の名前のまま | ADR-0010 |
 | ソースマップ | 複数のソースファイルを1本の通し番号の位置で扱う仕組み（`wys_span::SourceMap`）。診断の `span.file` はここから引く | ADR-0010 |
 | 警告 | ビルドを止めない診断（`W` で始まるコード）。`check` は警告だけなら終了コード 0 | `docs/spec/error-codes.md` |
+| 埋め込み（Python） | 本言語の実行ファイルが CPython を初期化して使う連携の方式。Python を使うプログラムだけが `libpython` をリンクする | ADR-0018 |
+| `PyObject` | Python のオブジェクトを包んだハンドルの型（名目的）。本言語の参照カウントで管理し、最後の release で Python の参照を手放す。表示・比較・`dict` のキーには使えない（E1202） | ADR-0018 |
+| `PyError` | Python の例外を表す組み込みのレコード `{kind, message, traceback}`。Python の操作は `Result[.., PyError]` を返す。構造的なので、同じフィールドを持つレコードと同じ型になる | ADR-0018 |
 | ADR | Architecture Decision Record。設計判断とその理由を記録する文書 | docs/adr/ |
 | PoC | 技術的な実現性を確かめる小さな試作 | 要件定義書 11章 |

@@ -84,8 +84,8 @@
 | E1102 | Effect | 呼び出し先の Effect を、呼び出し元の `uses` が宣言していない（修正案で `uses` 節を書き換える） |
 | E1103 | Effect | `uses` を書いた関数から、`uses` のない関数を呼んでいる |
 | E1104 | Effect | `uses` の並びが正しくない（同じ名前の重複、`pure` とほかの名前の併記） |
-| E1201 | Python | `py_value` に渡せない型（レコード、`Result`、`Unknown`、型パラメータを含む値など。M4 T6 の時点では `int` / `bool` / `str` / `float` / `None` / `PyObject` だけ。ADR-0018） |
-| E1202 | Python | `PyObject` を、具体的な値が要る場所（`print`、`==` / `!=`、演算、`dict` のキー）で使っている。Python のコード（`__str__`、`__eq__`）を動かすことになるので、`to_int()` などで変換してから使う（ADR-0018） |
+| E1201 | Python | `py_value` に渡せない型（レコード、`Result`、`Unknown`、型パラメータを含む値など。M4 T6 の時点では `int` / `bool` / `str` / `float` / `None` / `PyObject` だけで、Union（`int \| None`）と `list` / `dict` は T7 で決める。ADR-0018） |
+| E1202 | Python | `PyObject` か `PyError`（同じフィールドの構造的なレコードを含む）を、具体的な値が要る場所（`print`、`==` / `!=`、演算、`dict` のキー）で使っている。`PyError` はフィールド（`e.kind`、`e.message`、`e.traceback`）を読む。Python のコード（`__str__`、`__eq__`）を動かすことになるので、`to_int()` などで変換してから使う（ADR-0018） |
 | W0201 | 未使用（警告） | 代入されたが一度も読まれないローカル変数（`for` の変数、`case Ok(x)` の束縛を含む。ADR-0016）。`_` で始まる名前と引数は対象外。読まれたかは関数の中の名前で判定する。エラーのある関数（署名のエラーを含む）では出さない。同じ関数のほかの警告とは位置の順に並ぶ |
 | W0202 | 未使用（警告） | 使われない import（`import m`、`from m import f`、別名を含む。ADR-0016）。名前解決のエラーがあるモジュールでは出さない（型検査のエラーでは止めない）。型パラメータと同じ名前の import は、型パラメータに隠されるので使われない扱い |
 | W0301 | match（警告） | それより前の `case` ですでに網羅されているため、到達しない `case`。警告だけならビルドできる |

@@ -108,6 +108,8 @@ pub struct Types {
     /// `dict[K, V]` のキーと値の型（`DictId` の順）
     dicts: Vec<(Ty, Ty)>,
     dict_index: HashMap<(Ty, Ty), DictId>,
+    /// 組み込みのレコード `PyError` の ID（`py_error` で登録する。E1202 の判定に使う）
+    py_error_id: Option<RecordId>,
 }
 
 impl Types {
@@ -375,7 +377,8 @@ impl Types {
     }
 
     /// `Unknown` を含むか。レコードは登録時に計算した値を使う。
-    /// Python のオブジェクト（`PyObject`）を含む型か（ADR-0018 論点 13: 比較・表示に使えない）。
+    /// Python のオブジェクト（`PyObject`）か `PyError` を含む型か（ADR-0018 論点 13: 比較・表示に使えない）。
+    /// `PyError` は構造的なレコードなので、同じフィールドを持つ型（`{kind: str, message: str, traceback: str}`）も含む
     pub fn contains_py(&self, t: Ty) -> bool {
         fn go(ts: &Types, t: Ty, seen: &mut HashSet<Ty>) -> bool {
             if !seen.insert(t) {
@@ -383,6 +386,8 @@ impl Types {
             }
             match t {
                 Ty::PyObject => true,
+                // `PyError` も表示・比較できない（ADR-0018 論点 13）。フィールドは読める
+                Ty::Record(id) if ts.py_error_id == Some(id) => true,
                 Ty::List(l) => go(ts, ts.list_elem(l), seen),
                 Ty::Dict(d) => {
                     let (k, v) = ts.dict_args(d);
@@ -408,7 +413,7 @@ impl Types {
     /// Python の例外を表す組み込みのレコード `PyError`（ADR-0018 論点 8）。最初に登録するので、
     /// 同じフィールドを持つ構造的な型も `PyError` の名前で表示する。
     pub fn py_error(&mut self) -> Ty {
-        self.record_named(
+        let t = self.record_named(
             vec![
                 ("kind".into(), Ty::Str),
                 ("message".into(), Ty::Str),
@@ -416,7 +421,11 @@ impl Types {
             ],
             Some("PyError".into()),
             vec![],
-        )
+        );
+        if let Ty::Record(id) = t {
+            self.py_error_id = Some(id);
+        }
+        t
     }
 
     pub fn contains_unknown(&self, t: Ty) -> bool {
@@ -3495,10 +3504,6 @@ impl<'a> FnCk<'a> {
 
     /// `PyObject` のメソッド（ADR-0018 論点 9）。すべて Effect `python` を持ち、失敗し得るものは `Result[.., PyError]`。
     fn py_method(&mut self, m: &str, mspan: Span, args: &[Expr], span: Span, env: &Env) -> Ty {
-        self.check_effects(&Ident {
-            name: format!("PyObject.{m}"),
-            span: mspan,
-        });
         let err = self.cx.types.py_error();
         let list_of_py = self.cx.types.list(Ty::PyObject);
         let (params, ok): (Vec<Ty>, Option<Ty>) = match m {
@@ -3519,6 +3524,11 @@ impl<'a> FnCk<'a> {
                 return Ty::Error;
             }
         };
+        // 未知のメソッド（E0905）では Effect を記録しない
+        self.check_effects(&Ident {
+            name: format!("PyObject.{m}"),
+            span: mspan,
+        });
         if args.len() != params.len() {
             for a in args {
                 self.expr(a, env);
@@ -4273,11 +4283,11 @@ fn dict_key_error(name: &str, span: Span) -> Diagnostic {
 fn py_value_use_error(place: &str, span: Span) -> Diagnostic {
     Diagnostic::error(
         "E1202",
-        format!("a Python object cannot be used as {place}"),
+        format!("a Python object or error cannot be used as {place}"),
         span,
     )
     .with_cause("printing, comparing or hashing it would run Python code (`__str__`, `__eq__`)")
-    .with_hint("convert it first, e.g. `h.to_int()`, `h.to_str()` or `h.to_bool()`")
+    .with_hint("convert it first, e.g. `h.to_int()` or `h.to_str()`; read the fields of a `PyError` (`e.kind`, `e.message`)")
 }
 
 fn is_result_ctor(name: &str) -> bool {

@@ -440,6 +440,15 @@ fn lookup(
     Some(def.internal.clone())
 }
 
+/// 名前の並びの式（`a`、`a.b.c`）を `a.b.c` の文字列にする。それ以外は `None`。
+fn dotted_path(e: &Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Name(n) => Some(n.clone()),
+        ExprKind::Field { base, name } => dotted_path(base).map(|p| format!("{p}.{}", name.name)),
+        _ => None,
+    }
+}
+
 /// 関数の本体で束縛する名前（代入先、`for` の変数、`case Ok(x)` の束縛）と、最初に束縛する位置。
 /// スコープは区別しない。型検査はローカル変数を出てきた順に登録するので、それより前の使用はモジュールの参照になる。
 fn collect_locals(stmts: &[Stmt], out: &mut HashMap<String, u32>) {
@@ -641,18 +650,22 @@ impl Resolver<'_> {
     }
 
     fn expr(&mut self, e: &mut Expr) {
-        // `m.f(...)`: 受け手がローカル変数でなく、モジュール（別名、自分自身、読み込まれたモジュール）の名前なら、
-        // メソッド呼び出しではなく修飾付きの呼び出し（M4 T4）。ローカル変数が同じ名前のモジュールを隠す
+        // `m.f(...)` / `a.b.f(...)`: 受け手が名前の並びで、その位置で見えるローカル変数で始まらず、
+        // モジュール（別名、自分自身、読み込まれたモジュール）か、どのローカル変数でもない名前で始まるなら、
+        // メソッド呼び出しではなく修飾付きの呼び出し（M4 T4・T6）。ローカル変数が同じ名前のモジュールを隠す。
+        // フィールドの値の受け手（`box.handle.to_int()`）はメソッド呼び出しのまま
         if let ExprKind::MethodCall { receiver, .. } = &e.kind
-            && let Some(name) = receiver.as_name()
+            && let Some(path) = dotted_path(receiver)
+            && let first = path.split('.').next().unwrap_or_default()
             && !self
                 .locals
-                .get(name)
+                .get(first)
                 .is_some_and(|&at| at < receiver.span.start)
-            && (self.modules.contains_key(name)
-                || name == self.own_name
-                || self.index.contains_key(name)
-                || self.longer_module(name).is_some())
+            && (self.modules.contains_key(&path)
+                || path == self.own_name
+                || self.index.contains_key(&path)
+                || self.longer_module(&path).is_some()
+                || !self.locals.contains_key(first))
         {
             let ExprKind::MethodCall {
                 receiver,
@@ -667,7 +680,7 @@ impl Resolver<'_> {
                 callee: Ident {
                     name: format!(
                         "{}.{}",
-                        receiver.as_name().expect("checked above"),
+                        dotted_path(&receiver).expect("checked above"),
                         method.name
                     ),
                     span: Span::new(receiver.span.start, method.span.end),

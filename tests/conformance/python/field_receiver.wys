@@ -1,0 +1,11 @@
+# フィールドの値を受け手にするメソッド呼び出し（PR #84 のレビュー。`a.b.f()` のモジュールの呼び出しと区別する）
+# expect-stdout: 3
+type Box = {handle: PyObject}
+
+def main() -> None:
+    b = Box(handle=py_value(3))
+    match b.handle.to_int():
+        case Ok(n):
+            print(n)
+        case Err(e):
+            print(e.kind)

@@ -16,7 +16,7 @@ type_def    = "type" IDENT [ type_params ] "=" ( record_type | type ) NEWLINE ; 
 record_type = "{" [ field_decl { "," field_decl } [ "," ] ] "}" ;
 field_decl  = IDENT ":" type ;
 func_def    = "def" IDENT [ type_params ] "(" [ params ] ")" "->" type [ effects ] ":" block ;
-effects     = "uses" IDENT { "," IDENT } ;                (* Effect の宣言（ADR-0014）。名前は io / exit、Effect なしは pure。
+effects     = "uses" IDENT { "," IDENT } ;                (* Effect の宣言（ADR-0014）。名前は io / exit / python（ADR-0018）、Effect なしは pure。
                                                             uses と pure は予約語ではない（この位置でだけ意味を持つ）。`-> uses:` は型名 uses *)
 type_params = "[" IDENT { "," IDENT } [ "," ] "]" ;          (* 型パラメータ。呼び出し時に引数から推論する *)
 params      = param { "," param } [ "," ] ;
