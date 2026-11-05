@@ -1,0 +1,11 @@
+# 同じ関数の警告は位置の順に並ぶ（W0201 は関数の検査の後に作るが、W0301 より前の位置なら前に出る）
+# expect-warning: W0201 5:5
+# expect-warning: W0301 10:14
+def main() -> None:
+    unused = 1
+    x: int | None = 1
+    match x:
+        case _:
+            print("ok")
+        case None:
+            pass

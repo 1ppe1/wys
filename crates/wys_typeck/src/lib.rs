@@ -908,13 +908,27 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
     }
 
     let mut funcs = Vec::new();
+    let mut ranges = Vec::new();
     for (i, f) in module.funcs.iter().enumerate() {
-        let errors = cx.diags.iter().filter(|d| d.is_error()).count();
+        let start = cx.diags.len();
         funcs.push(FnCk::run(&mut cx, f, i));
-        // エラーのある関数では出さない（修正の途中の雑音になる。DX-005）
-        if cx.diags.iter().filter(|d| d.is_error()).count() == errors {
-            cx.diags.extend(unused_locals(f));
+        ranges.push(start..cx.diags.len());
+    }
+    // 未使用の変数（W0201）。エラーのある関数（署名のエラーを含む。範囲で判定する）では出さない
+    // （修正の途中の雑音になる。DX-005）。出すときは、その関数の警告と位置の順に並べる
+    for (f, range) in module.funcs.iter().zip(ranges).rev() {
+        let inside = |d: &Diagnostic| d.span.start >= f.span.start && d.span.end <= f.span.end;
+        if cx.diags.iter().any(|d| d.is_error() && inside(d)) {
+            continue;
         }
+        let unused = unused_locals(f);
+        if unused.is_empty() {
+            continue;
+        }
+        let mut merged: Vec<Diagnostic> = cx.diags.splice(range.clone(), []).collect();
+        merged.extend(unused);
+        merged.sort_by_key(|d| d.span.start);
+        cx.diags.splice(range.start..range.start, merged);
     }
     (
         TypeckResult {

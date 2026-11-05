@@ -1,0 +1,8 @@
+# 署名にエラーのある関数では、未使用の変数の警告（W0201）を出さない
+# expect-error: E0203 4:10
+
+def f(x: Nope) -> None:
+    y = 1
+
+def main() -> None:
+    pass
