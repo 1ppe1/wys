@@ -158,3 +158,19 @@ fn a_leaked_python_handle_is_detected() {
     assert_eq!(code, 102, "{stderr}");
     assert!(stderr.contains("1 object(s) were not freed"), "{stderr}");
 }
+
+/// タスク（ADR-0020）の中から Python を呼ぶ（論点 16）。サービス呼び出しで、メインスタックと同じ結果になる。
+#[test]
+fn python_calls_from_a_task_run_on_the_main_stack() {
+    let Some(flags) = require() else { return };
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/async_poc.c");
+    for (name, extra) in [
+        ("async-poc", &["-O2"][..]),
+        ("async-poc-asan", &["-fsanitize=address", "-g"][..]),
+    ] {
+        let exe = build(name, &src, extra, &flags);
+        let (code, stdout, stderr) = run(&exe);
+        assert_eq!(code, 0, "{name}: {stderr}");
+        assert_eq!(stdout, "10002\nRecursionError\n", "{name}: {stderr}");
+    }
+}

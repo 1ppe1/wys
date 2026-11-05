@@ -290,7 +290,7 @@ fn c_name(s: *const Header) -> Option<CString> {
     c
 }
 
-/// 直前の Python の操作が失敗したか。
+/// 直前の Python の操作が失敗したか。CPython を呼ばないので、メインスタックに移らない（`wys_py_err_*` も同じ）。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_py_failed() -> bool {
     LAST.with(|l| l.borrow().is_some())
@@ -325,12 +325,14 @@ pub extern "C" fn wys_py_err_traceback() -> *mut Header {
 /// `name` は生存している文字列オブジェクト。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_import(name: *const Header) -> *mut Header {
-    ensure_init();
-    let Some(n) = c_name(name) else {
-        return std::ptr::null_mut();
-    };
-    // SAFETY: 初期化済みで GIL を持っている。
-    wrap(unsafe { PyImport_ImportModule(n.as_ptr()) })
+    wys_runtime::task::on_main_stack(|| {
+        ensure_init();
+        let Some(n) = c_name(name) else {
+            return std::ptr::null_mut();
+        };
+        // SAFETY: 初期化済みで GIL を持っている。
+        wrap(unsafe { PyImport_ImportModule(n.as_ptr()) })
+    })
 }
 
 /// `h.name`。
@@ -339,11 +341,13 @@ pub unsafe extern "C" fn wys_py_import(name: *const Header) -> *mut Header {
 /// `h` は生存しているハンドル、`name` は生存している文字列オブジェクト。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_getattr(h: *const Header, name: *const Header) -> *mut Header {
-    let Some(n) = c_name(name) else {
-        return std::ptr::null_mut();
-    };
-    // SAFETY: 関数の安全条件どおり。
-    wrap(unsafe { PyObject_GetAttrString(inner(h), n.as_ptr()) })
+    wys_runtime::task::on_main_stack(|| {
+        let Some(n) = c_name(name) else {
+            return std::ptr::null_mut();
+        };
+        // SAFETY: 関数の安全条件どおり。
+        wrap(unsafe { PyObject_GetAttrString(inner(h), n.as_ptr()) })
+    })
 }
 
 /// `h(*args)`。`args` はハンドルの `list`（要素は借用で読む）。
@@ -352,46 +356,54 @@ pub unsafe extern "C" fn wys_py_getattr(h: *const Header, name: *const Header) -
 /// `h` は生存しているハンドル、`args` は要素がすべて生存しているハンドルのリスト。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_call(h: *const Header, args: *const ListObj) -> *mut Header {
-    // SAFETY: 関数の安全条件どおり。PyTuple_SetItem は参照を盗むので、先に Py_IncRef する。
-    unsafe {
-        let items = embed::list_words(args);
-        let t = PyTuple_New(items.len() as isize);
-        if t.is_null() {
-            return wrap(t);
+    wys_runtime::task::on_main_stack(|| {
+        // SAFETY: 関数の安全条件どおり。PyTuple_SetItem は参照を盗むので、先に Py_IncRef する。
+        unsafe {
+            let items = embed::list_words(args);
+            let t = PyTuple_New(items.len() as isize);
+            if t.is_null() {
+                return wrap(t);
+            }
+            for (i, &a) in items.iter().enumerate() {
+                let o = inner(a as *const Header);
+                Py_IncRef(o);
+                PyTuple_SetItem(t, i as isize, o);
+            }
+            let r = PyObject_CallObject(inner(h), t);
+            Py_DecRef(t);
+            wrap(r)
         }
-        for (i, &a) in items.iter().enumerate() {
-            let o = inner(a as *const Header);
-            Py_IncRef(o);
-            PyTuple_SetItem(t, i as isize, o);
-        }
-        let r = PyObject_CallObject(inner(h), t);
-        Py_DecRef(t);
-        wrap(r)
-    }
+    })
 }
 
 /// `int` から Python の `int`。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_py_from_int(v: i64) -> *mut Header {
-    ensure_init();
-    // SAFETY: 初期化済み。
-    wrap_value(unsafe { PyLong_FromLongLong(v) })
+    wys_runtime::task::on_main_stack(|| {
+        ensure_init();
+        // SAFETY: 初期化済み。
+        wrap_value(unsafe { PyLong_FromLongLong(v) })
+    })
 }
 
 /// `bool` から Python の `bool`。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_py_from_bool(v: bool) -> *mut Header {
-    ensure_init();
-    // SAFETY: 初期化済み。
-    wrap_value(unsafe { PyBool_FromLong(v as c_long) })
+    wys_runtime::task::on_main_stack(|| {
+        ensure_init();
+        // SAFETY: 初期化済み。
+        wrap_value(unsafe { PyBool_FromLong(v as c_long) })
+    })
 }
 
 /// `float` から Python の `float`（ADR-0019）。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_py_from_float(v: f64) -> *mut Header {
-    ensure_init();
-    // SAFETY: 初期化済み。
-    wrap_value(unsafe { PyFloat_FromDouble(v) })
+    wys_runtime::task::on_main_stack(|| {
+        ensure_init();
+        // SAFETY: 初期化済み。
+        wrap_value(unsafe { PyFloat_FromDouble(v) })
+    })
 }
 
 /// 文字列から Python の `str`。
@@ -400,25 +412,29 @@ pub extern "C" fn wys_py_from_float(v: f64) -> *mut Header {
 /// `s` は生存している文字列オブジェクト。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_from_str(s: *const Header) -> *mut Header {
-    ensure_init();
-    // SAFETY: 関数の安全条件どおり。
-    let b = unsafe { embed::bytes(s) };
-    // SAFETY: 初期化済み。b は b.len() バイトの UTF-8。
-    wrap_value(unsafe {
-        PyUnicode_FromStringAndSize(b.as_ptr() as *const c_char, b.len() as isize)
+    wys_runtime::task::on_main_stack(|| {
+        ensure_init();
+        // SAFETY: 関数の安全条件どおり。
+        let b = unsafe { embed::bytes(s) };
+        // SAFETY: 初期化済み。b は b.len() バイトの UTF-8。
+        wrap_value(unsafe {
+            PyUnicode_FromStringAndSize(b.as_ptr() as *const c_char, b.len() as isize)
+        })
     })
 }
 
 /// Python の `None`。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_py_none() -> *mut Header {
-    ensure_init();
-    // SAFETY: 初期化済み。借用の参照なので、包む前に Py_IncRef する。
-    unsafe {
-        let n = Py_GetConstantBorrowed(PY_CONSTANT_NONE);
-        Py_IncRef(n);
-        wrap_value(n)
-    }
+    wys_runtime::task::on_main_stack(|| {
+        ensure_init();
+        // SAFETY: 初期化済み。借用の参照なので、包む前に Py_IncRef する。
+        unsafe {
+            let n = Py_GetConstantBorrowed(PY_CONSTANT_NONE);
+            Py_IncRef(n);
+            wrap_value(n)
+        }
+    })
 }
 
 /// Python の `int`（`bool` を含む）を読む。`int` でない、または i64 に収まらなければ失敗（論点 11）。
@@ -428,28 +444,30 @@ pub extern "C" fn wys_py_none() -> *mut Header {
 /// `h` は生存しているハンドル。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_to_int(h: *const Header) -> i64 {
-    // SAFETY: 関数の安全条件どおり。-1 は値か失敗のどちらかなので、例外の有無で見分ける。
-    unsafe {
-        let o = inner(h);
-        match PyObject_IsInstance(o, &raw mut PyLong_Type as *mut PyObject) {
-            1 => {}
-            0 => {
-                fail("TypeError", "expected an int");
-                return 0;
+    wys_runtime::task::on_main_stack(|| {
+        // SAFETY: 関数の安全条件どおり。-1 は値か失敗のどちらかなので、例外の有無で見分ける。
+        unsafe {
+            let o = inner(h);
+            match PyObject_IsInstance(o, &raw mut PyLong_Type as *mut PyObject) {
+                1 => {}
+                0 => {
+                    fail("TypeError", "expected an int");
+                    return 0;
+                }
+                _ => {
+                    capture_error();
+                    return 0;
+                }
             }
-            _ => {
+            let v = PyLong_AsLongLong(o);
+            if v == -1 && !PyErr_Occurred().is_null() {
                 capture_error();
                 return 0;
             }
+            succeed();
+            v
         }
-        let v = PyLong_AsLongLong(o);
-        if v == -1 && !PyErr_Occurred().is_null() {
-            capture_error();
-            return 0;
-        }
-        succeed();
-        v
-    }
+    })
 }
 
 /// `o` が型 `t` のインスタンスか。判定そのものが例外を出したら、その例外を失敗として保存して `None`
@@ -475,25 +493,27 @@ unsafe fn is_instance(o: *mut PyObject, t: *mut u8) -> Option<bool> {
 /// `h` は生存しているハンドル。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_to_float(h: *const Header) -> f64 {
-    // SAFETY: 関数の安全条件どおり。
-    unsafe {
-        let o = inner(h);
-        match is_instance(o, &raw mut PyFloat_Type) {
-            Some(true) => {}
-            Some(false) => {
-                fail("TypeError", "expected a float");
+    wys_runtime::task::on_main_stack(|| {
+        // SAFETY: 関数の安全条件どおり。
+        unsafe {
+            let o = inner(h);
+            match is_instance(o, &raw mut PyFloat_Type) {
+                Some(true) => {}
+                Some(false) => {
+                    fail("TypeError", "expected a float");
+                    return 0.0;
+                }
+                None => return 0.0,
+            }
+            let v = PyFloat_AsDouble(o);
+            if v == -1.0 && !PyErr_Occurred().is_null() {
+                capture_error();
                 return 0.0;
             }
-            None => return 0.0,
+            succeed();
+            v
         }
-        let v = PyFloat_AsDouble(o);
-        if v == -1.0 && !PyErr_Occurred().is_null() {
-            capture_error();
-            return 0.0;
-        }
-        succeed();
-        v
-    }
+    })
 }
 
 /// Python の `list` / `tuple` を、要素のハンドルの `list[PyObject]`（参照カウント 1）にする。それ以外は失敗
@@ -503,46 +523,48 @@ pub unsafe extern "C" fn wys_py_to_float(h: *const Header) -> f64 {
 /// `h` は生存しているハンドル。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_to_list(h: *const Header) -> *mut ListObj {
-    // SAFETY: 関数の安全条件どおり。要素は新しい参照（PySequence_GetItem）をハンドルで包む。
-    unsafe {
-        let o = inner(h);
-        let is_seq = match is_instance(o, &raw mut PyList_Type) {
-            Some(true) => Some(true),
-            Some(false) => is_instance(o, &raw mut PyTuple_Type),
-            None => None,
-        };
-        match is_seq {
-            Some(true) => {}
-            Some(false) => {
-                fail("TypeError", "expected a list or tuple");
-                return wys_runtime::wys_list_new(8, 0);
-            }
-            None => return wys_runtime::wys_list_new(8, 0),
-        }
-        let n = PySequence_Size(o);
-        if n < 0 {
-            // `__len__` が例外を出した（list のサブクラス）: 例外を残さず、失敗にする（PR #85 のレビュー）
-            capture_error();
-            return wys_runtime::wys_list_new(8, 0);
-        }
-        let l = wys_runtime::wys_list_new(8, n as i64);
-        for i in 0..n {
-            let item = PySequence_GetItem(o, i);
-            if item.is_null() {
-                // 要素の取得に失敗した（並びが途中で変わった）: 取り出した分は解放し、失敗にする
-                capture_error();
-                for w in embed::list_words(l) {
-                    wys_py_release(w as *mut Header);
+    wys_runtime::task::on_main_stack(|| {
+        // SAFETY: 関数の安全条件どおり。要素は新しい参照（PySequence_GetItem）をハンドルで包む。
+        unsafe {
+            let o = inner(h);
+            let is_seq = match is_instance(o, &raw mut PyList_Type) {
+                Some(true) => Some(true),
+                Some(false) => is_instance(o, &raw mut PyTuple_Type),
+                None => None,
+            };
+            match is_seq {
+                Some(true) => {}
+                Some(false) => {
+                    fail("TypeError", "expected a list or tuple");
+                    return wys_runtime::wys_list_new(8, 0);
                 }
-                wys_runtime::wys_list_free(l, 8);
+                None => return wys_runtime::wys_list_new(8, 0),
+            }
+            let n = PySequence_Size(o);
+            if n < 0 {
+                // `__len__` が例外を出した（list のサブクラス）: 例外を残さず、失敗にする（PR #85 のレビュー）
+                capture_error();
                 return wys_runtime::wys_list_new(8, 0);
             }
-            *(wys_runtime::wys_list_push_slot(l, 8) as *mut *mut Header) =
-                embed::new_object(&(item as usize).to_ne_bytes());
+            let l = wys_runtime::wys_list_new(8, n as i64);
+            for i in 0..n {
+                let item = PySequence_GetItem(o, i);
+                if item.is_null() {
+                    // 要素の取得に失敗した（並びが途中で変わった）: 取り出した分は解放し、失敗にする
+                    capture_error();
+                    for w in embed::list_words(l) {
+                        wys_py_release(w as *mut Header);
+                    }
+                    wys_runtime::wys_list_free(l, 8);
+                    return wys_runtime::wys_list_new(8, 0);
+                }
+                *(wys_runtime::wys_list_push_slot(l, 8) as *mut *mut Header) =
+                    embed::new_object(&(item as usize).to_ne_bytes());
+            }
+            succeed();
+            l
         }
-        succeed();
-        l
-    }
+    })
 }
 
 /// Python の `dict`（キーがすべて `str`）を `dict[str, PyObject]`（参照カウント 1）にする。それ以外は失敗
@@ -552,70 +574,74 @@ pub unsafe extern "C" fn wys_py_to_list(h: *const Header) -> *mut ListObj {
 /// `h` は生存しているハンドル。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_to_dict(h: *const Header) -> *mut DictObj {
-    const KEY_STR: i64 = 2;
-    // SAFETY: 関数の安全条件どおり。PyDict_Next は借用の参照を返すので、包む前に Py_IncRef する。
-    unsafe {
-        let o = inner(h);
-        match is_instance(o, &raw mut PyDict_Type) {
-            Some(true) => {}
-            Some(false) => {
-                fail("TypeError", "expected a dict");
-                return wys_runtime::wys_dict_new(KEY_STR, 8);
-            }
-            None => return wys_runtime::wys_dict_new(KEY_STR, 8),
-        }
-        // 先にキーがすべて str か確かめる（途中で失敗して、作りかけの辞書を片付けずに済むように）
-        let mut entries = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        let mut pos: isize = 0;
-        let (mut k, mut v) = (std::ptr::null_mut(), std::ptr::null_mut());
-        while PyDict_Next(o, &mut pos, &mut k, &mut v) != 0 {
-            match is_instance(k, &raw mut PyUnicode_Type) {
+    wys_runtime::task::on_main_stack(|| {
+        const KEY_STR: i64 = 2;
+        // SAFETY: 関数の安全条件どおり。PyDict_Next は借用の参照を返すので、包む前に Py_IncRef する。
+        unsafe {
+            let o = inner(h);
+            match is_instance(o, &raw mut PyDict_Type) {
                 Some(true) => {}
                 Some(false) => {
-                    fail("TypeError", "dict keys must be str");
+                    fail("TypeError", "expected a dict");
                     return wys_runtime::wys_dict_new(KEY_STR, 8);
                 }
                 None => return wys_runtime::wys_dict_new(KEY_STR, 8),
             }
-            match py_str(k) {
-                // str だが UTF-8 にできない（サロゲートを含む）: その例外（UnicodeEncodeError）を失敗にする
-                None => {
-                    capture_error();
-                    return wys_runtime::wys_dict_new(KEY_STR, 8);
+            // 先にキーがすべて str か確かめる（途中で失敗して、作りかけの辞書を片付けずに済むように）
+            let mut entries = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            let mut pos: isize = 0;
+            let (mut k, mut v) = (std::ptr::null_mut(), std::ptr::null_mut());
+            while PyDict_Next(o, &mut pos, &mut k, &mut v) != 0 {
+                match is_instance(k, &raw mut PyUnicode_Type) {
+                    Some(true) => {}
+                    Some(false) => {
+                        fail("TypeError", "dict keys must be str");
+                        return wys_runtime::wys_dict_new(KEY_STR, 8);
+                    }
+                    None => return wys_runtime::wys_dict_new(KEY_STR, 8),
                 }
-                // 別々のキー（str のサブクラス）が同じ文字列になることがある。本言語の dict では区別できない
-                // （PR #85 のレビュー）
-                Some(key) if !seen.insert(key.clone()) => {
-                    fail(
-                        "ValueError",
-                        &format!("the dict has more than one key equal to {key:?} as a str"),
-                    );
-                    return wys_runtime::wys_dict_new(KEY_STR, 8);
+                match py_str(k) {
+                    // str だが UTF-8 にできない（サロゲートを含む）: その例外（UnicodeEncodeError）を失敗にする
+                    None => {
+                        capture_error();
+                        return wys_runtime::wys_dict_new(KEY_STR, 8);
+                    }
+                    // 別々のキー（str のサブクラス）が同じ文字列になることがある。本言語の dict では区別できない
+                    // （PR #85 のレビュー）
+                    Some(key) if !seen.insert(key.clone()) => {
+                        fail(
+                            "ValueError",
+                            &format!("the dict has more than one key equal to {key:?} as a str"),
+                        );
+                        return wys_runtime::wys_dict_new(KEY_STR, 8);
+                    }
+                    Some(key) => entries.push((key, v)),
                 }
-                Some(key) => entries.push((key, v)),
             }
+            let d = wys_runtime::wys_dict_new(KEY_STR, 8);
+            for (key, v) in entries {
+                // 辞書がキーの文字列（+1）を持つ
+                let ks = embed::new_object(key.as_bytes());
+                let e = wys_runtime::wys_dict_push(d, ks as i64);
+                Py_IncRef(v);
+                *(wys_runtime::wys_dict_val(d, e) as *mut *mut Header) =
+                    embed::new_object(&(v as usize).to_ne_bytes());
+            }
+            succeed();
+            d
         }
-        let d = wys_runtime::wys_dict_new(KEY_STR, 8);
-        for (key, v) in entries {
-            // 辞書がキーの文字列（+1）を持つ
-            let ks = embed::new_object(key.as_bytes());
-            let e = wys_runtime::wys_dict_push(d, ks as i64);
-            Py_IncRef(v);
-            *(wys_runtime::wys_dict_val(d, e) as *mut *mut Header) =
-                embed::new_object(&(v as usize).to_ne_bytes());
-        }
-        succeed();
-        d
-    }
+    })
 }
 
 /// 新しい空の Python の `list`（`py_value` の変換用。失敗しない）。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_py_new_list() -> *mut Header {
-    ensure_init();
-    // SAFETY: 初期化済み。
-    wrap_value(unsafe { PyList_New(0) })
+    wys_runtime::task::on_main_stack(|| {
+        ensure_init();
+        // SAFETY: 初期化済み。
+        wrap_value(unsafe { PyList_New(0) })
+    })
 }
 
 /// `l.append(item)`。`item` のハンドルの所有は、この関数に移る（`py_value` の変換用）。
@@ -624,21 +650,25 @@ pub extern "C" fn wys_py_new_list() -> *mut Header {
 /// `l` は Python の `list` のハンドル、`item` は生存しているハンドル。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_list_append(l: *const Header, item: *mut Header) {
-    // SAFETY: 関数の安全条件どおり。PyList_Append は参照を盗まない。
-    unsafe {
-        if PyList_Append(inner(l), inner(item)) < 0 {
-            embed::runtime_error("cannot create a Python object");
+    wys_runtime::task::on_main_stack(|| {
+        // SAFETY: 関数の安全条件どおり。PyList_Append は参照を盗まない。
+        unsafe {
+            if PyList_Append(inner(l), inner(item)) < 0 {
+                embed::runtime_error("cannot create a Python object");
+            }
+            wys_py_release(item);
         }
-        wys_py_release(item);
-    }
+    })
 }
 
 /// 新しい空の Python の `dict`（`py_value` の変換用。失敗しない）。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_py_new_dict() -> *mut Header {
-    ensure_init();
-    // SAFETY: 初期化済み。
-    wrap_value(unsafe { PyDict_New() })
+    wys_runtime::task::on_main_stack(|| {
+        ensure_init();
+        // SAFETY: 初期化済み。
+        wrap_value(unsafe { PyDict_New() })
+    })
 }
 
 /// `d[k] = v`。`k` と `v` のハンドルの所有は、この関数に移る（`py_value` の変換用）。
@@ -647,14 +677,16 @@ pub extern "C" fn wys_py_new_dict() -> *mut Header {
 /// `d` は Python の `dict` のハンドル、`k` と `v` は生存しているハンドル。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_dict_set(d: *const Header, k: *mut Header, v: *mut Header) {
-    // SAFETY: 関数の安全条件どおり。PyDict_SetItem は参照を盗まない。
-    unsafe {
-        if PyDict_SetItem(inner(d), inner(k), inner(v)) < 0 {
-            embed::runtime_error("cannot create a Python object");
+    wys_runtime::task::on_main_stack(|| {
+        // SAFETY: 関数の安全条件どおり。PyDict_SetItem は参照を盗まない。
+        unsafe {
+            if PyDict_SetItem(inner(d), inner(k), inner(v)) < 0 {
+                embed::runtime_error("cannot create a Python object");
+            }
+            wys_py_release(k);
+            wys_py_release(v);
         }
-        wys_py_release(k);
-        wys_py_release(v);
-    }
+    })
 }
 
 /// `h(*args, **kwargs)`。`kwargs` は `dict[str, PyObject]`（要素は借用で読む）。
@@ -667,48 +699,51 @@ pub unsafe extern "C" fn wys_py_call_kw(
     args: *const ListObj,
     kwargs: *const DictObj,
 ) -> *mut Header {
-    // SAFETY: 関数の安全条件どおり。
-    unsafe {
-        let items = embed::list_words(args);
-        let t = PyTuple_New(items.len() as isize);
-        if t.is_null() {
-            return wrap(t);
-        }
-        for (i, &a) in items.iter().enumerate() {
-            let o = inner(a as *const Header);
-            Py_IncRef(o);
-            PyTuple_SetItem(t, i as isize, o);
-        }
-        let kw = PyDict_New();
-        if kw.is_null() {
-            Py_DecRef(t);
-            return wrap(kw);
-        }
-        let len = wys_runtime::wys_dict_len(kwargs);
-        let mut pos = 0;
-        loop {
-            let e = wys_runtime::wys_dict_iter_next(kwargs, pos, len);
-            if e < 0 {
-                break;
+    wys_runtime::task::on_main_stack(|| {
+        // SAFETY: 関数の安全条件どおり。
+        unsafe {
+            let items = embed::list_words(args);
+            let t = PyTuple_New(items.len() as isize);
+            if t.is_null() {
+                return wrap(t);
             }
-            let key = wys_runtime::wys_dict_key(kwargs, e) as *const Header;
-            let b = embed::bytes(key);
-            let k = PyUnicode_FromStringAndSize(b.as_ptr() as *const c_char, b.len() as isize);
-            let v = *(wys_runtime::wys_dict_val(kwargs as *mut DictObj, e) as *const *const Header);
-            if k.is_null() || PyDict_SetItem(kw, k, inner(v)) < 0 {
-                Py_DecRef(k);
-                Py_DecRef(kw);
+            for (i, &a) in items.iter().enumerate() {
+                let o = inner(a as *const Header);
+                Py_IncRef(o);
+                PyTuple_SetItem(t, i as isize, o);
+            }
+            let kw = PyDict_New();
+            if kw.is_null() {
                 Py_DecRef(t);
-                return wrap(std::ptr::null_mut());
+                return wrap(kw);
             }
-            Py_DecRef(k);
-            pos = e + 1;
+            let len = wys_runtime::wys_dict_len(kwargs);
+            let mut pos = 0;
+            loop {
+                let e = wys_runtime::wys_dict_iter_next(kwargs, pos, len);
+                if e < 0 {
+                    break;
+                }
+                let key = wys_runtime::wys_dict_key(kwargs, e) as *const Header;
+                let b = embed::bytes(key);
+                let k = PyUnicode_FromStringAndSize(b.as_ptr() as *const c_char, b.len() as isize);
+                let v =
+                    *(wys_runtime::wys_dict_val(kwargs as *mut DictObj, e) as *const *const Header);
+                if k.is_null() || PyDict_SetItem(kw, k, inner(v)) < 0 {
+                    Py_DecRef(k);
+                    Py_DecRef(kw);
+                    Py_DecRef(t);
+                    return wrap(std::ptr::null_mut());
+                }
+                Py_DecRef(k);
+                pos = e + 1;
+            }
+            let r = PyObject_Call(inner(h), t, kw);
+            Py_DecRef(kw);
+            Py_DecRef(t);
+            wrap(r)
         }
-        let r = PyObject_Call(inner(h), t, kw);
-        Py_DecRef(kw);
-        Py_DecRef(t);
-        wrap(r)
-    }
+    })
 }
 
 /// Python の `bool` を読む。`bool` でなければ失敗（真偽値への暗黙の変換をしない、論点 11）。
@@ -717,17 +752,19 @@ pub unsafe extern "C" fn wys_py_call_kw(
 /// `h` は生存しているハンドル。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_to_bool(h: *const Header) -> bool {
-    // SAFETY: 関数の安全条件どおり。
-    let (t, f) = unsafe {
-        let o = inner(h);
-        (Py_IsTrue(o) != 0, Py_IsFalse(o) != 0)
-    };
-    if !(t || f) {
-        fail("TypeError", "expected a bool");
-        return false;
-    }
-    succeed();
-    t
+    wys_runtime::task::on_main_stack(|| {
+        // SAFETY: 関数の安全条件どおり。
+        let (t, f) = unsafe {
+            let o = inner(h);
+            (Py_IsTrue(o) != 0, Py_IsFalse(o) != 0)
+        };
+        if !(t || f) {
+            fail("TypeError", "expected a bool");
+            return false;
+        }
+        succeed();
+        t
+    })
 }
 
 /// Python の `str` を本言語の文字列（参照カウント 1）にする。`str` でなければ失敗（空の文字列を返す）。
@@ -736,17 +773,19 @@ pub unsafe extern "C" fn wys_py_to_bool(h: *const Header) -> bool {
 /// `h` は生存しているハンドル。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_to_str(h: *const Header) -> *mut Header {
-    // SAFETY: 関数の安全条件どおり。
-    match unsafe { py_str(inner(h)) } {
-        Some(s) => {
-            succeed();
-            embed::new_object(s.as_bytes())
+    wys_runtime::task::on_main_stack(|| {
+        // SAFETY: 関数の安全条件どおり。
+        match unsafe { py_str(inner(h)) } {
+            Some(s) => {
+                succeed();
+                embed::new_object(s.as_bytes())
+            }
+            None => {
+                capture_error();
+                embed::new_object(b"")
+            }
         }
-        None => {
-            capture_error();
-            embed::new_object(b"")
-        }
-    }
+    })
 }
 
 /// Python の `None` か。失敗しない。
@@ -755,8 +794,10 @@ pub unsafe extern "C" fn wys_py_to_str(h: *const Header) -> *mut Header {
 /// `h` は生存しているハンドル。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_is_none(h: *const Header) -> bool {
-    // SAFETY: 関数の安全条件どおり。
-    unsafe { Py_IsNone(inner(h)) != 0 }
+    wys_runtime::task::on_main_stack(|| {
+        // SAFETY: 関数の安全条件どおり。
+        unsafe { Py_IsNone(inner(h)) != 0 }
+    })
 }
 
 /// ハンドルの release。参照カウントが 0 になったら Python の参照を手放してから解放する（論点 6）。
@@ -765,30 +806,34 @@ pub unsafe extern "C" fn wys_py_is_none(h: *const Header) -> bool {
 /// `h` は null か、生存しているハンドル。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_release(h: *mut Header) {
-    if h.is_null() {
-        return;
-    }
-    // 参照カウントの統計（`WYS_RC_STATS`）: ほかの型の release は生成コードが数えるが、ハンドルの release は
-    // ランタイムのこの関数なので、ここで数える（数えるだけなので、統計を取らないビルドでも害はない）
-    wys_runtime::wys_stat_releases.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    // SAFETY: 関数の安全条件どおり。終了処理の後（生成コードからは起きない）は Python の参照に触れない。
-    unsafe {
-        if embed::release_last(h) {
-            if Py_IsInitialized() != 0 {
-                Py_DecRef(inner(h));
-            }
-            wys_runtime::wys_free_object(h);
+    wys_runtime::task::on_main_stack(|| {
+        if h.is_null() {
+            return;
         }
-    }
+        // 参照カウントの統計（`WYS_RC_STATS`）: ほかの型の release は生成コードが数えるが、ハンドルの release は
+        // ランタイムのこの関数なので、ここで数える（数えるだけなので、統計を取らないビルドでも害はない）
+        wys_runtime::wys_stat_releases.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: 関数の安全条件どおり。終了処理の後（生成コードからは起きない）は Python の参照に触れない。
+        unsafe {
+            if embed::release_last(h) {
+                if Py_IsInitialized() != 0 {
+                    Py_DecRef(inner(h));
+                }
+                wys_runtime::wys_free_object(h);
+            }
+        }
+    })
 }
 
 /// Python の終了処理（`Py_FinalizeEx`、論点 7）。初期化していなければ何もしない。失敗しても終了コードは変えない。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_py_finish() {
-    // SAFETY: GIL を持っているスレッドから呼ぶ。
-    unsafe {
-        if Py_IsInitialized() != 0 && Py_FinalizeEx() < 0 {
-            eprintln!("warning: Python finalization reported an error");
+    wys_runtime::task::on_main_stack(|| {
+        // SAFETY: GIL を持っているスレッドから呼ぶ。
+        unsafe {
+            if Py_IsInitialized() != 0 && Py_FinalizeEx() < 0 {
+                eprintln!("warning: Python finalization reported an error");
+            }
         }
-    }
+    })
 }
