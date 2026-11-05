@@ -507,7 +507,12 @@ pub unsafe extern "C" fn wys_py_to_list(h: *const Header) -> *mut ListObj {
             fail("TypeError", "expected a list or tuple");
             return wys_runtime::wys_list_new(8, 0);
         }
-        let n = PySequence_Size(o).max(0);
+        let n = PySequence_Size(o);
+        if n < 0 {
+            // `__len__` が例外を出した（list のサブクラス）: 例外を残さず、失敗にする（PR #85 のレビュー）
+            capture_error();
+            return wys_runtime::wys_list_new(8, 0);
+        }
         let l = wys_runtime::wys_list_new(8, n as i64);
         for i in 0..n {
             let item = PySequence_GetItem(o, i);
@@ -545,6 +550,7 @@ pub unsafe extern "C" fn wys_py_to_dict(h: *const Header) -> *mut DictObj {
         }
         // 先にキーがすべて str か確かめる（途中で失敗して、作りかけの辞書を片付けずに済むように）
         let mut entries = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         let mut pos: isize = 0;
         let (mut k, mut v) = (std::ptr::null_mut(), std::ptr::null_mut());
         while PyDict_Next(o, &mut pos, &mut k, &mut v) != 0 {
@@ -552,6 +558,15 @@ pub unsafe extern "C" fn wys_py_to_dict(h: *const Header) -> *mut DictObj {
                 .then(|| py_str(k))
                 .flatten()
             {
+                // 別々のキー（str のサブクラス）が同じ文字列になることがある。本言語の dict では区別できない
+                // （PR #85 のレビュー）
+                Some(key) if !seen.insert(key.clone()) => {
+                    fail(
+                        "ValueError",
+                        &format!("the dict has more than one key equal to {key:?} as a str"),
+                    );
+                    return wys_runtime::wys_dict_new(KEY_STR, 8);
+                }
                 Some(key) => entries.push((key, v)),
                 None => {
                     PyErr_Clear();

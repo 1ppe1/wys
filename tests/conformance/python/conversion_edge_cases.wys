@@ -1,0 +1,30 @@
+# 変換の途中で起きる失敗も PyError になる（PR #85 のレビュー）
+# expect-stdout: ZeroDivisionError
+# expect-stdout: ValueError
+# expect-stdout: 2
+def eval_py(code: str) -> Result[PyObject, PyError] uses python:
+    builtins = py_import("builtins")?
+    g: dict[str, PyObject] = {}
+    return (builtins.attr("eval")?).call([py_value(code), py_value(g)])
+
+def list_len(code: str) -> Result[int, PyError] uses python:
+    xs = (eval_py(code)?).to_list()?
+    return Ok(len(xs))
+
+def dict_len(code: str) -> Result[int, PyError] uses python:
+    d = (eval_py(code)?).to_dict()?
+    return Ok(len(d))
+
+def show(r: Result[int, PyError]) -> None:
+    match r:
+        case Ok(n):
+            print(n)
+        case Err(e):
+            print(e.kind)
+
+def main() -> None:
+    # __len__ が例外を出す list のサブクラス
+    show(list_len("type('L', (list,), {'__len__': lambda self: 1 // 0})([1])"))
+    # 変換すると同じ文字列になる 2 つのキー（ハッシュと等値を変えた str のサブクラス）
+    show(dict_len("(lambda S: {S('a'): 1, S('a'): 2})(type('S', (str,), {'__hash__': lambda self: id(self), '__eq__': lambda a, b: a is b}))"))
+    show(dict_len("{'a': 1, 'b': 2}"))
