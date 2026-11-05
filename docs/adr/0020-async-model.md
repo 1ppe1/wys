@@ -1,6 +1,6 @@
 # ADR-0020: `async` のモデル（ランタイムのスタックフル・コルーチン、単一スレッド、協調的）
 
-- **状態:** Proposed
+- **状態:** Accepted
 - **日付:** 2026-11-05
 - **関連:** LANG-008、AI-006（M5）、NFR-006、NFR-007、MEM-005、ADR-0005、ADR-0012、ADR-0013、ADR-0014、ADR-0017、ADR-0018（論点 3・14）、`docs/design/memory-model.md`（2.2・2.5・3）、`docs/plans/m4.md`（T9・T10、分割の判断基準）、issue #55、#56
 
