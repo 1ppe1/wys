@@ -1,6 +1,6 @@
 # ADR-0019: `float`（IEEE 754 の倍精度、暗黙の変換なし）
 
-- **状態:** Proposed
+- **状態:** Accepted
 - **日付:** 2026-11-05
 - **関連:** LANG-002、ADR-0006、ADR-0011、ADR-0013、ADR-0015、ADR-0016、ADR-0018（論点 9〜11）、`docs/plans/m4.md`（T12、T7）、issue #58
 
