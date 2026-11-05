@@ -55,7 +55,7 @@ term        = unary { ( "*" | "/" | "//" | "%" ) unary } ;   (* "/" は型検査
 unary       = "-" unary | postfix ;
 postfix     = primary { "." IDENT [ "(" [ args ] ")" ] | "[" expr "]" | "?" } ;   (* 添字 xs[i] *)   (* フィールド参照。名前の並びの後の ( は修飾付きの呼び出し m.f(...) *)
             (* "?" は Result の伝搬（ADR-0013）。-f()? は -(f()?)。"?" の直後に "." / "[" は書けない（E0101。括弧で囲む） *)
-primary     = INT | STRING | "True" | "False" | "None"
+primary     = INT | FLOAT | STRING | "True" | "False" | "None"
             | IDENT [ "(" [ args ] ")" ]
             | "[" [ expr { "," expr } [ "," ] ] "]"   (* リスト *)
             | "{" [ expr ":" expr { "," expr ":" expr } [ "," ] ] "}"   (* 辞書（ADR-0015）。空の {} は型注釈が要る（E0906） *)
@@ -66,6 +66,8 @@ arg         = expr | IDENT "=" expr ;                  (* キーワード引数�
 (* ---------- 字句 ---------- *)
 IDENT       = ( letter | "_" ) { letter | digit | "_" } ;   (* ASCII のみ。予約語を除く *)
 INT         = digit { digit } ;                              (* 0 〜 2^63-1（E0005） *)
+FLOAT       = digit { digit } ( "." digit { digit } [ exponent ] | exponent ) ;   (* ADR-0019。`1.` と `.5` は書けない。無限大になるものは E0009 *)
+exponent    = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
 STRING      = '"' { char | escape } '"' | "'" { char | escape } "'" ;
 escape      = "\" ( "n" | "t" | "r" | "0" | "\" | '"' | "'" ) ;   (* その他は E0006 *)
 comment     = "#" { any character except newline } ;

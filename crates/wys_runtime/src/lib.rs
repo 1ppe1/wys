@@ -713,13 +713,52 @@ pub extern "C" fn wys_arg(i: i64) -> *mut Header {
 
 // ---------------------------------------------------------------- parse_scalar (ADR-0011)
 
-/// `parse_scalar` の分類: 0 = int、1 = bool、2 = str、3 = null。
-#[derive(Debug, PartialEq, Eq)]
+/// `parse_scalar` の分類: 0 = int、1 = bool、2 = str、3 = null、4 = float（ADR-0019 論点 7）。
+#[derive(Debug, PartialEq)]
 enum Scalar {
     Int(i64),
     Bool(bool),
     Str,
     Null,
+    Float(f64),
+}
+
+/// JSON の数値の文法で、小数点か指数を含むもの（`1.5`、`-0.5`、`1e3`）。無限大になるものは含まない。
+fn json_float(bytes: &[u8]) -> Option<f64> {
+    let mut i = usize::from(bytes.first() == Some(&b'-'));
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while *i < bytes.len() && bytes[*i].is_ascii_digit() {
+            *i += 1;
+        }
+        *i > start
+    };
+    if !digits(&mut i) {
+        return None;
+    }
+    let mut fractional = false;
+    if bytes.get(i) == Some(&b'.') {
+        i += 1;
+        if !digits(&mut i) {
+            return None;
+        }
+        fractional = true;
+    }
+    if matches!(bytes.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(bytes.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        if !digits(&mut i) {
+            return None;
+        }
+        fractional = true;
+    }
+    if i != bytes.len() || !fractional {
+        return None;
+    }
+    let v: f64 = std::str::from_utf8(bytes).ok()?.parse().ok()?;
+    v.is_finite().then_some(v)
 }
 
 fn classify(bytes: &[u8]) -> Scalar {
@@ -729,7 +768,9 @@ fn classify(bytes: &[u8]) -> Scalar {
         b"null" => Scalar::Null,
         _ => {
             let digits = bytes.strip_prefix(b"-").unwrap_or(bytes);
-            if !digits.is_empty() && digits.iter().all(u8::is_ascii_digit) {
+            if let Some(f) = json_float(bytes) {
+                Scalar::Float(f)
+            } else if !digits.is_empty() && digits.iter().all(u8::is_ascii_digit) {
                 // 64 ビットに収まらない整数は文字列のまま扱う
                 std::str::from_utf8(bytes)
                     .ok()
@@ -752,7 +793,94 @@ pub unsafe extern "C" fn wys_scalar_kind(s: *const Header) -> i64 {
         Scalar::Bool(_) => 1,
         Scalar::Str => 2,
         Scalar::Null => 3,
+        Scalar::Float(_) => 4,
     }
+}
+
+/// `wys_scalar_kind` が 4（float）の文字列の値。
+///
+/// # Safety
+/// `s` は生存している文字列オブジェクトでなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_scalar_float(s: *const Header) -> f64 {
+    // SAFETY: 関数の安全条件どおり。
+    match classify(unsafe { bytes(s) }) {
+        Scalar::Float(f) => f,
+        _ => 0.0,
+    }
+}
+
+// ---------------------------------------------------------------- float (ADR-0019)
+
+/// Python の `repr(float)` と同じ表記（ADR-0019 論点 6）: 元の値に戻せる最短の 10 進表記。指数が 16 以上か
+/// -5 以下なら指数表記（`1e+16`、`1e-05`）、それ以外は小数点の表記で、整数の値なら `.0` を付ける。
+pub fn float_repr(v: f64) -> String {
+    if v.is_nan() {
+        return "nan".into();
+    }
+    if v.is_infinite() {
+        return if v > 0.0 { "inf" } else { "-inf" }.into();
+    }
+    if v == 0.0 {
+        return if v.is_sign_negative() { "-0.0" } else { "0.0" }.into();
+    }
+    // `{:e}` は最短の桁（例: `1.2345e-7`）を出す
+    let sci = format!("{:e}", v.abs());
+    let (mantissa, exp) = sci.split_once('e').expect("{:e} has an exponent");
+    let exp: i32 = exp.parse().expect("the exponent is an integer");
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let sign = if v < 0.0 { "-" } else { "" };
+    if !(-5 < exp && exp < 16) {
+        let (first, rest) = digits.split_at(1);
+        let frac = if rest.is_empty() {
+            String::new()
+        } else {
+            format!(".{rest}")
+        };
+        let esign = if exp < 0 { '-' } else { '+' };
+        return format!("{sign}{first}{frac}e{esign}{:02}", exp.abs());
+    }
+    // 小数点の位置: 先頭の桁が 10^exp の位
+    let point = exp + 1;
+    let body = if point <= 0 {
+        format!("0.{}{digits}", "0".repeat((-point) as usize))
+    } else if (point as usize) >= digits.len() {
+        format!("{digits}{}.0", "0".repeat(point as usize - digits.len()))
+    } else {
+        let (int, frac) = digits.split_at(point as usize);
+        format!("{int}.{frac}")
+    };
+    format!("{sign}{body}")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_print_float(v: f64) {
+    println!("{}", float_repr(v));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_write_float(v: f64) {
+    print!("{}", float_repr(v));
+}
+
+/// `a / b`。0 での割り算は実行時エラー（ADR-0019 論点 4、Python の `ZeroDivisionError` と同じ）。
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_float_div(a: f64, b: f64) -> f64 {
+    if b == 0.0 {
+        runtime_error("float division by zero");
+    }
+    a / b
+}
+
+/// `int(x)`: 0 の方向に切り捨てる。NaN・無限大・`int` の範囲外は実行時エラー（ADR-0019 論点 3）。
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_float_to_int(v: f64) -> i64 {
+    let t = v.trunc();
+    // i64 の範囲は [-2^63, 2^63)。2^63 は f64 で正確に表せる
+    if !t.is_finite() || t < -9_223_372_036_854_775_808.0 || t >= 9_223_372_036_854_775_808.0 {
+        runtime_error(&format!("cannot convert {} to int", float_repr(v)));
+    }
+    t as i64
 }
 
 /// # Safety
@@ -1064,6 +1192,33 @@ mod tests {
     }
 
     #[test]
+    fn float_repr_matches_python() {
+        // Python 3.14 の repr() で確かめた値
+        for (v, want) in [
+            (1.5, "1.5"),
+            (4.0, "4.0"),
+            (0.1 + 0.2, "0.30000000000000004"),
+            (1e10, "10000000000.0"),
+            (1e15, "1000000000000000.0"),
+            (1e16, "1e+16"),
+            (1.5e16, "1.5e+16"),
+            (0.0001, "0.0001"),
+            (0.00001, "1e-05"),
+            (1.5e-3, "0.0015"),
+            (123.456, "123.456"),
+            (-2.5, "-2.5"),
+            (-0.0, "-0.0"),
+            (5e-324, "5e-324"),
+            (1.7976931348623157e308, "1.7976931348623157e+308"),
+            (f64::INFINITY, "inf"),
+            (f64::NEG_INFINITY, "-inf"),
+            (f64::NAN, "nan"),
+        ] {
+            assert_eq!(float_repr(v), want, "{v:?}");
+        }
+    }
+
+    #[test]
     fn classify_matches_adr_0011() {
         assert_eq!(classify(b"42"), Scalar::Int(42));
         assert_eq!(classify(b"-7"), Scalar::Int(-7));
@@ -1072,7 +1227,13 @@ mod tests {
         assert_eq!(classify(b"null"), Scalar::Null);
         assert_eq!(classify(b"True"), Scalar::Str);
         assert_eq!(classify(b"-"), Scalar::Str);
-        assert_eq!(classify(b"1.5"), Scalar::Str);
+        assert_eq!(classify(b"1.5"), Scalar::Float(1.5));
+        assert_eq!(classify(b"-0.5"), Scalar::Float(-0.5));
+        assert_eq!(classify(b"1e3"), Scalar::Float(1000.0));
+        assert_eq!(classify(b"1."), Scalar::Str);
+        assert_eq!(classify(b".5"), Scalar::Str);
+        assert_eq!(classify(b"inf"), Scalar::Str);
+        assert_eq!(classify(b"1e400"), Scalar::Str);
         assert_eq!(classify(b"99999999999999999999"), Scalar::Str);
         assert_eq!(classify(b""), Scalar::Str);
     }

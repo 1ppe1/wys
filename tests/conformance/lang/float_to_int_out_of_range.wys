@@ -1,0 +1,5 @@
+# int(x) は NaN・無限大・範囲外で実行時エラー（ADR-0019 論点 3）
+# expect-exit: 101
+# expect-stderr-contains: cannot convert inf to int
+def main() -> None:
+    print(int(1e308 * 10.0))

@@ -717,6 +717,7 @@ impl Resolver<'_> {
                 self.expr(index);
             }
             ExprKind::Int(_)
+            | ExprKind::Float(_)
             | ExprKind::Bool(_)
             | ExprKind::Str(_)
             | ExprKind::None

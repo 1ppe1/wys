@@ -1,0 +1,4 @@
+# float の `//` は今は使えない（ADR-0019 論点 4）
+# expect-error: E0207 4:11
+def main() -> None:
+    print(7.0 // 2.0)

@@ -38,7 +38,7 @@ impl DropInfo {
 
     fn needs_drop(&mut self, p: &Program, t: Ty) -> bool {
         match t {
-            Ty::Int | Ty::Bool => false,
+            Ty::Int | Ty::Bool | Ty::Float => false,
             Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py => true,
             Ty::Union(u) => {
                 if let Some(v) = self.unions[u.0 as usize] {
@@ -68,7 +68,7 @@ impl DropInfo {
     /// `new` で全型を計算済みなので、ここでは表を引くだけ。
     pub fn get(&self, t: Ty) -> bool {
         match t {
-            Ty::Int | Ty::Bool => false,
+            Ty::Int | Ty::Bool | Ty::Float => false,
             Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py => true,
             Ty::Union(u) => self.unions[u.0 as usize].unwrap_or(false),
             Ty::Record(r) => self.records[r.0 as usize].unwrap_or(false),

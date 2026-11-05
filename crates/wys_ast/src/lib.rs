@@ -52,6 +52,9 @@ pub const BUILTINS: &[&str] = &[
     "range",
     "Ok",
     "Err",
+    // 数値の変換（ADR-0019 論点 3）
+    "float",
+    "int",
 ];
 
 /// `import a.b [as c]`（`names` が `None`）または `from a.b import f [as g], ...`。
@@ -217,6 +220,8 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Int(i64),
+    /// 浮動小数点のリテラル（ADR-0019）
+    Float(f64),
     Bool(bool),
     Str(String),
     None,

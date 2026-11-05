@@ -1,0 +1,5 @@
+# float は dict のキーにできない（ADR-0019 論点 5）
+# expect-error: E0907 4:9
+def main() -> None:
+    d = {1.5: "a"}
+    print(len(d))

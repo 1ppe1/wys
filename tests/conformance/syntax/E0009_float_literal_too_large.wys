@@ -1,0 +1,5 @@
+# 丸めると無限大になる浮動小数点リテラル（ADR-0019 論点 2）
+# expect-error: E0009 4:9
+def main() -> None:
+    x = 1e400
+    print(x)

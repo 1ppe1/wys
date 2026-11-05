@@ -69,7 +69,7 @@ bb0:
 
 ## `Unknown`（M2 T5、ADR-0011）
 
-- IR には `Unknown` 型はない。lowering が `int | bool | str | None` の Union に置き換える。
+- IR には `Unknown` 型はない。lowering が `int | bool | str | float | None` の Union に置き換える（`float` は ADR-0019 で足した）。
 - 外部入力は組み込み関数（`arg_count`、`arg_exists`、`arg_str`、`scalar_kind`、`scalar_int`、`scalar_bool`）を lowering が組み合わせて作る。ランタイムとの境界はスカラーとポインタだけ。
 
 ## `wys test`（M2 T7）
@@ -88,6 +88,13 @@ bb0:
 - `eq` / `ne` は、`int` / `bool` に加えて、すべての型の値どうしに使える（被演算子の型は同じ）。`str` は `@wys_str_eq`、`list` / `dict` / Union / レコードは、バックエンドが型ごとに生成する `@wys_eq_list{i}` / `@wys_eq_dict{i}` / `@wys_eq_u{i}` / `@wys_eq_r{i}` を呼ぶ。生成するのは、比較に使われる型とその構成要素の型だけ。
 - 比較は構造的: `list` は長さと順序どおりの要素、`dict` は要素数と、各キーが相手にあって値が等しいこと（順序は問わない）、Union（`Result` を含む）はタグと payload、レコードはフィールドごと。
 - 被演算子は借用で読み、参照カウントは変えない。型の違う値の比較（`o == 1`）は、lowering が広い方の Union に揃えてから比べる。
+
+## float（M4 T12、ADR-0019）
+
+- 型 `float` は IEEE 754 の倍精度の値型（LLVM の `double`）。定数は `f64` のビット列で持ち、`dump-ir` には 10 進で出す。
+- `add` / `sub` / `mul` / `div` と比較を `float` どうしに使える。`div` は `float` だけで、`floordiv` / `mod` は `int` だけ。結果は IEEE 754 のとおり（あふれは無限大）。`div` はランタイムの `@wys_float_div` を呼び、0 での割り算を実行時エラーにする。比較は順序付き（`fcmp olt` など。NaN を含めば偽）で、`ne` だけは `une`（NaN を含めば真）。
+- 単項の `-` は lowering が `-0.0 - x` にする（`0.0 - x` だと負のゼロの符号を失う）。
+- 組み込み関数 `float_from_int`（`sitofp`）、`int_from_float`（`@wys_float_to_int`。NaN・無限大・範囲外は実行時エラー）、`print_float`、`scalar_float`（`parse_scalar`。`scalar_kind` の 4）。表示は Python の `repr` と同じ書式（ランタイムの `float_repr`）。
 
 ## Python のハンドル（M4 T5、ADR-0018）
 

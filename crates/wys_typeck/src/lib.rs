@@ -22,6 +22,8 @@ pub enum Ty {
     Int,
     Bool,
     Str,
+    /// IEEE 754 の倍精度（ADR-0019）
+    Float,
     /// 構造的レコード（ADR-0007、不変）。
     Record(RecordId),
     /// 型パラメータ（`def f[T]` の `T`）。中身の分からない型として扱い、単相化で具体的な型に置き換える。
@@ -121,7 +123,7 @@ impl Types {
         members.dedup();
         if members.contains(&Ty::Unknown) {
             // Unknown はスカラーの値をすべて含む
-            members.retain(|m| !matches!(m, Ty::Int | Ty::Bool | Ty::Str | Ty::None));
+            members.retain(|m| !matches!(m, Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::None));
         }
         match members.len() {
             0 => Ty::Error,
@@ -163,6 +165,7 @@ impl Types {
         let name = |t: Ty| self.name_within(t, depth.saturating_sub(1));
         match t {
             Ty::Int => "int".into(),
+            Ty::Float => "float".into(),
             Ty::Bool => "bool".into(),
             Ty::Str => "str".into(),
             Ty::None => "None".into(),
@@ -238,7 +241,7 @@ impl Types {
     pub fn member_fits(&self, a: Ty, e: Ty) -> bool {
         match (a, e) {
             _ if a == e => true,
-            (Ty::Int | Ty::Bool | Ty::Str | Ty::None, Ty::Unknown) => true,
+            (Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::None, Ty::Unknown) => true,
             (Ty::Record(x), Ty::Record(y)) => {
                 let have = &self.records[x.0 as usize].fields;
                 self.records[y.0 as usize]
@@ -477,7 +480,7 @@ impl Types {
                 return true;
             }
             match t {
-                Ty::Int | Ty::Bool | Ty::Str | Ty::None => true,
+                Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::None => true,
                 Ty::Param(_) | Ty::Unknown | Ty::Error => false,
                 Ty::List(l) => go(ts, ts.list_elem(l), seen),
                 Ty::Dict(d) => {
@@ -811,7 +814,11 @@ fn unused_locals(f: &FuncDef) -> Vec<Diagnostic> {
                 expr(base, reads);
                 expr(index, reads);
             }
-            ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::None => {}
+            ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Str(_)
+            | ExprKind::None => {}
         }
     }
     let mut binds = Vec::new();
@@ -956,7 +963,7 @@ fn declare_types(cx: &mut Ctx, module: &Module) {
         let name = &t.name.name;
         if matches!(
             name.as_str(),
-            "int" | "bool" | "str" | "None" | "Result" | "list" | "dict"
+            "int" | "bool" | "str" | "float" | "None" | "Result" | "list" | "dict"
         ) {
             cx.diags.push(Diagnostic::error(
                 "E0209",
@@ -1255,6 +1262,7 @@ impl Ctx {
                 "int" => Ty::Int,
                 "bool" => Ty::Bool,
                 "str" => Ty::Str,
+                "float" => Ty::Float,
                 "None" => Ty::None,
                 "Unknown" => Ty::Unknown,
                 other if self.aliases.contains_key(other) => self.resolve_alias(other),
@@ -1796,11 +1804,11 @@ impl<'a> FnCk<'a> {
         let subject_path = self.path(subject);
         let subject_declared = subject_path.as_ref().map(|(_, d)| *d);
         let subject_var = subject_path.map(|(k, _)| k);
-        // Unknown は int / bool / str / None に加えて「将来増える種類」を持つ開いた型。
+        // Unknown は int / bool / str / float / None に加えて「将来増える種類」を持つ開いた型（float は ADR-0019）。
         // 最後の Unknown は `case _:` だけが網羅できる（ADR-0011）。
         let members = (st != Ty::Error).then(|| {
             if st == Ty::Unknown {
-                vec![Ty::Int, Ty::Bool, Ty::Str, Ty::None, Ty::Unknown]
+                vec![Ty::Int, Ty::Bool, Ty::Str, Ty::Float, Ty::None, Ty::Unknown]
             } else {
                 self.cx.types.members(st)
             }
@@ -2074,6 +2082,7 @@ impl<'a> FnCk<'a> {
                                 "int" => Ty::Int,
                                 "bool" => Ty::Bool,
                                 "str" => Ty::Str,
+                                "float" => Ty::Float,
                                 _ => Ty::Error,
                             },
                             _ => Ty::None,
@@ -2203,7 +2212,7 @@ impl<'a> FnCk<'a> {
             PatternKind::Wildcard | PatternKind::Bind(..) => Ty::Error,
             PatternKind::Type(name) if self.cx.aliases.contains_key(name) => {
                 match self.cx.resolve_alias(name) {
-                    t @ (Ty::Int | Ty::Bool | Ty::Str | Ty::Error) => t,
+                    t @ (Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Error) => t,
                     Ty::Record(_) => {
                         self.cx.diags.push(
                             Diagnostic::error(
@@ -2230,10 +2239,11 @@ impl<'a> FnCk<'a> {
                 "int" => Ty::Int,
                 "bool" => Ty::Bool,
                 "str" => Ty::Str,
+                "float" => Ty::Float,
                 other => {
                     self.cx.diags.push(
                         Diagnostic::error("E0203", format!("unknown type `{other}` in pattern"), span)
-                            .with_hint("type patterns are `int()`, `bool()` and `str()`; use `None` or `_` for the others"),
+                            .with_hint("type patterns are `int()`, `bool()`, `str()` and `float()`; use `None` or `_` for the others"),
                     );
                     Ty::Error
                 }
@@ -3007,6 +3017,7 @@ impl<'a> FnCk<'a> {
     fn expr_inner(&mut self, e: &Expr, env: &Env) -> Ty {
         match &e.kind {
             ExprKind::Int(_) => Ty::Int,
+            ExprKind::Float(_) => Ty::Float,
             ExprKind::Bool(_) => Ty::Bool,
             ExprKind::Str(_) => Ty::Str,
             ExprKind::None => Ty::None,
@@ -3235,8 +3246,8 @@ impl<'a> FnCk<'a> {
             UnaryOp::Neg => (Ty::Int, "-"),
             UnaryOp::Not => (Ty::Bool, "not"),
         };
-        if t == want {
-            return want;
+        if t == want || (op == UnaryOp::Neg && t == Ty::Float) {
+            return t;
         }
         let desc = format!(
             "operator `{sym}` cannot be applied to `{}`",
@@ -3291,11 +3302,34 @@ impl<'a> FnCk<'a> {
         if lt == Ty::Error || rt == Ty::Error {
             return Ty::Error;
         }
-        if op == BinOp::Div {
+        if op == BinOp::Div && lt == Ty::Int && rt == Ty::Int {
+            // `/` は float だけ（ADR-0019 論点 4）。暗黙に float にしない
             self.cx.diags.push(
-                Diagnostic::error("E0207", "operator `/` is not supported yet", span)
-                    .with_cause("`/` produces a float, and floats are not supported yet")
-                    .with_hint("use `//` for integer (floor) division"),
+                Diagnostic::error(
+                    "E0207",
+                    "operator `/` cannot be applied to `int` and `int`",
+                    span,
+                )
+                .with_cause("`/` divides floats; there are no implicit conversions")
+                .with_hint("use `//` for integer (floor) division, or `float(a) / float(b)`"),
+            );
+            return Ty::Error;
+        }
+        if matches!((lt, rt), (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int)) {
+            // int と float を混ぜた演算（ADR-0019 論点 3）
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E0207",
+                    format!(
+                        "operator `{}` cannot be applied to `{}` and `{}`",
+                        op.symbol(),
+                        self.cx.name(lt),
+                        self.cx.name(rt)
+                    ),
+                    span,
+                )
+                .with_cause("there are no implicit conversions between `int` and `float`")
+                .with_hint("convert explicitly with `float(n)` or `int(x)`"),
             );
             return Ty::Error;
         }
@@ -3309,17 +3343,18 @@ impl<'a> FnCk<'a> {
             match op {
                 // 文字列の連結（M3 T2b）
                 BinOp::Add if l == Ty::Str && r == Ty::Str => Some(Ty::Str),
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::FloorDiv | BinOp::Mod => {
-                    (l == Ty::Int && r == Ty::Int).then_some(Ty::Int)
+                BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                    (l == r && matches!(l, Ty::Int | Ty::Float)).then_some(l)
                 }
+                BinOp::FloorDiv | BinOp::Mod => (l == Ty::Int && r == Ty::Int).then_some(Ty::Int),
+                BinOp::Div => (l == Ty::Float && r == Ty::Float).then_some(Ty::Float),
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    (l == Ty::Int && r == Ty::Int).then_some(Ty::Bool)
+                    (l == r && matches!(l, Ty::Int | Ty::Float)).then_some(Ty::Bool)
                 }
-                BinOp::Eq | BinOp::Ne => {
-                    (l == r && matches!(l, Ty::Int | Ty::Bool | Ty::Str)).then_some(Ty::Bool)
-                }
+                BinOp::Eq | BinOp::Ne => (l == r
+                    && matches!(l, Ty::Int | Ty::Bool | Ty::Str | Ty::Float))
+                .then_some(Ty::Bool),
                 BinOp::And | BinOp::Or => (l == Ty::Bool && r == Ty::Bool).then_some(Ty::Bool),
-                BinOp::Div => None,
                 // `in` は `in_expr` で検査する
                 BinOp::In | BinOp::NotIn => None,
             }
@@ -3845,11 +3880,13 @@ impl<'a> FnCk<'a> {
                 }
                 return Ty::None;
             }
-            "arg_count" | "arg" | "parse_scalar" | "len" => {
-                // 外部入力の入口（ADR-0011）と、文字列の長さ（M3 T2b）
+            "arg_count" | "arg" | "parse_scalar" | "len" | "float" | "int" => {
+                // 外部入力の入口（ADR-0011）、文字列の長さ（M3 T2b）、数値の変換（ADR-0019 論点 3）
                 let (params, ret): (&[Ty], Ty) = match callee.name.as_str() {
                     "arg_count" => (&[], Ty::Int),
                     "len" => (&[Ty::Str], Ty::Int),
+                    "float" => (&[Ty::Int], Ty::Float),
+                    "int" => (&[Ty::Float], Ty::Int),
                     "arg" => (&[Ty::Int], self.cx.types.union([Ty::Str, Ty::None])),
                     _ => (&[Ty::Str], Ty::Unknown),
                 };
@@ -4029,6 +4066,7 @@ fn case_text(t: Ty) -> String {
         Ty::Int => "`case int():`".into(),
         Ty::Bool => "`case bool():`".into(),
         Ty::Str => "`case str():`".into(),
+        Ty::Float => "`case float():`".into(),
         Ty::None => "`case None:`".into(),
         _ => "`case _:`".into(),
     }
@@ -4221,7 +4259,7 @@ mod tests {
             vec!["E0209"]
         );
         assert_eq!(
-            run("def f(x: float) -> None:\n    pass\n\ndef main() -> None:\n    pass\n"),
+            run("def f(x: decimal) -> None:\n    pass\n\ndef main() -> None:\n    pass\n"),
             vec!["E0203"]
         );
         assert_eq!(

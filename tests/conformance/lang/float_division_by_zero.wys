@@ -1,0 +1,8 @@
+# float の 0 での割り算は実行時エラー（ADR-0019 論点 4。Python の ZeroDivisionError と同じ）
+# expect-stdout: before
+# expect-exit: 101
+# expect-stderr-contains: float division by zero
+def main() -> None:
+    zero = 0.0
+    print("before")
+    print(1.0 / zero)
