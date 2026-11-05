@@ -1,0 +1,22 @@
+# フィールドのないレコード（AddressSanitizer で落ちていた）
+# expect-stdout: 3
+# expect-stdout: [E(), E(), E()]
+# expect-stdout: True
+# expect-stdout: [W(e=E(), n=1)]
+# expect-stdout: False
+# expect-stdout: {"k": E()}
+type E = {}
+type W = {e: E, n: int}
+
+def main() -> None:
+    xs: list[E] = [E(), E()]
+    xs.append(E())
+    print(len(xs))
+    print(xs)
+    print(xs[0] == E())
+    ws = [W(e=E(), n=1)]
+    print(ws)
+    o: E | None = E()
+    print(o is None)
+    d = {"k": E()}
+    print(d)

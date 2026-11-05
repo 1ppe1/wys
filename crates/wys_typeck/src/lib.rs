@@ -500,6 +500,47 @@ impl Types {
         go(self, t, &mut HashSet::new())
     }
 
+    /// 型引数を置き換えた結果、`None` だけを持つ場所（レコードのフィールド、`dict` の値）ができたか。
+    /// できていれば、その場所の説明（`field `second` of `Pair``）を返す。型の定義では E0215 で禁じているが、
+    /// Generic な型に `None` を与えると置き換えで現れる。
+    pub fn none_slot(&self, t: Ty) -> Option<String> {
+        fn go(ts: &Types, t: Ty, seen: &mut HashSet<Ty>) -> Option<String> {
+            if !seen.insert(t) {
+                return None;
+            }
+            match t {
+                Ty::List(l) => go(ts, ts.list_elem(l), seen),
+                Ty::Dict(d) => {
+                    let (k, v) = ts.dict_args(d);
+                    if v == Ty::None {
+                        return Some("the value of a dict".into());
+                    }
+                    go(ts, k, seen).or_else(|| go(ts, v, seen))
+                }
+                Ty::Result(r) => {
+                    let (o, e) = ts.result_args(r);
+                    go(ts, o, seen).or_else(|| go(ts, e, seen))
+                }
+                Ty::Union(_) => ts.members(t).into_iter().find_map(|m| go(ts, m, seen)),
+                Ty::Record(id) => {
+                    let def = ts.record_def(id);
+                    def.fields.iter().find_map(|(n, f)| {
+                        if *f == Ty::None {
+                            Some(format!(
+                                "field `{n}` of `{}`",
+                                def.name.as_deref().unwrap_or("record")
+                            ))
+                        } else {
+                            go(ts, *f, seen)
+                        }
+                    })
+                }
+                _ => None,
+            }
+        }
+        go(self, t, &mut HashSet::new())
+    }
+
     pub fn record_def(&self, id: RecordId) -> &RecordDef {
         &self.records[id.0 as usize]
     }
@@ -1060,7 +1101,15 @@ impl Ctx {
                     return Ty::Error;
                 }
                 let map: Subst = params.into_iter().zip(arg_tys).collect();
-                self.types.subst(body, &map)
+                let ty = self.types.subst(body, &map);
+                if let Some(slot) = self.types.none_slot(ty) {
+                    self.diags.push(
+                        none_type_arg_error(&slot, t.span)
+                            .with_hint("use an optional type argument such as `int | None`"),
+                    );
+                    return Ty::Error;
+                }
+                ty
             }
             TypeExprKind::Name(name) => match name.as_str() {
                 "int" => Ty::Int,
@@ -3183,7 +3232,16 @@ impl<'a> FnCk<'a> {
                 }
                 let what = format!("record `{}`", callee.name);
                 self.require_inferred(&params, &mut map, &what, span);
-                self.cx.types.subst(body, &map)
+                let ty = self.cx.types.subst(body, &map);
+                if let Some(slot) = self.cx.types.none_slot(ty) {
+                    self.cx.diags.push(
+                        none_type_arg_error(&slot, span).with_hint(
+                            "the type argument is inferred from the field values: pass a value of an optional type, e.g. `v: int | None = None`",
+                        ),
+                    );
+                    return Ty::Error;
+                }
+                ty
             }
             None => self.cx.resolve_alias(&callee.name),
         };
@@ -3758,6 +3816,16 @@ impl<'a> FnCk<'a> {
 /// `dict` のキーに使える型（ADR-0015）。
 fn valid_dict_key(k: Ty) -> bool {
     matches!(k, Ty::Int | Ty::Bool | Ty::Str | Ty::Error)
+}
+
+/// Generic な型に `None` を与えて、フィールドや `dict` の値が `None` だけになった（E0215）。
+fn none_type_arg_error(slot: &str, span: Span) -> Diagnostic {
+    Diagnostic::error(
+        "E0215",
+        format!("this type argument makes {slot} have type `None`"),
+        span,
+    )
+    .with_cause("fields and dict values cannot have type `None`")
 }
 
 fn dict_key_error(name: &str, span: Span) -> Diagnostic {

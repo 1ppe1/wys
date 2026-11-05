@@ -39,7 +39,7 @@ CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は 
 |---|---|
 | AC-002（`None` の可能性がある値の未検証利用を拒否） | **合格（M2 T1a / T1b）**。拒否: `types/E0301_*`。検査後の値が正しく動くこと: `lang/optional_*`、`lang/union_*` |
 | LANG-004（`match` と網羅性検査、Generics） | **合格（M2 T2 / T4）**。`lang/match_*`、`lang/generic_*`、`types/E030x_*`・`W0301_*`・`E040x_*`、e2e の `warnings_are_reported_but_do_not_fail` |
-| LANG-003 / LANG-005（レコード型、構造的な幅部分型） | **合格（M2 T3）**。`lang/record_*`、`types/E05xx_*`・`E0304_*` |
+| LANG-003 / LANG-005（レコード型、構造的な幅部分型） | **合格（M2 T3）**。`lang/record_*`、`lang/empty_record`（フィールドのないレコードを `list` / `dict` / Union に入れる。AddressSanitizer モードを含む）、`types/E05xx_*`・`E0304_*`・`E0215_generic_*`（Generic な型に `None` を与える） |
 | DX-005（AI 修正ループ、PoC5） | **準備済み・未計測（M2 T9）**。ケース20件と `scripts/poc5/verify.sh`（CI）。計測は `scripts/poc5/run.sh`（ユーザー実行）。結果は `docs/poc/poc5-results.md` |
 | DX-001（`fmt`） | **合格（M2 T8）**。`wys_fmt` の `formatting_preserves_tokens_and_is_idempotent`（全 Conformance ケースと例で、トークン列が変わらないことと冪等性）、e2e の `wys_fmt_rewrites_and_checks`、CI で `examples/` の `fmt --check` |
 | DX-001（`test`） | **合格（M2 T7）**。e2e の `wys_test_*`、`types/E0801_*`（`# expect-mode: test`） |
