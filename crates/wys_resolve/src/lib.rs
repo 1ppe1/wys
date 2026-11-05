@@ -274,7 +274,7 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
             hidden: HashSet::new(),
             own_name: &m.name,
             own: &defs[mi],
-            locals: HashSet::new(),
+            locals: HashMap::new(),
             used: HashSet::new(),
         };
         for t in &mut m.ast.types {
@@ -292,7 +292,7 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
         for f in &mut m.ast.funcs {
             f.name.name = defs[mi][&f.name.name].internal.clone();
             r.hidden = f.type_params.iter().map(|p| p.name.clone()).collect();
-            r.locals = f.params.iter().map(|p| p.name.name.clone()).collect();
+            r.locals = f.params.iter().map(|p| (p.name.name.clone(), 0)).collect();
             collect_locals(&f.body, &mut r.locals);
             for p in &mut f.params {
                 r.type_expr(&mut p.ty);
@@ -440,15 +440,18 @@ fn lookup(
     Some(def.internal.clone())
 }
 
-/// 関数の本体で束縛する名前（代入先、`for` の変数、`case Ok(x)` の束縛）。スコープは区別しない。
-fn collect_locals(stmts: &[Stmt], out: &mut HashSet<String>) {
+/// 関数の本体で束縛する名前（代入先、`for` の変数、`case Ok(x)` の束縛）と、最初に束縛する位置。
+/// スコープは区別しない。型検査はローカル変数を出てきた順に登録するので、それより前の使用はモジュールの参照になる。
+fn collect_locals(stmts: &[Stmt], out: &mut HashMap<String, u32>) {
+    let bind = |id: &Ident, out: &mut HashMap<String, u32>| {
+        let at = out.entry(id.name.clone()).or_insert(id.span.start);
+        *at = (*at).min(id.span.start);
+    };
     for s in stmts {
         match &s.kind {
-            StmtKind::Assign { target, .. } => {
-                out.insert(target.name.clone());
-            }
+            StmtKind::Assign { target, .. } => bind(target, out),
             StmtKind::For { var, body, .. } => {
-                out.insert(var.name.clone());
+                bind(var, out);
                 collect_locals(body, out);
             }
             StmtKind::If {
@@ -466,7 +469,7 @@ fn collect_locals(stmts: &[Stmt], out: &mut HashSet<String>) {
             StmtKind::Match { arms, .. } => {
                 for a in arms {
                     if let PatternKind::Bind(_, Some(v)) = &a.pattern.kind {
-                        out.insert(v.name.clone());
+                        bind(v, out);
                     }
                     collect_locals(&a.body, out);
                 }
@@ -490,8 +493,9 @@ struct Resolver<'a> {
     /// このモジュールの名前と定義（自分自身への修飾参照 `lib.f` を許す）
     own_name: &'a str,
     own: &'a HashMap<String, Def>,
-    /// いま解決している関数のローカル変数と引数。`xs.append(1)` はメソッド呼び出しで、モジュールの参照ではない
-    locals: HashSet<String>,
+    /// いま解決している関数のローカル変数と引数、最初に束縛する位置（引数は 0）。
+    /// `xs.append(1)` はメソッド呼び出しで、モジュールの参照ではない
+    locals: HashMap<String, u32>,
     /// 参照した import の名前（使われない import の警告 W0202 用）
     used: HashSet<String>,
 }
@@ -620,7 +624,10 @@ impl Resolver<'_> {
         // `m.f(...)`: 受け手がローカル変数でなく、モジュール（別名、自分自身、読み込まれたモジュール）の名前なら、
         // メソッド呼び出しではなく修飾付きの呼び出し（M4 T4）。ローカル変数が同じ名前のモジュールを隠す
         if let ExprKind::MethodCall { receiver, .. } = &e.kind
-            && !self.locals.contains(&receiver.name)
+            && !self
+                .locals
+                .get(&receiver.name)
+                .is_some_and(|&at| at < receiver.span.start)
             && (self.modules.contains_key(&receiver.name)
                 || receiver.name == self.own_name
                 || self.index.contains_key(&receiver.name))

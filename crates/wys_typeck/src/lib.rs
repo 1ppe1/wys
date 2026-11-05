@@ -3102,10 +3102,40 @@ impl<'a> FnCk<'a> {
                 receiver,
                 method,
                 args,
-                ..
+                kwargs,
             } => {
                 let span = Span::new(receiver.span.start, method.span.end);
-                if self.vars.contains_key(&receiver.name) {
+                if let Some(var) = self.vars.get(&receiver.name) {
+                    let decl = var.decl;
+                    if !env.contains_key(&receiver.name) {
+                        // 受け手も「代入の前の使用」を検査する（`len(xs)` と同じ）
+                        self.cx.diags.push(
+                            Diagnostic::error(
+                                "E0204",
+                                format!(
+                                    "variable `{}` may be used before it is assigned",
+                                    receiver.name
+                                ),
+                                receiver.span,
+                            )
+                            .with_cause("it is not assigned on every path that reaches this use")
+                            .with_related(
+                                RelatedKind::Variable,
+                                &receiver.name,
+                                Some(decl),
+                            ),
+                        );
+                    }
+                    if let Some((k, _)) = kwargs.first() {
+                        self.cx.diags.push(Diagnostic::error(
+                            "E0205",
+                            format!("`{}` takes no keyword arguments", method.name),
+                            k.span,
+                        ));
+                        for (_, v) in kwargs {
+                            self.expr(v, env);
+                        }
+                    }
                     self.method_call(&receiver.name, &method.name, span, args, e.span, env)
                 } else {
                     // 名前解決がモジュールの参照に直さなかった（ローカル変数でもモジュールでもない）

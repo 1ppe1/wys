@@ -1,0 +1,10 @@
+# ローカル変数の判定は位置で行う: 束縛より前の `m.f()` はモジュールの参照、後の `m.append()` はメソッド（M4 T4）
+# expect-stdout: 2
+# expect-stdout: 1
+import lib
+
+def main() -> None:
+    print(lib.h())
+    n = lib.f()
+    lib = [n]
+    print(len(lib))

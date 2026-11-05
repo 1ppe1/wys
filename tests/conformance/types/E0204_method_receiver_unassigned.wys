@@ -1,0 +1,8 @@
+# メソッドの受け手も「代入の前の使用」を検査する
+# expect-error: E0204 8:5
+
+def main() -> None:
+    c = arg_count() > 5
+    if c:
+        xs = [1]
+    xs.append(2)
