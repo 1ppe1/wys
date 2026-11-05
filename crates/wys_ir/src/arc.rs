@@ -387,7 +387,12 @@ fn keeps_places(inst: &Inst) -> bool {
         | Inst::DictSet { .. }
         | Inst::DictPop { .. } => false,
         // 中断点（ADR-0020 論点 11 (1)）: ほかのタスクが動き、コンテナを書き換え得る。`spawn` は引数を手放す
-        Inst::Spawn { .. } | Inst::Await { .. } => false,
+        Inst::Spawn { .. }
+        | Inst::Await { .. }
+        | Inst::Call {
+            callee: Callee::Builtin(Builtin::SleepMs),
+            ..
+        } => false,
         // 呼ばれた関数は、引数を通じてコンテナを書き換え得る（`xs[0] + replace_first(xs)`）
         Inst::Call {
             callee: Callee::Func(_),
@@ -1272,6 +1277,34 @@ mod tests {
         let (text, elided) = optimized(p);
         assert!(text.contains("borrow_from_mutable_place"), "{text}");
         assert!(text.contains("unconsumed_owned_at_block_end"), "{text}");
+        assert!(
+            elided
+                .iter()
+                .all(|e| e.elision != ElisionReason::BorrowGuardUnneeded)
+        );
+    }
+
+    #[test]
+    fn a_list_element_used_after_sleep_keeps_its_guard() {
+        // y = xs[0]; await sleep_ms(n); print(y): 中断している間にほかのタスクが xs を書き換え得る（ADR-0020 論点 11）
+        let mut p = list_fn(
+            vec![
+                Inst::Call {
+                    dst: None,
+                    callee: Callee::Builtin(Builtin::SleepMs),
+                    args: vec![TempId(1)],
+                },
+                Inst::Call {
+                    dst: None,
+                    callee: Callee::Builtin(Builtin::PrintStr),
+                    args: vec![TempId(2)],
+                },
+            ],
+            vec![],
+        );
+        p.funcs[0].is_async = true;
+        let (text, elided) = optimized(p);
+        assert!(text.contains("borrow_from_mutable_place"), "{text}");
         assert!(
             elided
                 .iter()

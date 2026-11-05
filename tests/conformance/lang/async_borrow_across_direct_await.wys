@@ -1,0 +1,12 @@
+# expect-stdout: ab!
+# expect-stdout: z
+# `xs[0] + await f(xs)`: 呼ばれた async の関数が、中断した後で xs[0] を置き換える
+async def replace_then_return(xs: list[str]) -> str:
+    await sleep_ms(1)
+    xs[0] = "z"
+    return "!"
+
+async def main() -> None:
+    xs = ["a" + "b"]
+    print(xs[0] + await replace_then_return(xs))
+    print(xs[0])

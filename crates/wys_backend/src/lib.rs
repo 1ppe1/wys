@@ -356,7 +356,8 @@ fn emit_module(p: &Program, sanitize_address: bool) -> String {
     };
     let entry = &p.funcs[p.entry.0 as usize];
     let asyncp = wys_ir::uses_async(p);
-    if asyncp || !p.tasks.is_empty() {
+    // 使われない async の関数も生成するので、エントリだけでなくすべての関数を見る
+    if !p.tasks.is_empty() || p.funcs.iter().any(|f| f.is_async) {
         out.push_str(ASYNC_DECLS);
     }
     // `async def main`（ADR-0020 論点 7）: `main` をタスク 0 としてスケジューラの上で動かす。
@@ -1641,9 +1642,12 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                     let first = usize::from(p.tasks[task.0 as usize].is_some());
                     let _ = writeln!(
                         out,
-                        "  {d}.sz = ptrtoint ptr getelementptr ({layout}, ptr null, i32 1) to i64\n  {d} = call ptr @wys_task_new(i64 {d}.sz, ptr @wys_task_entry_f{}, ptr @wys_release_task{})\n  {d}.pl = call ptr @wys_task_payload(ptr {d})",
+                        "  {d}.sz = ptrtoint ptr getelementptr ({layout}, ptr null, i32 1) to i64\n  {d} = call ptr @wys_task_new(i64 {d}.sz, ptr @wys_task_entry_f{}, ptr @wys_release_task{})",
                         func.0, task.0
                     );
+                    if !args.is_empty() {
+                        let _ = writeln!(out, "  {d}.pl = call ptr @wys_task_payload(ptr {d})");
+                    }
                     for (k, a) in args.iter().enumerate() {
                         let _ = writeln!(
                             out,

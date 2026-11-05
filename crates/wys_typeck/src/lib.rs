@@ -505,11 +505,6 @@ impl Types {
         self.tasks[k.0 as usize]
     }
 
-    /// `Task[T]` の型を 1 つでも作ったか（注釈だけで使った場合を含む）。
-    pub fn has_tasks(&self) -> bool {
-        !self.tasks.is_empty()
-    }
-
     /// `Result[ok, err]` の型を作る（同じ型引数なら同じ ID）。
     pub fn result(&mut self, ok: Ty, err: Ty) -> Ty {
         if ok == Ty::Error || err == Ty::Error {

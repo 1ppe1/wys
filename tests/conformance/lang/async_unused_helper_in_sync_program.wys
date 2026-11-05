@@ -1,0 +1,7 @@
+# expect-stdout: sync
+# 同期の main と、使われない async の関数（生成はされるので、ランタイムの宣言が要る）
+async def unused() -> None:
+    await sleep_ms(1)
+
+def main() -> None:
+    print("sync")

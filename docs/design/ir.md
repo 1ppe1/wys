@@ -111,6 +111,7 @@ bb0:
 - `t2 = await t`: タスクが終わるまで待ち（終わっていれば切り替えない）、結果を領域から読んで retain する（+1 所有）。`task` は借用で読む。`await f(x)`（`f` が async の関数）は普通の `call`（タスクを作らない）。
 - `call @sleep_ms(n)`: 組み込みの中断点。
 - ARC: 中断点（`spawn`、`await`、`sleep_ms`）は関数呼び出しと同じ地点として扱う。可変な場所から読んだ値の保持（`borrow_from_mutable_place`）は、中断点をまたぐなら省かない（ADR-0020 論点 11）。
+- `wys test` のエントリ（テストを呼び分ける関数）は、async のテストが 1 つでもあれば async になる。そのときは同期のテストもスケジューラの上（タスク 0、メインスタック）で動く（挙動は変わらない）。
 - AddressSanitizer のビルドでは、`@main` がスケジューラを動かす前に `@wys_set_fiber_hooks` で ASan の fiber API を登録する（論点 18）。
 
 ## 構造を持つ値の表示（M3 T10c、ADR-0016）

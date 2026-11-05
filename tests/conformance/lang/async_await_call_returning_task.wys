@@ -1,0 +1,11 @@
+# expect-stdout: 7
+# Task を返す async の関数を await で呼ぶと、その場で呼んで Task を受け取る（もう一度 await して結果を得る）
+async def seven() -> int:
+    return 7
+
+async def identity(t: Task[int]) -> Task[int]:
+    return t
+
+async def main() -> None:
+    t = await identity(spawn(seven()))
+    print(await t)

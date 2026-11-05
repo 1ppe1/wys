@@ -1507,7 +1507,19 @@ impl<'s, 't> FnLower<'s, 't> {
     /// `await operand`（ADR-0020 論点 5）。`async def` の呼び出しはその場で呼ぶ（タスクを作らない）。
     /// `Task` の値なら、終わるまで待って結果を受け取る。
     fn await_expr(&mut self, inner: &ast::Expr, e: &ast::Expr) -> Option<TempId> {
-        if !matches!(self.ty(inner), TTy::Task(_)) {
+        // 型検査（`is_async_call`）と同じ判定: async の関数の呼び出しなら、戻り値が `Task` でもその場で呼ぶだけ
+        let direct = match &inner.kind {
+            ExprKind::Call { callee, .. } => {
+                callee.name == "sleep_ms"
+                    || self
+                        .sh
+                        .func_index
+                        .get(&callee.name)
+                        .is_some_and(|&i| self.sh.tc.sigs[i].is_async)
+            }
+            _ => false,
+        };
+        if direct {
             return self.expr(inner);
         }
         let task = self.expr(inner).expect("tasks have values");

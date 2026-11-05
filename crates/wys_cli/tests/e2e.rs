@@ -807,6 +807,17 @@ fn async_programs_run_and_sleep_waits_real_time() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("\"E1303\""));
 }
 
+/// 同期の `main` のプログラムが `Task` の型を注釈だけで使っても、ビルドして実行できる（スケジューラは動かない）。
+#[test]
+fn sync_programs_may_mention_task_types() {
+    let (code, stdout, stderr) = run(
+        "task_annotation_only",
+        "def identity(t: Task[int]) -> Task[int]:\n    return t\n\ndef main() -> None:\n    x: Task[int] | None = None\n    print(x is None)\n",
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "True\n");
+}
+
 /// `wys test` の `async def test_*`（ADR-0020 論点 7）と、`dump-ir` の表記（論点 19）。
 #[test]
 fn async_tests_run_and_ir_shows_tasks() {
