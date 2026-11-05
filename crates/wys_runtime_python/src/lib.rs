@@ -452,20 +452,19 @@ pub unsafe extern "C" fn wys_py_to_int(h: *const Header) -> i64 {
     }
 }
 
-/// `o` が型 `t` のインスタンスか（例外は消す）。
+/// `o` が型 `t` のインスタンスか。判定そのものが例外を出したら、その例外を失敗として保存して `None`
+/// （`wys_py_to_int` と同じ扱い。PR #85 のレビュー）。
 ///
 /// # Safety
 /// GIL を持っていること。`o` は生存しているオブジェクト、`t` は型オブジェクト。
-unsafe fn is_instance(o: *mut PyObject, t: *mut u8) -> bool {
+unsafe fn is_instance(o: *mut PyObject, t: *mut u8) -> Option<bool> {
     // SAFETY: 関数の安全条件どおり。
-    unsafe {
-        match PyObject_IsInstance(o, t as *mut PyObject) {
-            1 => true,
-            0 => false,
-            _ => {
-                PyErr_Clear();
-                false
-            }
+    match unsafe { PyObject_IsInstance(o, t as *mut PyObject) } {
+        1 => Some(true),
+        0 => Some(false),
+        _ => {
+            capture_error();
+            None
         }
     }
 }
@@ -479,9 +478,13 @@ pub unsafe extern "C" fn wys_py_to_float(h: *const Header) -> f64 {
     // SAFETY: 関数の安全条件どおり。
     unsafe {
         let o = inner(h);
-        if !is_instance(o, &raw mut PyFloat_Type) {
-            fail("TypeError", "expected a float");
-            return 0.0;
+        match is_instance(o, &raw mut PyFloat_Type) {
+            Some(true) => {}
+            Some(false) => {
+                fail("TypeError", "expected a float");
+                return 0.0;
+            }
+            None => return 0.0,
         }
         let v = PyFloat_AsDouble(o);
         if v == -1.0 && !PyErr_Occurred().is_null() {
@@ -503,9 +506,18 @@ pub unsafe extern "C" fn wys_py_to_list(h: *const Header) -> *mut ListObj {
     // SAFETY: 関数の安全条件どおり。要素は新しい参照（PySequence_GetItem）をハンドルで包む。
     unsafe {
         let o = inner(h);
-        if !(is_instance(o, &raw mut PyList_Type) || is_instance(o, &raw mut PyTuple_Type)) {
-            fail("TypeError", "expected a list or tuple");
-            return wys_runtime::wys_list_new(8, 0);
+        let is_seq = match is_instance(o, &raw mut PyList_Type) {
+            Some(true) => Some(true),
+            Some(false) => is_instance(o, &raw mut PyTuple_Type),
+            None => None,
+        };
+        match is_seq {
+            Some(true) => {}
+            Some(false) => {
+                fail("TypeError", "expected a list or tuple");
+                return wys_runtime::wys_list_new(8, 0);
+            }
+            None => return wys_runtime::wys_list_new(8, 0),
         }
         let n = PySequence_Size(o);
         if n < 0 {
@@ -544,9 +556,13 @@ pub unsafe extern "C" fn wys_py_to_dict(h: *const Header) -> *mut DictObj {
     // SAFETY: 関数の安全条件どおり。PyDict_Next は借用の参照を返すので、包む前に Py_IncRef する。
     unsafe {
         let o = inner(h);
-        if !is_instance(o, &raw mut PyDict_Type) {
-            fail("TypeError", "expected a dict");
-            return wys_runtime::wys_dict_new(KEY_STR, 8);
+        match is_instance(o, &raw mut PyDict_Type) {
+            Some(true) => {}
+            Some(false) => {
+                fail("TypeError", "expected a dict");
+                return wys_runtime::wys_dict_new(KEY_STR, 8);
+            }
+            None => return wys_runtime::wys_dict_new(KEY_STR, 8),
         }
         // 先にキーがすべて str か確かめる（途中で失敗して、作りかけの辞書を片付けずに済むように）
         let mut entries = Vec::new();
@@ -554,10 +570,20 @@ pub unsafe extern "C" fn wys_py_to_dict(h: *const Header) -> *mut DictObj {
         let mut pos: isize = 0;
         let (mut k, mut v) = (std::ptr::null_mut(), std::ptr::null_mut());
         while PyDict_Next(o, &mut pos, &mut k, &mut v) != 0 {
-            match is_instance(k, &raw mut PyUnicode_Type)
-                .then(|| py_str(k))
-                .flatten()
-            {
+            match is_instance(k, &raw mut PyUnicode_Type) {
+                Some(true) => {}
+                Some(false) => {
+                    fail("TypeError", "dict keys must be str");
+                    return wys_runtime::wys_dict_new(KEY_STR, 8);
+                }
+                None => return wys_runtime::wys_dict_new(KEY_STR, 8),
+            }
+            match py_str(k) {
+                // str だが UTF-8 にできない（サロゲートを含む）: その例外（UnicodeEncodeError）を失敗にする
+                None => {
+                    capture_error();
+                    return wys_runtime::wys_dict_new(KEY_STR, 8);
+                }
                 // 別々のキー（str のサブクラス）が同じ文字列になることがある。本言語の dict では区別できない
                 // （PR #85 のレビュー）
                 Some(key) if !seen.insert(key.clone()) => {
@@ -568,11 +594,6 @@ pub unsafe extern "C" fn wys_py_to_dict(h: *const Header) -> *mut DictObj {
                     return wys_runtime::wys_dict_new(KEY_STR, 8);
                 }
                 Some(key) => entries.push((key, v)),
-                None => {
-                    PyErr_Clear();
-                    fail("TypeError", "dict keys must be str");
-                    return wys_runtime::wys_dict_new(KEY_STR, 8);
-                }
             }
         }
         let d = wys_runtime::wys_dict_new(KEY_STR, 8);

@@ -663,6 +663,26 @@ fn dict_types(p: &Program, d: DictId) -> Result<(Ty, Ty), String> {
         .ok_or_else(|| format!("unknown dict type dict{}", d.0))
 }
 
+/// `py_from_value` で Python に変換できる型か（レコードは変換しない。型検査の E1201 と同じ規則）。
+fn py_convertible(p: &Program, t: Ty) -> bool {
+    match t {
+        Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py => true,
+        Ty::Record(_) => false,
+        Ty::List(l) => p
+            .lists
+            .get(l.0 as usize)
+            .is_some_and(|e| py_convertible(p, *e)),
+        Ty::Dict(d) => p
+            .dicts
+            .get(d.0 as usize)
+            .is_some_and(|(k, v)| py_convertible(p, *k) && py_convertible(p, *v)),
+        Ty::Union(u) => p
+            .unions
+            .get(u.0 as usize)
+            .is_some_and(|ms| ms.iter().flatten().all(|m| py_convertible(p, *m))),
+    }
+}
+
 fn list_elem(p: &Program, l: ListId) -> Result<Ty, String> {
     p.lists
         .get(l.0 as usize)
@@ -1011,7 +1031,16 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                             (vec![Ty::Py], Some(rt))
                         }
                         Callee::Builtin(Builtin::PyFromValue) => match args.as_slice() {
-                            [a] => (vec![use_(*a, &defined_in)?], Some(Ty::Py)),
+                            [a] => {
+                                let at = use_(*a, &defined_in)?;
+                                if !py_convertible(p, at) {
+                                    return Err(format!(
+                                        "bb{bi}: py_from_value cannot convert {}",
+                                        at.name()
+                                    ));
+                                }
+                                (vec![at], Some(Ty::Py))
+                            }
                             _ => return Err(format!("bb{bi}: py_from_value takes one argument")),
                         },
                         Callee::Builtin(Builtin::PyCallKw) => match args.as_slice() {

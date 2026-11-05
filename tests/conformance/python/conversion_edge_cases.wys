@@ -2,6 +2,7 @@
 # expect-stdout: ZeroDivisionError
 # expect-stdout: ValueError
 # expect-stdout: 2
+# expect-stdout: UnicodeEncodeError
 def eval_py(code: str) -> Result[PyObject, PyError] uses python:
     builtins = py_import("builtins")?
     g: dict[str, PyObject] = {}
@@ -28,3 +29,5 @@ def main() -> None:
     # 変換すると同じ文字列になる 2 つのキー（ハッシュと等値を変えた str のサブクラス）
     show(dict_len("(lambda S: {S('a'): 1, S('a'): 2})(type('S', (str,), {'__hash__': lambda self: id(self), '__eq__': lambda a, b: a is b}))"))
     show(dict_len("{'a': 1, 'b': 2}"))
+    # サロゲートを含む str のキーは UTF-8 にできない
+    show(dict_len("{'\\ud800': 1}"))
