@@ -1,0 +1,6 @@
+# expect-error: E0201 6:23
+def first[T](xs: list[T]) -> T:
+    return xs[0]
+
+def main() -> None:
+    print(first[str]([1]))

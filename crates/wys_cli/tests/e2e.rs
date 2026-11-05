@@ -843,3 +843,17 @@ fn async_tests_run_and_ir_shows_tasks() {
     assert!(ir.contains("= spawn task0 f0("), "{ir}");
     assert!(ir.contains("= await t"), "{ir}");
 }
+
+#[test]
+fn explicit_type_arguments_select_the_instance() {
+    // `f[T](x)` と `Box[T](...)`（ADR-0021 論点 9）: 引数から決まらない型パラメータを明示する。
+    // `dump-ir` には明示した型で単相化した関数が出る（`size[int]` の引数は `list[int]`）
+    let src = "type Box[T] = {value: T | None}\n\ndef empty[T]() -> Box[T]:\n    return Box[T](value=None)\n\ndef size[T](xs: list[T]) -> int:\n    return len(xs)\n\ndef main() -> None:\n    b = empty[str]()\n    if b.value is None:\n        print(size[int]([]))\n";
+    let (code, out, err) = run("explicit_targs", src);
+    assert_eq!((code, out.as_str()), (0, "0\n"), "{err}");
+    let path = scratch("explicit_targs_ir.wys", src);
+    let ir = cli(&["dump-ir", path.to_str().unwrap()]);
+    let ir = String::from_utf8_lossy(&ir.stdout);
+    assert!(ir.contains("fn f1 empty__"), "{ir}");
+    assert!(ir.contains("size__") && ir.contains("(l0: list"), "{ir}");
+}

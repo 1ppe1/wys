@@ -19,7 +19,7 @@ field_decl  = IDENT ":" type ;
 func_def    = [ "async" ] "def" IDENT [ type_params ] "(" [ params ] ")" "->" type [ effects ] ":" block ;   (* async def（ADR-0020） *)
 effects     = "uses" IDENT { "," IDENT } ;                (* Effect の宣言（ADR-0014）。名前は io / exit / python（ADR-0018）、Effect なしは pure。
                                                             uses と pure は予約語ではない（この位置でだけ意味を持つ）。`-> uses:` は型名 uses *)
-type_params = "[" IDENT { "," IDENT } [ "," ] "]" ;          (* 型パラメータ。呼び出し時に引数から推論する *)
+type_params = "[" IDENT { "," IDENT } [ "," ] "]" ;          (* 型パラメータ。呼び出し時に引数から推論する。f[int](x) のように明示もできる（ADR-0021 論点 9） *)
 params      = param { "," param } [ "," ] ;
 param       = IDENT ":" type ;                       (* 型注釈は必須（E0103） *)
 type        = type_atom { "|" type_atom } ;            (* Union。平坦化・重複除去する（ADR-0006） *)
@@ -54,15 +54,16 @@ cmp_op      = "==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not" "in" ;   (* i
 additive    = term { ( "+" | "-" ) term } ;
 term        = unary { ( "*" | "/" | "//" | "%" ) unary } ;   (* "/" は型検査で拒否（E0207） *)
 unary       = "-" unary | "await" chain { "?" } | postfix ;   (* await の被演算子は ? を含まない chain。await f()? は (await f())?（ADR-0020 論点 4・13） *)
-chain       = primary { "." IDENT [ "(" [ args ] ")" ] | "[" expr "]" } ;
-postfix     = primary { "." IDENT [ "(" [ args ] ")" ] | "[" expr "]" | "?" } ;   (* 添字 xs[i] *)   (* フィールド参照。名前の並びの後の ( は修飾付きの呼び出し m.f(...) *)
+chain       = primary { "." IDENT [ [ type_args ] "(" [ args ] ")" ] | "[" expr "]" } ;
+postfix     = primary { "." IDENT [ [ type_args ] "(" [ args ] ")" ] | "[" expr "]" | "?" } ;   (* 添字 xs[i] *)   (* フィールド参照。名前の並びの後の ( は修飾付きの呼び出し m.f(...) *)
             (* "?" は Result の伝搬（ADR-0013）。-f()? は -(f()?)。"?" の直後に "." / "[" は書けない（E0101。括弧で囲む） *)
 primary     = INT | FLOAT | STRING | "True" | "False" | "None"
-            | IDENT [ "(" [ args ] ")" ]
+            | IDENT [ [ type_args ] "(" [ args ] ")" ]   (* f[T](x)、Pair[int](first=1)。[ の後を型の並びとして読み、] の直後に ( が続かなければ添字 xs[i]（ADR-0021 論点 9）。本当のメソッドには型引数を書けない（E0101） *)
             | "[" [ expr { "," expr } [ "," ] ] "]"   (* リスト *)
             | "{" [ expr ":" expr { "," expr ":" expr } [ "," ] ] "}"   (* 辞書（ADR-0015）。空の {} は型注釈が要る（E0906） *)
             | "(" expr ")" ;
 args        = arg { "," arg } [ "," ] ;
+type_args   = "[" type { "," type } [ "," ] "]" ;
 arg         = expr | IDENT "=" expr ;                  (* キーワード引数はレコードの作成専用（E0216）。位置引数より後に書く *)
 
 (* ---------- 字句 ---------- *)

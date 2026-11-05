@@ -1,0 +1,6 @@
+# expect-error: E1502 5:15
+type Point = {x: int}
+
+def main() -> None:
+    p = Point[int](x=1)
+    print(p.x)

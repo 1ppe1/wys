@@ -1,0 +1,6 @@
+# expect-error: E1502 6:18
+def double(x: int) -> int:
+    return x * 2
+
+def main() -> None:
+    print(double[int](1))

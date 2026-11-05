@@ -255,6 +255,8 @@ pub enum ExprKind {
     },
     Call {
         callee: Ident,
+        /// 呼び出しに明示した型引数 `f[T](x)`（ADR-0021 論点 9、M5 T4）。書いていなければ空
+        type_args: Vec<TypeExpr>,
         args: Vec<Expr>,
         /// `name=value` のキーワード引数（レコードの作成で使う）。
         kwargs: Vec<(Ident, Expr)>,
@@ -265,6 +267,8 @@ pub enum ExprKind {
     MethodCall {
         receiver: Box<Expr>,
         method: Ident,
+        /// `m.f[T](x)` の型引数。名前解決が修飾付きの `Call` に直すときに移す。本当のメソッドには書けない
+        type_args: Vec<TypeExpr>,
         args: Vec<Expr>,
         /// 名前解決が `Call` に直すとき（`m.Tag(name=...)`）のために持つ。メソッドはキーワード引数を取らない
         kwargs: Vec<(Ident, Expr)>,

@@ -935,6 +935,7 @@ impl Parser<'_> {
             // `x.f(...)` / `a.b.f(...)` / `f().g(...)`: メソッド呼び出し。受け手が名前の並び（`m`、`a.b`）なら、
             // 名前解決が、先頭がローカル変数でなければモジュールの修飾付きの呼び出しに直す（M4 T4・T6）。
             // フィールドの値の受け手（`box.handle.to_int()`）はメソッド呼び出しのまま
+            let type_args = self.call_type_args();
             if self.at(&TokenKind::LParen) {
                 self.bump();
                 let (args, kwargs) = self.call_args()?;
@@ -942,6 +943,7 @@ impl Parser<'_> {
                     ExprKind::MethodCall {
                         receiver: Box::new(e),
                         method: name,
+                        type_args,
                         args,
                         kwargs,
                     },
@@ -958,6 +960,33 @@ impl Parser<'_> {
             );
         }
         Ok(e)
+    }
+
+    /// 呼び出しの型引数 `[T, U]`（ADR-0021 論点 9）。`[` の後を型の並びとして読み、`]` の直後に `(` が
+    /// 続くときだけ型引数とする。そうでなければ読んだ分を巻き戻して空を返す（`xs[i]` は添字のまま）。
+    /// 関数値がない（E0213）ので、`a[b](c)` はこれまで合法な形ではなく、この先読みで一意に決まる。
+    fn call_type_args(&mut self) -> Vec<TypeExpr> {
+        if !self.at(&TokenKind::LBracket) {
+            return Vec::new();
+        }
+        let (pos, ndiags) = (self.pos, self.diags.len());
+        self.bump();
+        let mut args = Vec::new();
+        let ok = loop {
+            match self.type_expr() {
+                Ok(t) => args.push(t),
+                Err(_) => break false,
+            }
+            if !self.eat(&TokenKind::Comma) || self.at(&TokenKind::RBracket) {
+                break self.eat(&TokenKind::RBracket) && self.at(&TokenKind::LParen);
+            }
+        };
+        if ok {
+            return args;
+        }
+        self.pos = pos;
+        self.diags.truncate(ndiags);
+        Vec::new()
     }
 
     /// `(` の後ろから `)` まで: 位置引数とキーワード引数。
@@ -1018,10 +1047,12 @@ impl Parser<'_> {
             }
             TokenKind::Ident(name) => {
                 let span = self.bump().span;
+                let type_args = self.call_type_args();
                 if self.eat(&TokenKind::LParen) {
                     let (args, kwargs) = self.call_args()?;
                     ExprKind::Call {
                         callee: Ident { name, span },
+                        type_args,
                         args,
                         kwargs,
                     }
@@ -1136,6 +1167,45 @@ mod tests {
             kinds[2],
             ExprKind::MethodCall { receiver, method, .. }
                 if matches!(receiver.kind, ExprKind::Call { .. }) && method.name == "g"
+        ));
+    }
+
+    #[test]
+    fn explicit_type_arguments_on_calls() {
+        // `f[T](x)` は型引数付きの呼び出し、`xs[i]` / `xs[i] = v` / `xs[f(1)]` は添字のまま（ADR-0021 論点 9）
+        let m = ok(
+            "def main() -> None:\n    f[int, list[str]](1)\n    m.g[Pair[int]]()\n    xs[i]\n    xs[i] = 2\n    xs[f(1)]\n    Pair[int](first=1)\n",
+        );
+        let kinds: Vec<&ExprKind> = m.funcs[0]
+            .body
+            .iter()
+            .filter_map(|s| match &s.kind {
+                StmtKind::Expr(e) => Some(&e.kind),
+                _ => None,
+            })
+            .collect();
+        assert!(matches!(
+            kinds[0],
+            ExprKind::Call { callee, type_args, args, .. }
+                if callee.name == "f" && type_args.len() == 2 && args.len() == 1
+        ));
+        assert!(matches!(
+            kinds[1],
+            ExprKind::MethodCall { method, type_args, .. }
+                if method.name == "g" && type_args.len() == 1
+        ));
+        assert!(matches!(kinds[2], ExprKind::Index { .. }));
+        assert!(
+            matches!(kinds[3], ExprKind::Index { index, .. } if matches!(index.kind, ExprKind::Call { .. }))
+        );
+        assert!(matches!(
+            kinds[4],
+            ExprKind::Call { callee, type_args, kwargs, .. }
+                if callee.name == "Pair" && type_args.len() == 1 && kwargs.len() == 1
+        ));
+        assert!(matches!(
+            m.funcs[0].body[3].kind,
+            StmtKind::IndexAssign { .. }
         ));
     }
 
