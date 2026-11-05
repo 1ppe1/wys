@@ -1,6 +1,6 @@
 # ADR-0018: CPython FFI（埋め込み、Python 3.14、例外は値）
 
-- **状態:** Proposed
+- **状態:** Accepted
 - **日付:** 2026-11-05
 - **関連:** 未決定事項 8、INTEROP-001 / 002 / 003、AC-004、AC-010、AI-004 / 005、ADR-0008、ADR-0011、ADR-0012、ADR-0013、ADR-0014、`docs/plans/m4.md`（T2・T5〜T8）、`docs/poc/poc3-results.md`、issue #48
 
