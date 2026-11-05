@@ -41,6 +41,10 @@ LIT(s_nope, "nope");
 LIT(s_missing, "wys_no_such_module");
 LIT(s_hi, "hi");
 LIT(s_x, "x");
+LIT(s_exec, "exec");
+LIT(s_dict, "dict");
+LIT(s_bad_str, "class E(Exception):\n    def __str__(self):\n        raise RuntimeError('bad')\nraise E()\n");
+LIT(s_nul_name, "ma\0th");
 
 // 失敗を期待する操作: 理由を1行出す
 static void report_error(void) {
@@ -98,6 +102,16 @@ int main(int argc, char **argv) {
     const Obj *args2[2] = {one, zero};
     if (!wys_py_call(floordiv, args2, 2)) report_error();  // ZeroDivisionError
     if (!wys_py_to_int(hi, &v)) report_error();            // TypeError（変換の型不一致）
+    // 9. 例外の整形そのものが失敗する（`__str__` が例外を出す）。落ちずに値として返り、後の操作も続けられる
+    Obj *exec_ = wys_py_getattr(builtins, S(s_exec));
+    Obj *dict = wys_py_getattr(builtins, S(s_dict));
+    Obj *globals = wys_py_call(dict, 0, 0);
+    Obj *code = wys_py_from_str(S(s_bad_str));
+    const Obj *eargs[2] = {code, globals};
+    if (!wys_py_call(exec_, eargs, 2)) report_error();
+    // 10. NUL を含む名前は、プロセスを止めずに失敗として返る
+    if (!wys_py_import(S(s_nul_name))) report_error();
+    if (!wys_py_getattr(math, S(s_nul_name))) report_error();
 
     // 計測（絶対値だけ記録する）: math.gcd(12, 18) の往復
     Obj *gcd = wys_py_getattr(math, S(s_gcd));
@@ -115,7 +129,7 @@ int main(int argc, char **argv) {
             (t1 - t0) / N * 1e9, (long long)v);
 
     Obj *handles[] = {math, json, builtins, op, fact, ten, dumps, hi, int_, x, minus,
-                      floordiv, one, zero, gcd, a, b};
+                      floordiv, one, zero, gcd, a, b, exec_, dict, globals, code};
     for (size_t i = 0; i < sizeof handles / sizeof *handles; i++) wys_py_release(handles[i]);
     wys_py_finish();
     wys_runtime_finish();  // 生存しているハンドルや文字列があれば終了コード 102

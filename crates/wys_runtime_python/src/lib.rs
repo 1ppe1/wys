@@ -49,6 +49,7 @@ unsafe extern "C" {
     fn PyUnicode_AsUTF8AndSize(o: *mut PyObject, size: *mut isize) -> *const c_char;
     fn PyErr_Occurred() -> *mut PyObject;
     fn PyErr_GetRaisedException() -> *mut PyObject;
+    fn PyErr_Clear();
 }
 
 thread_local! {
@@ -79,8 +80,9 @@ fn ensure_init() {
 /// Python の文字列（`str`）を Rust の文字列にする。失敗したら `None`（例外は残す）。
 ///
 /// # Safety
-/// GIL を持っていること。`o` は生存している Python のオブジェクト。
+/// GIL を持っていること。`o` は null でない、生存している Python のオブジェクト。
 unsafe fn py_str(o: *mut PyObject) -> Option<String> {
+    debug_assert!(!o.is_null());
     let mut n: isize = 0;
     // SAFETY: 関数の安全条件どおり。
     let p = unsafe { PyUnicode_AsUTF8AndSize(o, &mut n) };
@@ -92,6 +94,29 @@ unsafe fn py_str(o: *mut PyObject) -> Option<String> {
     Some(String::from_utf8_lossy(b).into_owned())
 }
 
+/// 整形の結果（新しい参照か null）を文字列にする。失敗したら、送出中の例外を消して `None`。
+///
+/// # Safety
+/// GIL を持っていること。`o` は null か、生存している Python のオブジェクト。
+unsafe fn text_or_clear(o: *mut PyObject) -> Option<String> {
+    // SAFETY: 関数の安全条件どおり。null なら py_str を呼ばない。
+    let s = if o.is_null() {
+        None
+    } else {
+        unsafe { py_str(o) }
+    };
+    if s.is_none() {
+        // SAFETY: GIL を持っている。
+        unsafe { PyErr_Clear() };
+    }
+    s
+}
+
+/// 失敗の理由を保存する（Python の例外を経由しない失敗）。
+fn set_error(text: impl Into<String>) {
+    LAST_ERROR.with(|e| *e.borrow_mut() = Some(text.into()));
+}
+
 /// 送出中の例外を取り出し、「型名: メッセージ」として保存する。
 fn capture_error() {
     // SAFETY: GIL を持っている。返されたオブジェクトはここで手放す。
@@ -101,10 +126,13 @@ fn capture_error() {
         } else {
             let exc = PyErr_GetRaisedException();
             let ty = PyObject_Type(exc);
+            // 整形そのものが失敗することがある（`__str__` が例外を出すなど）。null を C API に渡さず、
+            // 2つ目の例外は消して、後の操作が回復できるようにする。Py_DecRef は null を無視する
             let name = PyType_GetName(ty);
+            let name_s = text_or_clear(name).unwrap_or_else(|| "Exception".into());
             let msg = PyObject_Str(exc);
-            let name_s = py_str(name).unwrap_or_else(|| "Exception".into());
-            let msg_s = py_str(msg).unwrap_or_default();
+            let msg_s =
+                text_or_clear(msg).unwrap_or_else(|| "<str() of the exception failed>".into());
             for o in [msg, name, ty, exc] {
                 Py_DecRef(o);
             }
@@ -115,7 +143,7 @@ fn capture_error() {
             }
         }
     };
-    LAST_ERROR.with(|e| *e.borrow_mut() = Some(text));
+    set_error(text);
 }
 
 /// Python の参照（+1）をハンドルで包む。null なら例外を保存して null を返す。
@@ -137,10 +165,15 @@ unsafe fn inner(h: *const Header) -> *mut PyObject {
     usize::from_ne_bytes(b.try_into().expect("a handle holds one pointer")) as *mut PyObject
 }
 
-fn c_name(s: *const Header) -> CString {
+/// 名前を C の文字列にする。NUL を含むなら失敗の理由を保存して `None`（プロセスは止めない）。
+fn c_name(s: *const Header) -> Option<CString> {
     // SAFETY: 呼び出し側の安全条件（生存している文字列オブジェクト）。
     let b = unsafe { embed::bytes(s) };
-    CString::new(b).unwrap_or_else(|_| embed::runtime_error("a Python name contains a NUL byte"))
+    let c = CString::new(b).ok();
+    if c.is_none() {
+        set_error("ValueError: embedded null character in a Python name");
+    }
+    c
 }
 
 /// `import name`。失敗なら null（`wys_py_take_error` で理由を取り出す）。
@@ -150,7 +183,9 @@ fn c_name(s: *const Header) -> CString {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_import(name: *const Header) -> *mut Header {
     ensure_init();
-    let n = c_name(name);
+    let Some(n) = c_name(name) else {
+        return std::ptr::null_mut();
+    };
     // SAFETY: 初期化済みで GIL を持っている。
     wrap(unsafe { PyImport_ImportModule(n.as_ptr()) })
 }
@@ -161,7 +196,9 @@ pub unsafe extern "C" fn wys_py_import(name: *const Header) -> *mut Header {
 /// `h` は生存しているハンドル、`name` は生存している文字列オブジェクト。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_getattr(h: *const Header, name: *const Header) -> *mut Header {
-    let n = c_name(name);
+    let Some(n) = c_name(name) else {
+        return std::ptr::null_mut();
+    };
     // SAFETY: 関数の安全条件どおり。
     wrap(unsafe { PyObject_GetAttrString(inner(h), n.as_ptr()) })
 }

@@ -40,6 +40,9 @@ CI の `ubuntu-24.04` ジョブ（`actions/setup-python` の CPython 3.14.10、`
 
 ## ADR-0018 への申し送り
 
+- 例外の整形（`PyObject_Str`、`PyType_GetName`）そのものが失敗することがある（`__str__` が例外を出すなど）。null を C API に渡すと落ちる（PR #45 のレビューで判明し、修正した）。整形の結果は必ず確かめ、2つ目の例外は消して代わりの文字列にする。
+- 名前に NUL が含まれる場合も、プロセスを止めずに失敗として返す（同上）。境界の関数は、引数の値が原因の失敗をすべて「失敗の値」で返す方針にする。
+
 - 上位集合の staticlib 方式で、AC-004 を保ったまま Python を使うプログラムだけ `libpython` に依存させられる。
 - `Py_FinalizeEx` は終了時に呼んで問題がなかった（`json` / `math` / `operator` だけ。C 拡張で落ちる例は未確認）。
 - 例外のトレースバックは取っていない（`PyErr_GetRaisedException` の後、`traceback` モジュールで整形できる。ADR-0018 で決める）。

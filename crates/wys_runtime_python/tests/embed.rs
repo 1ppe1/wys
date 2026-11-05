@@ -16,6 +16,9 @@ ModuleNotFoundError: No module named 'wys_no_such_module'
 AttributeError: module 'math' has no attribute 'nope'
 ZeroDivisionError: division by zero
 TypeError: 'str' object cannot be interpreted as an integer
+E: <str() of the exception failed>
+ValueError: embedded null character in a Python name
+ValueError: embedded null character in a Python name
 ";
 
 /// リンクのフラグ（`python3.14-config --embed --ldflags` と、共有ライブラリを見つけるための rpath）。
