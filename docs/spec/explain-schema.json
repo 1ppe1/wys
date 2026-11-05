@@ -499,7 +499,7 @@
           "minimum": 0
         },
         "index": {
-          "description": "最適化の前の IR での命令の位置（取り除いた命令は最適化の後の IR にないため）。`ops` の `index` とは座標が違う。",
+          "description": "その操作を取り除く直前の IR での命令の位置（取り除いた命令は最適化の後の IR にないため）。`ops` の `index` とは座標が違う。",
           "type": "integer",
           "minimum": 0
         },
@@ -517,7 +517,8 @@
           "description": "取り除けた理由（`docs/design/ir.md` の表）。",
           "enum": [
             "param_never_reassigned",
-            "borrow_guard_unneeded"
+            "borrow_guard_unneeded",
+            "moved_from_slot"
           ]
         },
         "message": {

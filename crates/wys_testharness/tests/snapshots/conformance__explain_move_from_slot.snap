@@ -1,0 +1,265 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: json
+---
+{
+  "schema_version": "0",
+  "kind": "file",
+  "file": "tests/conformance/explain/move_from_slot.wys",
+  "functions": [
+    {
+      "name": "shout",
+      "span": {
+        "file": "tests/conformance/explain/move_from_slot.wys",
+        "start": {
+          "line": 3,
+          "column": 5,
+          "byte": 169
+        },
+        "end": {
+          "line": 3,
+          "column": 10,
+          "byte": 174
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [
+          {
+            "name": "s",
+            "type": "str"
+          }
+        ],
+        "return": "str"
+      },
+      "locals": [
+        {
+          "name": "s",
+          "type": "str",
+          "kind": "param",
+          "span": {
+            "file": "tests/conformance/explain/move_from_slot.wys",
+            "start": {
+              "line": 3,
+              "column": 11,
+              "byte": 175
+            },
+            "end": {
+              "line": 3,
+              "column": 12,
+              "byte": 176
+            }
+          }
+        }
+      ],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "shout",
+          "retains": 0,
+          "releases": 0,
+          "ops": [],
+          "elided": [
+            {
+              "op": "retain",
+              "reason": "param_slot_entry",
+              "block": 0,
+              "index": 1,
+              "temp": 3,
+              "local": "s",
+              "elision": "param_never_reassigned",
+              "message": "the parameter is never reassigned, so its slot can borrow the caller's reference"
+            },
+            {
+              "op": "release",
+              "reason": "slot_at_function_exit",
+              "block": 0,
+              "index": 6,
+              "temp": 4,
+              "local": "s",
+              "elision": "param_never_reassigned",
+              "message": "the parameter is never reassigned, so its slot can borrow the caller's reference"
+            }
+          ]
+        }
+      ],
+      "effects": {
+        "declared": null,
+        "required": [],
+        "sites": []
+      }
+    },
+    {
+      "name": "main",
+      "span": {
+        "file": "tests/conformance/explain/move_from_slot.wys",
+        "start": {
+          "line": 6,
+          "column": 5,
+          "byte": 215
+        },
+        "end": {
+          "line": 6,
+          "column": 9,
+          "byte": 219
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [],
+        "return": "None"
+      },
+      "locals": [
+        {
+          "name": "a",
+          "type": "str",
+          "kind": "local",
+          "span": {
+            "file": "tests/conformance/explain/move_from_slot.wys",
+            "start": {
+              "line": 7,
+              "column": 5,
+              "byte": 235
+            },
+            "end": {
+              "line": 7,
+              "column": 6,
+              "byte": 236
+            }
+          }
+        },
+        {
+          "name": "b",
+          "type": "str",
+          "kind": "local",
+          "span": {
+            "file": "tests/conformance/explain/move_from_slot.wys",
+            "start": {
+              "line": 8,
+              "column": 5,
+              "byte": 253
+            },
+            "end": {
+              "line": 8,
+              "column": 6,
+              "byte": 254
+            }
+          }
+        }
+      ],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "main",
+          "retains": 0,
+          "releases": 5,
+          "ops": [
+            {
+              "op": "release",
+              "reason": "store_overwrites_slot",
+              "block": 0,
+              "index": 4,
+              "temp": 6,
+              "local": "a",
+              "message": "storing to a local gives up the reference held by its old value"
+            },
+            {
+              "op": "release",
+              "reason": "store_overwrites_slot",
+              "block": 0,
+              "index": 8,
+              "temp": 7,
+              "local": "b",
+              "message": "storing to a local gives up the reference held by its old value"
+            },
+            {
+              "op": "release",
+              "reason": "unconsumed_owned_at_block_end",
+              "block": 0,
+              "index": 13,
+              "temp": 5,
+              "message": "an owned (+1) value was not consumed in this block; together with its retain this is a candidate for the Move optimization"
+            },
+            {
+              "op": "release",
+              "reason": "slot_at_function_exit",
+              "block": 0,
+              "index": 15,
+              "temp": 8,
+              "local": "a",
+              "message": "leaving the function gives up the reference held by a local slot"
+            },
+            {
+              "op": "release",
+              "reason": "slot_at_function_exit",
+              "block": 0,
+              "index": 17,
+              "temp": 9,
+              "local": "b",
+              "message": "leaving the function gives up the reference held by a local slot"
+            }
+          ],
+          "elided": [
+            {
+              "op": "retain",
+              "reason": "consume_borrowed",
+              "site": "store",
+              "block": 0,
+              "index": 7,
+              "temp": 3,
+              "local": "a",
+              "elision": "moved_from_slot",
+              "message": "this is the last use of the local, so its reference is moved out of the slot instead of copied"
+            }
+          ]
+        }
+      ],
+      "effects": {
+        "declared": null,
+        "required": [
+          "io"
+        ],
+        "sites": [
+          {
+            "callee": "print",
+            "span": {
+              "file": "tests/conformance/explain/move_from_slot.wys",
+              "start": {
+                "line": 9,
+                "column": 5,
+                "byte": 263
+              },
+              "end": {
+                "line": 9,
+                "column": 10,
+                "byte": 268
+              }
+            },
+            "effects": [
+              "io"
+            ],
+            "annotated": true
+          },
+          {
+            "callee": "shout",
+            "span": {
+              "file": "tests/conformance/explain/move_from_slot.wys",
+              "start": {
+                "line": 9,
+                "column": 11,
+                "byte": 269
+              },
+              "end": {
+                "line": 9,
+                "column": 16,
+                "byte": 274
+              }
+            },
+            "effects": [],
+            "annotated": false
+          }
+        ]
+      }
+    }
+  ]
+}

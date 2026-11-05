@@ -284,7 +284,7 @@ fn instance_json<'a>(
         let mut loaded: std::collections::HashMap<TempId, LocalId> = Default::default();
         for (k, inst) in b.insts.iter().enumerate() {
             let (op, src, reason): (&'static str, TempId, RcReason) = match inst {
-                Inst::Load { dst, src } => {
+                Inst::Load { dst, src } | Inst::Take { dst, src } => {
                     loaded.insert(*dst, *src);
                     continue;
                 }

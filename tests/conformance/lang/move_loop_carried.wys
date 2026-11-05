@@ -1,0 +1,12 @@
+# 次の反復でも読むローカル変数や、移した後に読み直す変数からは、所有権を移さない（M4 T3）
+# expect-stdout: xxx
+# expect-stdout: xxx|xxx
+def main() -> None:
+    acc = ""
+    last = ""
+    for _i in range(3):
+        acc = acc + "x"
+        last = acc
+    print(last)
+    copy = last
+    print(copy + "|" + last)

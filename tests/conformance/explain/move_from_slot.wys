@@ -1,0 +1,9 @@
+# `wys explain` のスナップショット: Move 最適化が取り除いた retain（moved_from_slot）と、代入しない引数（M4 T3）
+# expect-stdout: ab!
+def shout(s: str) -> str:
+    return s + "!"
+
+def main() -> None:
+    a = "a" + "b"
+    b = a
+    print(shout(b))
