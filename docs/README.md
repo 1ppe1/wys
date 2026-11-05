@@ -6,7 +6,7 @@
 |---|---|---|
 | [ai_native_language_requirements.md](ai_native_language_requirements.md) | Draft v0.1 | 要件定義書。全ての設計成果物の起点 |
 | [plans/m3.md](plans/m3.md) | 完了 | M3 のタスク分解（T0〜T11）、ヒープと ARC の方針、新しい ADR と診断コードの帯、Phase 1 の出口判定 |
-| [plans/m4.md](plans/m4.md) | 承認済み計画 | M4 のタスク分解（T0〜T12）、CPython FFI（埋め込み）と `async`、PoC3 の判定基準、M4a / M4b の分割基準 |
+| [plans/m4.md](plans/m4.md) | 完了 | M4 のタスク分解（T0〜T12）、CPython FFI（埋め込み）と `async`、PoC3 の判定基準、M4a / M4b の分割基準、M4 の出口判定 |
 | [plans/m2.md](plans/m2.md) | 完了 | M2 のタスク分解（T0〜T10）、暫定値表現、新しい ADR と診断コードの帯 |
 | [roadmap.md](roadmap.md) | 承認済み計画 | Phase 0〜3 のマイルストーン、決定順、直近タスク |
 | [spec/diagnostics-schema.json](spec/diagnostics-schema.json) | v0（草案） | 構造化診断JSONのスキーマ（DX-002, AC-005）。実装は `crates/wys_diagnostics` で、テストでスキーマ検証する |

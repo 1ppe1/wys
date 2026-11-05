@@ -4,7 +4,7 @@
 
 ## プロジェクトの現状
 
-- AIネイティブ次世代プログラミング言語。**M3 完了 = Phase 1 完了**（ARC・`str` / `list` / `dict`・`Result`・Effect の注釈・`wys explain`）。進捗は `docs/roadmap.md`、M3 の詳細は `docs/plans/m3.md`。
+- AIネイティブ次世代プログラミング言語。**M3 完了 = Phase 1 完了**（ARC・`str` / `list` / `dict`・`Result`・Effect の注釈・`wys explain`）。**M4 完了**（CPython の埋め込み・`float`・`async` / `await`・Move 最適化）。次は M5（AI SDK の核）。進捗は `docs/roadmap.md`、M4 の詳細は `docs/plans/m4.md`。
 - 正となる文書は `docs/ai_native_language_requirements.md`（要件定義書）。迷ったらここに戻る。
 - 言語名・拡張子は未定。文書中では「本言語」と呼ぶ。勝手に名前を付けない。
 - 内部コードネームは `wys`（ユーザーが決定）。Rust クレートは `crates/wys_*`。これは正式名称ではない。

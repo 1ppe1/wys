@@ -67,7 +67,7 @@ CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は 
 | Linux x86_64 での CI | **M2 T0 で追加済み** |
 | メモリ安全性の境界テスト（NFR-001）、AddressSanitizer での実行 | M3（ADR-0005） |
 | コンパイル時間・バイナリサイズの継続計測 | M3 |
-| AC-010（Python 境界の例外と型の不一致は、定義済みの失敗として伝搬する） | **検査済み（M4 T6〜T8）**。`python/exceptions.wys`（例外の種類ごとの `Err(PyError)`、トレースバック、NUL を含む名前）・`python/conversions.wys`（変換の型の不一致は `Err(TypeError)`）・`python/conversion_edge_cases.wys`（変換の途中の例外、同じ文字列になるキー、UTF-8 にできないキー）、e2e の `python_libraries_can_be_called_and_exceptions_are_values`。判定は M4 の出口（T11） |
+| AC-010（Python 境界の例外と型の不一致は、定義済みの失敗として伝搬する） | **検査済み（M4 T6〜T8）**。`python/exceptions.wys`（例外の種類ごとの `Err(PyError)`、トレースバック、NUL を含む名前）・`python/conversions.wys`（変換の型の不一致は `Err(TypeError)`）・`python/conversion_edge_cases.wys`（変換の途中の例外、同じ文字列になるキー、UTF-8 にできないキー）、e2e の `python_libraries_can_be_called_and_exceptions_are_values`。M4 の出口で合格（`docs/plans/m4.md`） |
 | INTEROP-001（CPython の埋め込みで既存のライブラリを使える） | **検査済み（M4 T5〜T8）**。`json` / `math` / `operator` / `builtins` を使う `python/` のケース、`wys_driver/tests/python_link.rs`、macOS arm64 と Linux x86_64 の CI（Python 3.14 必須）。往復の時間は `benches/programs/py_roundtrip.wys`（絶対値だけ） |
 | INTEROP-002（型・例外・所有権・スレッド制約の変換） | **検査済み（M4 T5〜T8）**。型: `python/conversions.wys`（`list` / `dict` / Union のコピー、厳密な `to_*`）。例外: AC-010 の行。所有権: ハンドルの解放で `Py_DecRef`（`wys_runtime_python/tests/embed.rs` の解放漏れの検出 102、すべての `python/` ケースを3つのモードで生存オブジェクト 0）。スレッド: GIL は1スレッドが持ったまま（ADR-0018 論点 3） |
 | INTEROP-003（数値バッファのゼロコピー） | Phase 3（ADR-0018 論点 14） |
