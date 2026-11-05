@@ -1,0 +1,6 @@
+# `import a.b` の後の `a.f()`: `a` はモジュールの経路の途中で、import していない（以前は E0208 だった）
+# expect-error: E0706 6:11
+import a.b
+
+def main() -> None:
+    print(a.f())

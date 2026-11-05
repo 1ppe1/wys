@@ -274,7 +274,7 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
             hidden: HashSet::new(),
             own_name: &m.name,
             own: &defs[mi],
-            locals: HashSet::new(),
+            locals: HashMap::new(),
             used: HashSet::new(),
         };
         for t in &mut m.ast.types {
@@ -292,7 +292,7 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
         for f in &mut m.ast.funcs {
             f.name.name = defs[mi][&f.name.name].internal.clone();
             r.hidden = f.type_params.iter().map(|p| p.name.clone()).collect();
-            r.locals = f.params.iter().map(|p| p.name.name.clone()).collect();
+            r.locals = f.params.iter().map(|p| (p.name.name.clone(), 0)).collect();
             collect_locals(&f.body, &mut r.locals);
             for p in &mut f.params {
                 r.type_expr(&mut p.ty);
@@ -440,15 +440,18 @@ fn lookup(
     Some(def.internal.clone())
 }
 
-/// 関数の本体で束縛する名前（代入先、`for` の変数、`case Ok(x)` の束縛）。スコープは区別しない。
-fn collect_locals(stmts: &[Stmt], out: &mut HashSet<String>) {
+/// 関数の本体で束縛する名前（代入先、`for` の変数、`case Ok(x)` の束縛）と、最初に束縛する位置。
+/// スコープは区別しない。型検査はローカル変数を出てきた順に登録するので、それより前の使用はモジュールの参照になる。
+fn collect_locals(stmts: &[Stmt], out: &mut HashMap<String, u32>) {
+    let bind = |id: &Ident, out: &mut HashMap<String, u32>| {
+        let at = out.entry(id.name.clone()).or_insert(id.span.start);
+        *at = (*at).min(id.span.start);
+    };
     for s in stmts {
         match &s.kind {
-            StmtKind::Assign { target, .. } => {
-                out.insert(target.name.clone());
-            }
+            StmtKind::Assign { target, .. } => bind(target, out),
             StmtKind::For { var, body, .. } => {
-                out.insert(var.name.clone());
+                bind(var, out);
                 collect_locals(body, out);
             }
             StmtKind::If {
@@ -466,7 +469,7 @@ fn collect_locals(stmts: &[Stmt], out: &mut HashSet<String>) {
             StmtKind::Match { arms, .. } => {
                 for a in arms {
                     if let PatternKind::Bind(_, Some(v)) = &a.pattern.kind {
-                        out.insert(v.name.clone());
+                        bind(v, out);
                     }
                     collect_locals(&a.body, out);
                 }
@@ -490,8 +493,9 @@ struct Resolver<'a> {
     /// このモジュールの名前と定義（自分自身への修飾参照 `lib.f` を許す）
     own_name: &'a str,
     own: &'a HashMap<String, Def>,
-    /// いま解決している関数のローカル変数と引数。`xs.append(1)` はメソッド呼び出しで、モジュールの参照ではない
-    locals: HashSet<String>,
+    /// いま解決している関数のローカル変数と引数、最初に束縛する位置（引数は 0）。
+    /// `xs.append(1)` はメソッド呼び出しで、モジュールの参照ではない
+    locals: HashMap<String, u32>,
     /// 参照した import の名前（使われない import の警告 W0202 用）
     used: HashSet<String>,
 }
@@ -535,6 +539,16 @@ impl Resolver<'_> {
                     Some(a) => d.with_hint(format!("it is imported as `{a}`: write `{a}.{last}`")),
                     None => d.with_hint(format!("add `import {prefix}` at the top of this file")),
                 });
+            } else if let Some(full) = self.longer_module(prefix) {
+                // `import a.b` の後の `a.f()`: `a` はモジュールの経路の途中で、モジュールとして import していない
+                self.diags.push(
+                    Diagnostic::error(
+                        "E0706",
+                        format!("module `{prefix}` is not imported in this module"),
+                        span,
+                    )
+                    .with_hint(format!("`{full}` is imported: write `{full}.{last}`")),
+                );
             }
             return;
         }
@@ -542,6 +556,16 @@ impl Resolver<'_> {
             self.used.insert(name.clone());
             *name = internal.clone();
         }
+    }
+
+    /// `prefix.` で始まる、import したモジュールの修飾の接頭辞（`import a.b` なら `a` に対する `a.b`）。決定的にするため名前の順で最初のもの。
+    fn longer_module(&self, prefix: &str) -> Option<String> {
+        let start = format!("{prefix}.");
+        self.modules
+            .keys()
+            .filter(|k| k.starts_with(&start))
+            .min()
+            .cloned()
     }
 
     fn type_expr(&mut self, t: &mut TypeExpr) {
@@ -617,36 +641,52 @@ impl Resolver<'_> {
     }
 
     fn expr(&mut self, e: &mut Expr) {
+        // `m.f(...)`: 受け手がローカル変数でなく、モジュール（別名、自分自身、読み込まれたモジュール）の名前なら、
+        // メソッド呼び出しではなく修飾付きの呼び出し（M4 T4）。ローカル変数が同じ名前のモジュールを隠す
+        if let ExprKind::MethodCall { receiver, .. } = &e.kind
+            && !self
+                .locals
+                .get(&receiver.name)
+                .is_some_and(|&at| at < receiver.span.start)
+            && (self.modules.contains_key(&receiver.name)
+                || receiver.name == self.own_name
+                || self.index.contains_key(&receiver.name)
+                || self.longer_module(&receiver.name).is_some())
+        {
+            let ExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+                kwargs,
+            } = std::mem::replace(&mut e.kind, ExprKind::None)
+            else {
+                unreachable!("checked above")
+            };
+            e.kind = ExprKind::Call {
+                callee: Ident {
+                    name: format!("{}.{}", receiver.name, method.name),
+                    span: Span::new(receiver.span.start, method.span.end),
+                },
+                args,
+                kwargs,
+            };
+        }
         match &mut e.kind {
+            ExprKind::MethodCall { args, kwargs, .. } => {
+                for a in args {
+                    self.expr(a);
+                }
+                for (_, v) in kwargs {
+                    self.expr(v);
+                }
+            }
             ExprKind::Call {
                 callee,
                 args,
                 kwargs,
             } => {
                 let span = callee.span;
-                // ローカル変数のメソッド呼び出し（`xs.append(1)`）は型検査が扱う。モジュールの参照ではない
-                let method = callee
-                    .name
-                    .split_once('.')
-                    .is_some_and(|(recv, _)| self.locals.contains(recv));
-                if !method {
-                    let written = callee.name.clone();
-                    self.name(&mut callee.name, span);
-                    // 解決した内部名（`lib.f`）の接頭辞がローカル変数と同じだと、型検査がメソッド呼び出しと区別できない
-                    if callee.name != written
-                        && let Some((recv, _)) = callee.name.rsplit_once('.')
-                        && self.locals.contains(recv)
-                    {
-                        self.diags.push(
-                            Diagnostic::error(
-                                "E0704",
-                                format!("local variable `{recv}` has the same name as module `{recv}`, which `{written}` refers to"),
-                                span,
-                            )
-                            .with_hint(format!("rename the variable `{recv}`")),
-                        );
-                    }
-                }
+                self.name(&mut callee.name, span);
                 for a in args {
                     self.expr(a);
                 }

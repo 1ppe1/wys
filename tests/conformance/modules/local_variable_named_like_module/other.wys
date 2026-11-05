@@ -1,0 +1,2 @@
+pub def get(k: str) -> int:
+    return 99

@@ -1,0 +1,9 @@
+pub def f() -> int:
+    return 1
+
+pub def h() -> int:
+    # 同じ名前のローカル変数を束縛する前の `lib.f()` は、自分自身のモジュールの関数
+    v = lib.f()
+    lib = [v]
+    lib.append(1)
+    return len(lib)

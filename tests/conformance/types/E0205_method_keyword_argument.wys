@@ -1,0 +1,7 @@
+# メソッドはキーワード引数を取らない（以前は検査も評価もせずに捨てていた）
+# expect-error: E0205 6:18
+
+def main() -> None:
+    xs = [1]
+    xs.append(2, v=3)
+    print(len(xs))

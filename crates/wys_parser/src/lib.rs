@@ -902,7 +902,28 @@ impl Parser<'_> {
             }
             let name = self.ident("a field name")?;
             let start = e.span.start;
-            // `m.f(...)` / `a.b.f(...)`: 名前だけの並びの後に `(` が来たら、修飾付きの呼び出し（ADR-0010）
+            // `x.f(...)`: 名前1つの後なら、メソッド呼び出し（名前解決がモジュールの参照と区別する。M4 T4）
+            if self.at(&TokenKind::LParen)
+                && let ExprKind::Name(recv) = &e.kind
+            {
+                let receiver = Ident {
+                    name: recv.clone(),
+                    span: e.span,
+                };
+                self.bump();
+                let (args, kwargs) = self.call_args()?;
+                e = self.mk(
+                    ExprKind::MethodCall {
+                        receiver,
+                        method: name,
+                        args,
+                        kwargs,
+                    },
+                    start,
+                );
+                continue;
+            }
+            // `a.b.f(...)`: 名前の並びの後に `(` が来たら、修飾付きの呼び出し（ADR-0010）
             if self.at(&TokenKind::LParen)
                 && let Some(prefix) = dotted_name(&e)
             {
@@ -1084,6 +1105,26 @@ mod tests {
             }
             other => panic!("expected if, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn method_calls_and_qualified_calls() {
+        // `x.f(...)` はメソッド呼び出し（名前解決がモジュールの参照と区別する）、`a.b.f(...)` は修飾付きの呼び出し
+        let m = ok("def main() -> None:\n    xs.append(1)\n    a.b.f(2)\n");
+        let kinds: Vec<&ExprKind> = m.funcs[0]
+            .body
+            .iter()
+            .map(|s| match &s.kind {
+                StmtKind::Expr(e) => &e.kind,
+                other => panic!("expected an expression statement, got {other:?}"),
+            })
+            .collect();
+        assert!(matches!(
+            kinds[0],
+            ExprKind::MethodCall { receiver, method, args, .. }
+                if receiver.name == "xs" && method.name == "append" && args.len() == 1
+        ));
+        assert!(matches!(kinds[1], ExprKind::Call { callee, .. } if callee.name == "a.b.f"));
     }
 
     #[test]

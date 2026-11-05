@@ -1,0 +1,18 @@
+# モジュールと同じ名前のローカル変数があっても、別名 `l` の呼び出しはモジュールを指す（M4 T4。以前は E0704）
+# expect-stdout: 2
+# expect-stdout: 1
+# expect-stdout: 99
+import lib as l
+import other
+
+def from_module() -> int:
+    return other.get("k")
+
+def main() -> None:
+    lib = [1]
+    lib.append(l.f())
+    print(len(lib))
+    # ローカル変数は同じ名前のモジュールを隠す: `other.pop(...)` は変数 `other` のメソッド
+    other = {"k": 1}
+    print(other.pop("k"))
+    print(from_module())
