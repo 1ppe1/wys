@@ -1,0 +1,15 @@
+# `case` のパターンに型の別名を書ける（以前は lowering が内部エラーで止まっていた。M4 T0）
+# expect-stdout: id
+# expect-stdout: other
+type Id = int
+
+def show(v: Id | str) -> None:
+    match v:
+        case Id():
+            print("id")
+        case _:
+            print("other")
+
+def main() -> None:
+    show(3)
+    show("x")

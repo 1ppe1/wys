@@ -660,8 +660,13 @@ impl Parser<'_> {
                 self.bump();
                 PatternKind::Wildcard
             }
-            TokenKind::Ident(name) => {
+            TokenKind::Ident(first) => {
                 self.bump();
+                // `case m.Id():`: ほかのモジュールの型名（修飾名）。名前解決が内部名に直す（M4 T0）
+                let mut name = first;
+                while self.eat(&TokenKind::Dot) {
+                    name = format!("{name}.{}", self.ident("a type name")?.name);
+                }
                 self.expect(
                     &TokenKind::LParen,
                     "`(` (type patterns are written like `int()`)",

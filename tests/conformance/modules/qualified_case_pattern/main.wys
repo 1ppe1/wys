@@ -1,0 +1,15 @@
+# `case` のパターンに、ほかのモジュールの型名を修飾して書ける（M4 T0）
+# expect-stdout: id 3
+# expect-stdout: other
+import ids
+
+def show(v: ids.Id | str) -> None:
+    match v:
+        case ids.Id():
+            print("id " + "3")
+        case _:
+            print("other")
+
+def main() -> None:
+    show(3)
+    show("x")
