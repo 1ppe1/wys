@@ -1,0 +1,6 @@
+# `None` との比較は `is None` で書く（ADR-0016 論点 11）
+# expect-error: E0207 5:8
+def main() -> None:
+    o: int | None = None
+    if o == None:
+        print(0)

@@ -469,6 +469,37 @@ impl Types {
         }
     }
 
+    /// `==` で比べられる型か（ADR-0016 論点 11）。構成要素も再帰的に比べられること。
+    /// 型パラメータと `Unknown` は比べられない。同じ型を二度たどらない（入れ子が深くても線形）。
+    pub fn comparable(&self, t: Ty) -> bool {
+        fn go(ts: &Types, t: Ty, seen: &mut HashSet<Ty>) -> bool {
+            if !seen.insert(t) {
+                return true;
+            }
+            match t {
+                Ty::Int | Ty::Bool | Ty::Str | Ty::None => true,
+                Ty::Param(_) | Ty::Unknown | Ty::Error => false,
+                Ty::List(l) => go(ts, ts.list_elem(l), seen),
+                Ty::Dict(d) => {
+                    let (k, v) = ts.dict_args(d);
+                    go(ts, k, seen) && go(ts, v, seen)
+                }
+                Ty::Result(r) => {
+                    let (o, e) = ts.result_args(r);
+                    go(ts, o, seen) && go(ts, e, seen)
+                }
+                Ty::Union(_) => ts.members(t).into_iter().all(|m| go(ts, m, seen)),
+                Ty::Record(id) => ts
+                    .record_def(id)
+                    .fields
+                    .clone()
+                    .into_iter()
+                    .all(|(_, f)| go(ts, f, seen)),
+            }
+        }
+        go(self, t, &mut HashSet::new())
+    }
+
     pub fn record_def(&self, id: RecordId) -> &RecordDef {
         &self.records[id.0 as usize]
     }
@@ -2986,6 +3017,47 @@ impl<'a> FnCk<'a> {
         Ty::Error
     }
 
+    /// 構造を持つ値の `==` / `!=`（ADR-0016 論点 11〜13）。決まらなければ `None` を返し、従来の規則と診断に任せる。
+    fn equality(&mut self, op: BinOp, lt: Ty, rt: Ty, span: Span) -> Option<Ty> {
+        if lt == Ty::None || rt == Ty::None {
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E0207",
+                    format!("operator `{}` cannot compare with `None`", op.symbol()),
+                    span,
+                )
+                .with_hint(if op == BinOp::Eq {
+                    "use `x is None` to check for `None`"
+                } else {
+                    "use `x is not None` to check for `None`"
+                }),
+            );
+            return Some(Ty::Error);
+        }
+        if self.cx.types.members(lt).contains(&Ty::Unknown)
+            || self.cx.types.members(rt).contains(&Ty::Unknown)
+        {
+            return None; // トップレベルの Unknown の E0601 は従来の経路で報告する
+        }
+        if self.cx.types.contains_unknown(lt) || self.cx.types.contains_unknown(rt) {
+            // 構造の中の Unknown（`list[Unknown]` など）も E0601
+            self.cx.diags.push(
+                Diagnostic::error("E0601", "this `Unknown` value has not been checked", span)
+                    .with_cause("values from outside the program must be checked before use (LANG-006, ADR-0011)")
+                    .with_hint("inspect the values with `match` before comparing them"),
+            );
+            return Some(Ty::Error);
+        }
+        let types = &self.cx.types;
+        // 片方の構成要素がすべて、もう片方の構成要素に含まれる（`o == 1`、`o: int | None`）
+        let fits = |a: Ty, b: Ty| {
+            let bm = types.members(b);
+            types.members(a).iter().all(|m| bm.contains(m))
+        };
+        let related = lt == rt || fits(lt, rt) || fits(rt, lt);
+        (related && types.comparable(lt) && types.comparable(rt)).then_some(Ty::Bool)
+    }
+
     fn binary(&mut self, op: BinOp, lt: Ty, rt: Ty, span: Span) -> Ty {
         if lt == Ty::Error || rt == Ty::Error {
             return Ty::Error;
@@ -2997,6 +3069,11 @@ impl<'a> FnCk<'a> {
                     .with_hint("use `//` for integer (floor) division"),
             );
             return Ty::Error;
+        }
+        if matches!(op, BinOp::Eq | BinOp::Ne)
+            && let Some(t) = self.equality(op, lt, rt, span)
+        {
+            return t;
         }
         let rule = move |ts: &[Ty]| -> Option<Ty> {
             let (l, r) = (ts[0], ts[1]);

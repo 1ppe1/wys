@@ -1,0 +1,67 @@
+# 構造を持つ値の `==` / `!=`（ADR-0016 論点 11〜13）
+# expect-stdout: True
+# expect-stdout: False
+# expect-stdout: True
+# expect-stdout: True
+# expect-stdout: False
+# expect-stdout: True
+# expect-stdout: True
+# expect-stdout: False
+# expect-stdout: True
+# expect-stdout: False
+# expect-stdout: True
+# expect-stdout: False
+# expect-stdout: True
+# expect-stdout: True
+# expect-stdout: False
+# expect-stdout: True
+# expect-stdout: False
+# expect-stdout: True
+# expect-stdout: True
+type P = {x: int, name: str}
+type Box = {v: int | None, tags: list[str]}
+
+def ok_or(n: int) -> Result[int, str]:
+    if n < 0:
+        return Err("negative")
+    return Ok(n)
+
+def main() -> None:
+    # レコード（フィールドごと、str は内容で比べる）
+    print(P(x=1, name="a") == P(x=1, name="a"))
+    print(P(x=1, name="a") == P(x=1, name="b"))
+    print(P(x=1, name="a") != P(x=2, name="a"))
+    # 入れ子: Union のフィールドと list のフィールド
+    print(Box(v=None, tags= ["t"]) == Box(v=None, tags= ["t"]))
+    print(Box(v=1, tags= ["t"]) == Box(v=None, tags= ["t"]))
+    # list: 長さと順序どおりの要素
+    xs = [[1, 2], [3]]
+    ys = [[1, 2], [3]]
+    print(xs == ys)
+    empty: list[int] = []
+    none: list[int] = []
+    print(empty == none)
+    print([1, 2] == [2, 1])
+    # dict: キーの集合と各キーの値（順序は問わない）
+    d = {"a": 1, "b": 2}
+    e = {"b": 2, "a": 1}
+    print(d == e)
+    e["b"] = 3
+    print(d == e)
+    e.pop("b")
+    print(d != e)
+    # Result: タグと payload
+    print(ok_or(1) == ok_or(2))
+    print(ok_or(-1) == ok_or(-5))
+    print(ok_or(3) == ok_or(3))
+    # Union: 片方がもう片方に置ける場合
+    o: int | None = None
+    print(o == 1)
+    s: str | None = "x"
+    print(s == "x")
+    # 基本型が左、Union が右
+    print(1 == o)
+    print("x" == s)
+    b: bool | None = True
+    if True == b:
+        print(True)

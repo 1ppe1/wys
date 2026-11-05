@@ -1,0 +1,6 @@
+# 構造の中の `Unknown` も、検査してからでないと比べられない（ADR-0016 論点 11）
+# expect-error: E0601 6:11
+def main() -> None:
+    xs = [parse_scalar("1")]
+    ys = [parse_scalar("1")]
+    print(xs == ys)
