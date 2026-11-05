@@ -416,3 +416,44 @@ fn async_without_scheduler_is_runtime_error() {
         assert!(stderr.contains("outside of an async main"), "{stderr}");
     }
 }
+
+#[test]
+fn payload_starts_zeroed() {
+    extern "C" fn main() {
+        let t = wys_task_new(16, named, release_task);
+        assert_eq!(arg(t), 0);
+        assert_eq!(result(t), 0);
+        // 始めずに捨ててもよい
+        drop_task(t);
+    }
+    run(true, main);
+}
+
+#[test]
+fn starting_a_task_twice_is_runtime_error() {
+    extern "C" fn main() {
+        let t = spawn(named, 1);
+        // SAFETY: 二重に始める（コンパイラのバグの再現）。
+        unsafe { wys_task_start(t) };
+    }
+    if let Some(out) = child(
+        "task::tests::starting_a_task_twice_is_runtime_error",
+        || run_with(true, main),
+    ) {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(101), "{stderr}");
+        assert!(stderr.contains("started twice"), "{stderr}");
+    }
+}
+
+#[test]
+fn huge_sleep_does_not_overflow_the_clock() {
+    extern "C" fn main() {
+        // i64::MAX を 3 回で u64 を超える
+        for _ in 0..3 {
+            wys_sleep_ms(i64::MAX);
+        }
+        assert_eq!(sched().now_ms, u64::MAX);
+    }
+    run(true, main);
+}

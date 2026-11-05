@@ -290,10 +290,10 @@ fn c_name(s: *const Header) -> Option<CString> {
     c
 }
 
-/// 直前の Python の操作が失敗したか。
+/// 直前の Python の操作が失敗したか。CPython を呼ばないので、メインスタックに移らない（`wys_py_err_*` も同じ）。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_py_failed() -> bool {
-    wys_runtime::task::on_main_stack(|| LAST.with(|l| l.borrow().is_some()))
+    LAST.with(|l| l.borrow().is_some())
 }
 
 fn failure_text(pick: fn(&Failure) -> &str) -> *mut Header {
@@ -304,19 +304,19 @@ fn failure_text(pick: fn(&Failure) -> &str) -> *mut Header {
 /// 直前の失敗の例外の型名（参照カウント 1 の文字列）。失敗していなければ空。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_py_err_kind() -> *mut Header {
-    wys_runtime::task::on_main_stack(|| failure_text(|f| &f.kind))
+    failure_text(|f| &f.kind)
 }
 
 /// 直前の失敗のメッセージ（`str(e)`）。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_py_err_message() -> *mut Header {
-    wys_runtime::task::on_main_stack(|| failure_text(|f| &f.message))
+    failure_text(|f| &f.message)
 }
 
 /// 直前の失敗の整形したトレースバック。なければ空。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_py_err_traceback() -> *mut Header {
-    wys_runtime::task::on_main_stack(|| failure_text(|f| &f.traceback))
+    failure_text(|f| &f.traceback)
 }
 
 /// `import name`。

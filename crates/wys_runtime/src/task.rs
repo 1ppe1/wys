@@ -193,8 +193,8 @@ mod arch {
 
 #[cfg(target_arch = "x86_64")]
 mod arch {
-    /// 切り替えで積む大きさ（r15、r14、r13、r12、rbx、rbp と戻り先）。
-    pub const FRAME: usize = 72;
+    /// 切り替えで積む大きさ（MXCSR と x87 の制御語、r15、r14、r13、r12、rbx、rbp と戻り先）。
+    pub const FRAME: usize = 80;
 
     #[unsafe(naked)]
     pub unsafe extern "C" fn ctx_switch(_save: *mut *mut u8, _to: *mut u8) {
@@ -205,8 +205,15 @@ mod arch {
             "push r13",
             "push r14",
             "push r15",
+            // MXCSR の制御ビットと x87 の制御語も呼び出し先保存（SysV ABI）
+            "sub rsp, 8",
+            "stmxcsr [rsp]",
+            "fnstcw [rsp + 4]",
             "mov [rdi], rsp",
             "mov rsp, rsi",
+            "ldmxcsr [rsp]",
+            "fldcw [rsp + 4]",
+            "add rsp, 8",
             "pop r15",
             "pop r14",
             "pop r13",
@@ -245,14 +252,17 @@ mod arch {
     /// # Safety
     /// `top` は 16 バイト境界で、その下に `FRAME` バイト以上の書き込める領域があること。
     pub unsafe fn init_frame(top: *mut u8, entry: usize, arg: usize) -> *mut u8 {
-        // SAFETY: 関数の安全条件どおり。`ret` の後のスタックポインタ（sp + 56 = top - 16）が 16 バイト境界になる。
+        // SAFETY: 関数の安全条件どおり。`ret` の後のスタックポインタ（sp + 64 = top - 16）が 16 バイト境界になる。
         unsafe {
             let sp = top.sub(FRAME);
             std::ptr::write_bytes(sp, 0, FRAME);
+            // MXCSR と x87 の制御語の既定値（すべての例外を隠し、最近接への丸め）
+            (sp as *mut u32).write(0x1F80);
+            (sp.add(4) as *mut u16).write(0x037F);
             let w = sp as *mut usize;
-            w.add(2).write(entry); // r13
-            w.add(3).write(arg); // r12
-            w.add(6).write(trampoline as *const () as usize); // 戻り先
+            w.add(3).write(entry); // r13
+            w.add(4).write(arg); // r12
+            w.add(7).write(trampoline as *const () as usize); // 戻り先
             sp
         }
     }
@@ -453,6 +463,7 @@ fn schedule() {
             }
             return;
         }
+        // タイマーは 1 つずつ起こす（期限が同じでも、起きたタスクが動いてから次を起こす。順序は決定的）
         if let Some(Reverse((deadline, _, id))) = s.timers.pop() {
             if !s.virtual_time {
                 let target = s.start + Duration::from_millis(deadline);
@@ -483,9 +494,8 @@ fn switch_to(next: usize) {
     let s = sched();
     let cur = s.cur;
     let dying = cb(s, cur).state == State::Done;
-    s.prev = cur;
-    s.cur = next;
-    s.switches += 1;
+    // 状態（cur）を書き換える前にスタックを用意する（書き換えた後は「タスク 0 は中断中」に見えるので、
+    // この間に on_main_stack を呼ぶとメインスタックの使用中のフレームを踏む）
     if cb(s, next).sp.is_null() {
         // 初めて動くタスク: スタックを確保して最初のフレームを作る
         let stack = Stack::new();
@@ -497,6 +507,9 @@ fn switch_to(next: usize) {
         c.sp = unsafe { arch::init_frame(top, task_main as *const () as usize, next) };
         c.stack = Some(stack);
     }
+    s.prev = cur;
+    s.cur = next;
+    s.switches += 1;
     let to = cb(s, next).sp;
     let (to_bottom, to_size) = (cb(s, next).bottom, cb(s, next).size);
     let save: *mut *mut u8 = if dying {
@@ -529,12 +542,10 @@ fn after_switch() {
         // SAFETY: ASan の fiber API の約束どおり、切り替えの直後に呼ぶ。
         unsafe { (h.finish)(fake, &mut bottom, &mut size) };
         // 切り替え元のスタックの範囲（タスク 0 のものはここで初めて分かる）
-        let prev = s.prev;
-        if let Some(Some(p)) = s.tasks.get_mut(prev)
-            && p.stack.is_none()
-        {
-            p.bottom = bottom;
-            p.size = size;
+        if s.prev == 0 {
+            let main = cb(s, 0);
+            main.bottom = bottom;
+            main.size = size;
         }
     }
     // 終わったタスクのスタックを解放する（いまはそのスタックの上にいない）
@@ -589,8 +600,12 @@ fn task_id(t: *const Header) -> usize {
     unsafe { (data(t as *mut Header) as *const i64).read() as usize }
 }
 
-/// タスクのオブジェクトを作る（参照カウント 1。まだ動かさない）。中身は番号の後に `payload_len` バイト。
+/// タスクのオブジェクトを作る（参照カウント 1。まだ動かさない）。中身は番号の後に `payload_len` バイトで、
+/// 0 で埋める（結果を書く前に最後の参照が消えても、型ごとの release は null の結果を release するだけで済む）。
 /// `entry` はタスクの本体（引数を中身から読んで関数を呼び、結果を書く）、`release` は型ごとの release。
+///
+/// **ABI の約束:** タスクのオブジェクトの参照は、汎用の `wys_release` ではなく必ず `release`（参照カウントを減らし、
+/// 0 になったら結果を release してから `wys_task_free` を呼ぶ）で手放す。`wys_release` で解放すると制御ブロックが残る。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_task_new(payload_len: i64, entry: Entry, release: Entry) -> *mut Header {
     let s = sched();
@@ -603,8 +618,11 @@ pub extern "C" fn wys_task_new(payload_len: i64, entry: Entry, release: Entry) -
         }
     };
     s.tasks[id] = Some(Cb::new(Some(entry), Some(release), obj));
-    // SAFETY: 確保したばかりの中身の先頭。
-    unsafe { (data(obj) as *mut i64).write(id as i64) };
+    // SAFETY: 確保したばかりの中身。先頭に番号を書き、残りを 0 で埋める。
+    unsafe {
+        (data(obj) as *mut i64).write(id as i64);
+        std::ptr::write_bytes(data(obj).add(ID_SIZE), 0, payload_len.max(0) as usize);
+    }
     obj
 }
 
@@ -625,9 +643,14 @@ pub unsafe extern "C" fn wys_task_payload(t: *mut Header) -> *mut u8 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_task_start(t: *mut Header) {
     // SAFETY: 関数の安全条件どおり。
-    unsafe { super::wys_retain(t) };
     let s = sched();
     let id = task_id(t);
+    let c = cb(s, id);
+    if c.state != State::Runnable || !c.sp.is_null() || s.run.contains(&id) {
+        runtime_error("a task was started twice (this is a compiler bug)");
+    }
+    // SAFETY: 関数の安全条件どおり。
+    unsafe { super::wys_retain(t) };
     s.unfinished += 1;
     s.run.push_back(id);
 }
@@ -680,7 +703,7 @@ pub unsafe extern "C" fn wys_task_free(t: *mut Header) {
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_sleep_ms(n: i64) {
     let s = sched();
-    let deadline = s.now_ms + n.max(0) as u64;
+    let deadline = s.now_ms.saturating_add(n.max(0) as u64);
     let seq = s.seq;
     s.seq += 1;
     let cur = s.cur;
