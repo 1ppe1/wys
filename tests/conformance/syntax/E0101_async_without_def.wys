@@ -1,0 +1,3 @@
+# expect-error: E0101 2:7
+async main() -> None:
+    pass

@@ -771,3 +771,47 @@ fn structural_values_are_printed() {
         "[P(x=\"a\\n\", y=1)]\n{1: None, 2: [True]}\nErr(\"e\")\n"
     );
 }
+
+/// `async`（ADR-0020、M4 T10b）: 型検査は通る。コード生成は T10c まで未対応で、`build` / `run` は理由を出して止まる。
+#[test]
+fn async_programs_type_check_but_do_not_build_yet() {
+    let src = "async def double(n: int) -> int:\n    await sleep_ms(1)\n    return n * 2\n\nasync def main() -> None:\n    t = spawn(double(2))\n    print(await double(1) + await t)\n";
+    let path = scratch("async_check", src);
+    let out = cli(&["check", path.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let (code, _, stderr) = run("async_run", src);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("`async` cannot be compiled yet"),
+        "{stderr}"
+    );
+    // `async def` の呼び出しには `await` か `spawn` が要る（E1303）
+    let path = scratch(
+        "async_e1303",
+        "async def f() -> int:\n    return 1\n\nasync def main() -> None:\n    print(f())\n",
+    );
+    let out = cli(&["check", "--format", "json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("\"E1303\""));
+    // `async def` がなくても、`Task` の型を使っていればコード生成の前で止まる（パニックしない）
+    let path = scratch(
+        "task_annotation_only",
+        "def identity(t: Task[int]) -> Task[int]:\n    return t\n\ndef main() -> None:\n    print(1)\n",
+    );
+    let out = cli(&["check", path.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = cli(&["run", path.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("`async` cannot be compiled yet"),
+        "{stderr}"
+    );
+}

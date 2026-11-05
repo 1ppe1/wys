@@ -16,6 +16,10 @@ pub enum TokenKind {
     Ident(String),
     // keywords
     Def,
+    /// `async def`（ADR-0020）
+    Async,
+    /// `await`（ADR-0020）
+    Await,
     Return,
     If,
     Elif,
@@ -89,6 +93,8 @@ impl TokenKind {
             Str(_) => "string literal",
             Ident(n) => return format!("identifier `{n}`"),
             Def => "`def`",
+            Async => "`async`",
+            Await => "`await`",
             Return => "`return`",
             If => "`if`",
             Elif => "`elif`",
@@ -194,6 +200,8 @@ fn keyword(s: &str) -> Option<TokenKind> {
     use TokenKind::*;
     Some(match s {
         "def" => Def,
+        "async" => Async,
+        "await" => Await,
         "return" => Return,
         "if" => If,
         "elif" => Elif,

@@ -198,7 +198,10 @@ impl Parser<'_> {
         let mut funcs = Vec::new();
         loop {
             let public = matches!(self.peek(), TokenKind::Pub)
-                && matches!(self.peek_at(1), TokenKind::Def | TokenKind::Ident(_));
+                && matches!(
+                    self.peek_at(1),
+                    TokenKind::Def | TokenKind::Async | TokenKind::Ident(_)
+                );
             if public {
                 self.bump();
             }
@@ -225,7 +228,7 @@ impl Parser<'_> {
                 TokenKind::Newline => {
                     self.bump();
                 }
-                TokenKind::Def => match self.func_def() {
+                TokenKind::Def | TokenKind::Async => match self.func_def() {
                     Ok(mut f) => {
                         f.public = public;
                         funcs.push(f);
@@ -400,7 +403,9 @@ impl Parser<'_> {
     }
 
     fn func_def(&mut self) -> PResult<FuncDef> {
-        let start = self.expect(&TokenKind::Def, "`def`")?.start;
+        let start = self.span().start;
+        let is_async = self.eat(&TokenKind::Async);
+        self.expect(&TokenKind::Def, "`def`")?;
         let name = self.ident("a function name")?;
         let type_params = self.type_params()?;
         self.expect(&TokenKind::LParen, "`(`")?;
@@ -469,6 +474,7 @@ impl Parser<'_> {
         let body = self.block()?;
         Ok(FuncDef {
             public: false,
+            is_async,
             name,
             type_params,
             params,
@@ -501,7 +507,7 @@ impl Parser<'_> {
     fn stmt(&mut self) -> PResult<Stmt> {
         let start = self.span().start;
         let kind = match self.peek() {
-            TokenKind::Def => {
+            TokenKind::Def | TokenKind::Async => {
                 self.diags.push(Diagnostic::error(
                     "E0105",
                     "nested function definitions are not supported yet",
@@ -863,14 +869,33 @@ impl Parser<'_> {
                 start,
             ));
         }
+        if self.at(&TokenKind::Await) {
+            // `await` の被演算子は `?` を含まない後置の並びで、`?` は `await` の外側に付く（ADR-0020 論点 4・13）
+            let start = self.bump().span.start;
+            let operand = self.postfix_chain(false)?;
+            let e = self.mk(ExprKind::Await(Box::new(operand)), start);
+            return self.postfix_after(e, true);
+        }
         self.postfix()
     }
 
     /// `primary { "." IDENT }`
     fn postfix(&mut self) -> PResult<Expr> {
-        let mut e = self.primary()?;
+        self.postfix_chain(true)
+    }
+
+    /// 後置の並び。`allow_try` が偽なら `?` の手前で止まる（`await` の被演算子）。
+    fn postfix_chain(&mut self, allow_try: bool) -> PResult<Expr> {
+        let e = self.primary()?;
+        self.postfix_after(e, allow_try)
+    }
+
+    fn postfix_after(&mut self, mut e: Expr, allow_try: bool) -> PResult<Expr> {
         loop {
             if self.at(&TokenKind::Question) {
+                if !allow_try {
+                    return Ok(e);
+                }
                 self.bump();
                 let start = e.span.start;
                 e = self.mk(ExprKind::Try(Box::new(e)), start);

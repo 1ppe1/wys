@@ -1,0 +1,42 @@
+# expect-mode: test
+async def helper(n: int) -> int:
+    await sleep_ms(1)
+    return n * 2
+
+async def test_await() -> None:
+    assert(await helper(2) == 4)
+
+async def test_spawn() -> None:
+    t: Task[int] = spawn(helper(3))
+    ts = [t, spawn(helper(4))]
+    total = 0
+    for x in ts:
+        total = total + await x
+    assert(total == 14)
+
+def test_sync_still_works() -> None:
+    assert(True)
+
+async def parse(s: str) -> Result[int, str]:
+    if s == "":
+        return Err("empty")
+    return Ok(len(s))
+
+async def total(a: str, b: str) -> Result[int, str]:
+    # `await f()?` は `(await f())?`（ADR-0020 論点 13）
+    x = await parse(a)?
+    return Ok(x + await parse(b)?)
+
+async def test_await_and_try() -> None:
+    match await total("ab", "c"):
+        case Ok(n):
+            assert(n == 3)
+        case Err(_):
+            assert(False)
+
+async def join[T](t: Task[T]) -> T:
+    return await t
+
+async def test_generic_join_infers_through_task() -> None:
+    n = await join(spawn(helper(5)))
+    assert(n == 10)

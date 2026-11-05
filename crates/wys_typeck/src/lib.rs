@@ -36,6 +36,9 @@ pub enum Ty {
     Result(ResultId),
     /// `dict[K, V]`（ヒープ上の可変な辞書、参照を共有する。キーは `int` / `bool` / `str`。ADR-0015）
     Dict(DictId),
+    /// `Task[T]`（`spawn` が返す、並行に進む処理。組み込みの名目的な Generic 型。ADR-0020）。
+    /// 表示・比較・`dict` のキーには使えない
+    Task(TaskId),
     /// 未検証の外部値（ADR-0011）。`int` / `bool` / `str` / `float`（ADR-0019）/ `None` のどれかだが、開いた型として扱い、
     /// `match` で確かめるまで具体的な型として使えない。
     Unknown,
@@ -59,6 +62,9 @@ pub struct ListId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ResultId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TaskId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DictId(pub u32);
@@ -108,6 +114,9 @@ pub struct Types {
     /// `dict[K, V]` のキーと値の型（`DictId` の順）
     dicts: Vec<(Ty, Ty)>,
     dict_index: HashMap<(Ty, Ty), DictId>,
+    /// `Task[T]` の結果の型（`TaskId` の順）
+    tasks: Vec<Ty>,
+    task_index: HashMap<Ty, TaskId>,
     /// 組み込みのレコード `PyError` の ID（`py_error` で登録する。E1202 の判定に使う）
     py_error_id: Option<RecordId>,
 }
@@ -178,6 +187,7 @@ impl Types {
             Ty::Param(p) => self.params[p.0 as usize].clone(),
             Ty::Unknown => "Unknown".into(),
             Ty::List(l) => format!("list[{}]", name(self.lists[l.0 as usize])),
+            Ty::Task(k) => format!("Task[{}]", name(self.tasks[k.0 as usize])),
             Ty::Result(r) => {
                 let (ok, err) = self.results[r.0 as usize];
                 format!("Result[{}, {}]", name(ok), name(err))
@@ -315,6 +325,14 @@ impl Types {
                 let e = self.subst(e, map);
                 self.list(e)
             }
+            Ty::Task(k) => {
+                let e = self.tasks[k.0 as usize];
+                if !self.contains_param(e) {
+                    return t;
+                }
+                let e = self.subst(e, map);
+                self.task(e)
+            }
             Ty::Result(r) => {
                 if !self.contains_param(t) {
                     return t;
@@ -364,6 +382,7 @@ impl Types {
             Ty::Union(_) => self.members(t).iter().any(|m| self.contains_param(*m)),
             Ty::Record(r) => self.records[r.0 as usize].has_param,
             Ty::List(l) => self.contains_param(self.lists[l.0 as usize]),
+            Ty::Task(k) => self.contains_param(self.tasks[k.0 as usize]),
             Ty::Result(r) => {
                 let (ok, err) = self.results[r.0 as usize];
                 self.contains_param(ok) || self.contains_param(err)
@@ -389,6 +408,7 @@ impl Types {
                 // `PyError` も表示・比較できない（ADR-0018 論点 13）。フィールドは読める
                 Ty::Record(id) if ts.py_error_id == Some(id) => true,
                 Ty::List(l) => go(ts, ts.list_elem(l), seen),
+                Ty::Task(k) => go(ts, ts.task_elem(k), seen),
                 Ty::Dict(d) => {
                     let (k, v) = ts.dict_args(d);
                     go(ts, k, seen) || go(ts, v, seen)
@@ -434,6 +454,7 @@ impl Types {
             Ty::Union(_) => self.members(t).iter().any(|m| self.contains_unknown(*m)),
             Ty::Record(r) => self.records[r.0 as usize].has_unknown,
             Ty::List(l) => self.contains_unknown(self.lists[l.0 as usize]),
+            Ty::Task(k) => self.contains_unknown(self.tasks[k.0 as usize]),
             Ty::Result(r) => {
                 let (ok, err) = self.results[r.0 as usize];
                 self.contains_unknown(ok) || self.contains_unknown(err)
@@ -463,6 +484,30 @@ impl Types {
     /// `list[T]` の要素の型。
     pub fn list_elem(&self, l: ListId) -> Ty {
         self.lists[l.0 as usize]
+    }
+
+    /// `Task[result]` の型を作る（同じ結果の型なら同じ ID。ADR-0020）。
+    pub fn task(&mut self, result: Ty) -> Ty {
+        if result == Ty::Error {
+            return Ty::Error;
+        }
+        if let Some(&id) = self.task_index.get(&result) {
+            return Ty::Task(id);
+        }
+        let id = TaskId(self.tasks.len() as u32);
+        self.tasks.push(result);
+        self.task_index.insert(result, id);
+        Ty::Task(id)
+    }
+
+    /// `Task[T]` の結果の型。
+    pub fn task_elem(&self, k: TaskId) -> Ty {
+        self.tasks[k.0 as usize]
+    }
+
+    /// `Task[T]` の型を 1 つでも作ったか（注釈だけで使った場合を含む）。
+    pub fn has_tasks(&self) -> bool {
+        !self.tasks.is_empty()
     }
 
     /// `Result[ok, err]` の型を作る（同じ型引数なら同じ ID）。
@@ -516,6 +561,7 @@ impl Types {
             }
             Ty::Record(r) => self.records[r.0 as usize].depth,
             Ty::List(l) => 1 + self.depth(self.lists[l.0 as usize]),
+            Ty::Task(k) => 1 + self.depth(self.tasks[k.0 as usize]),
             Ty::Result(r) => {
                 let (ok, err) = self.results[r.0 as usize];
                 1 + self.depth(ok).max(self.depth(err))
@@ -537,7 +583,8 @@ impl Types {
             }
             match t {
                 Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::None => true,
-                Ty::Param(_) | Ty::Unknown | Ty::Error | Ty::PyObject => false,
+                // `Task` は比べられない・表示できない（ADR-0020 論点 14）
+                Ty::Param(_) | Ty::Unknown | Ty::Error | Ty::PyObject | Ty::Task(_) => false,
                 Ty::List(l) => go(ts, ts.list_elem(l), seen),
                 Ty::Dict(d) => {
                     let (k, v) = ts.dict_args(d);
@@ -569,6 +616,8 @@ impl Types {
             }
             match t {
                 Ty::List(l) => go(ts, ts.list_elem(l), seen),
+                // `Task[None]` は結果を持たないタスク（`None` だけの場所ではない）
+                Ty::Task(k) => go(ts, ts.task_elem(k), seen),
                 Ty::Dict(d) => {
                     let (k, v) = ts.dict_args(d);
                     if v == Ty::None {
@@ -628,6 +677,8 @@ pub struct FuncSig {
     pub span: Span,
     /// `uses` 節で宣言した Effect（ADR-0014）。注釈がなければ `None`（検査しない）。
     pub effects: Option<EffectSet>,
+    /// `async def`（ADR-0020）
+    pub is_async: bool,
 }
 
 /// 変数の参照で、その地点の型が宣言型と異なる（絞り込まれている）こと。
@@ -869,7 +920,9 @@ fn unused_locals(f: &FuncDef) -> Vec<Diagnostic> {
                 expr(lhs, reads);
                 expr(rhs, reads);
             }
-            ExprKind::Field { base, .. } | ExprKind::Try(base) => expr(base, reads),
+            ExprKind::Field { base, .. } | ExprKind::Try(base) | ExprKind::Await(base) => {
+                expr(base, reads)
+            }
             ExprKind::List(items) => items.iter().for_each(|i| expr(i, reads)),
             ExprKind::Dict(entries) => {
                 for (k, v) in entries {
@@ -974,6 +1027,7 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
             ret,
             span: f.name.span,
             effects,
+            is_async: f.is_async,
         });
     }
     if require_main || cx.sig_index.contains_key("main") {
@@ -1044,6 +1098,7 @@ fn declare_types(cx: &mut Ctx, module: &Module) {
                 | "dict"
                 | "PyObject"
                 | "PyError"
+                | "Task"
         ) {
             cx.diags.push(Diagnostic::error(
                 "E0209",
@@ -1284,6 +1339,26 @@ impl Ctx {
                 self.diags.push(Diagnostic::error(
                     "E0402",
                     "`list` needs its element type, e.g. `list[int]`",
+                    t.span,
+                ));
+                Ty::Error
+            }
+            TypeExprKind::Apply(name, args) if name == "Task" => {
+                if args.len() != 1 {
+                    self.diags.push(Diagnostic::error(
+                        "E0402",
+                        format!("`Task` takes 1 type argument but {} were given", args.len()),
+                        t.span,
+                    ));
+                    return Ty::Error;
+                }
+                let r = self.resolve(&args[0]);
+                self.types.task(r)
+            }
+            TypeExprKind::Name(name) if name == "Task" => {
+                self.diags.push(Diagnostic::error(
+                    "E0402",
+                    "`Task` needs its result type, e.g. `Task[int]`",
                     t.span,
                 ));
                 Ty::Error
@@ -1586,6 +1661,11 @@ struct FnCk<'a> {
     missing_effects: (Vec<usize>, EffectSet),
     /// フィールド参照の式ごとの、レコード定義上のフィールドの型（絞り込む前の型。ADR-0016）。
     field_decl: HashMap<ExprId, Ty>,
+    /// 検査している関数が `async def` か、その名前の位置（E1301 の related。ADR-0020）
+    is_async: bool,
+    fn_span: Span,
+    /// 次に検査する呼び出しが `await` の直下か `spawn` の引数で、`async def` を呼んでよいこと（E1303）
+    allow_async_call: bool,
 }
 
 impl<'a> FnCk<'a> {
@@ -1608,6 +1688,9 @@ impl<'a> FnCk<'a> {
             effect_sites: Vec::new(),
             missing_effects: (Vec::new(), EffectSet::default()),
             field_decl: HashMap::new(),
+            is_async: f.is_async,
+            fn_span: f.name.span,
+            allow_async_call: false,
         };
         ck.cx.push_type_scope(&f.type_params, &sig.type_params);
         let mut env = Env::new();
@@ -3298,6 +3381,7 @@ impl<'a> FnCk<'a> {
             }
             ExprKind::Field { base, name } => self.field(e, base, name, env),
             ExprKind::Try(inner) => self.try_expr(inner, e.span, env),
+            ExprKind::Await(inner) => self.await_expr(inner, e.span, env),
             ExprKind::Is { .. } => unreachable!("handled by cond"),
         }
     }
@@ -3891,6 +3975,12 @@ impl<'a> FnCk<'a> {
                     self.unify(pe, ae, own, map);
                 }
             }
+            Ty::Task(pk) => {
+                if let Ty::Task(ak) = actual {
+                    let (pe, ae) = (self.cx.types.task_elem(pk), self.cx.types.task_elem(ak));
+                    self.unify(pe, ae, own, map);
+                }
+            }
             Ty::Dict(pd) => {
                 if let Ty::Dict(ad) = actual {
                     let (pk, pv) = self.cx.types.dict_args(pd);
@@ -4056,7 +4146,152 @@ impl<'a> FnCk<'a> {
         }
     }
 
+    /// `async def` の関数（と `sleep_ms`）の呼び出しか（ADR-0020 論点 6）。
+    fn is_async_call(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Call { callee, .. } => {
+                callee.name == "sleep_ms"
+                    || self
+                        .cx
+                        .sig_index
+                        .get(&callee.name)
+                        .is_some_and(|&i| self.cx.sigs[i].is_async)
+            }
+            _ => false,
+        }
+    }
+
+    /// `await` / `spawn` を `async def` の外で使っている（E1301）。
+    fn outside_async(&mut self, what: &str, span: Span) {
+        let mut d = Diagnostic::error(
+            "E1301",
+            format!("`{what}` can only be used inside an `async def` function"),
+            span,
+        )
+        .with_related(RelatedKind::Function, &self.fn_name, Some(self.fn_span));
+        d = if self.fn_name == "main" {
+            d.with_hint("declare it as `async def main() -> None:`")
+        } else {
+            d.with_hint(format!("declare `{}` with `async def`", self.fn_name))
+        };
+        self.cx.diags.push(d);
+    }
+
+    /// `await operand`（ADR-0020 論点 5）: `async def` の呼び出しならその戻り値、`Task[T]` なら `T`。
+    fn await_expr(&mut self, inner: &Expr, span: Span, env: &Env) -> Ty {
+        if !self.is_async {
+            self.outside_async("await", span);
+        }
+        if self.is_async_call(inner) {
+            self.allow_async_call = true;
+            return self.expr(inner, env);
+        }
+        let t = self.expr(inner, env);
+        match t {
+            Ty::Task(k) => self.cx.types.task_elem(k),
+            Ty::Error => Ty::Error,
+            _ => {
+                let name = self.cx.name(t);
+                let mut d = Diagnostic::error(
+                    "E1302",
+                    format!(
+                        "`await` needs a `Task` or a call of an `async def` function, found `{name}`"
+                    ),
+                    inner.span,
+                );
+                d = if matches!(
+                    inner.kind,
+                    ExprKind::Call { .. } | ExprKind::MethodCall { .. }
+                ) {
+                    d.with_hint("this function is not `async`; remove `await` to call it directly")
+                } else {
+                    d.with_hint(
+                        "create a task with `spawn(f(...))`, or call an `async def` function",
+                    )
+                };
+                self.cx.diags.push(d);
+                Ty::Error
+            }
+        }
+    }
+
+    /// `spawn(f(args))`（ADR-0020 論点 8）: `Task[T]`（`T` は `f` の戻り値の型）。
+    fn spawn(&mut self, args: &[Expr], span: Span, env: &Env) -> Ty {
+        if !self.is_async {
+            self.outside_async("spawn", span);
+        }
+        if args.len() != 1 {
+            for a in args {
+                self.allow_async_call = true;
+                self.expr(a, env);
+            }
+            self.allow_async_call = false;
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E1304",
+                    format!("`spawn` takes 1 call of an `async def` function but {} argument(s) were given", args.len()),
+                    span,
+                )
+                .with_hint("spawn each call separately: `t = spawn(f(...))`"),
+            );
+            return Ty::Error;
+        }
+        let a = &args[0];
+        if self.is_async_call(a) {
+            self.allow_async_call = true;
+            let t = self.expr(a, env);
+            return self.cx.types.task(t);
+        }
+        self.allow_async_call = true;
+        let t = self.expr(a, env);
+        self.allow_async_call = false;
+        if t != Ty::Error {
+            let what = match &a.kind {
+                ExprKind::Call { callee, .. } => {
+                    format!("`{}` is not an `async def` function", callee.name)
+                }
+                ExprKind::Await(_) => "the argument is already awaited".into(),
+                _ => format!("the argument is a value of type `{}`", self.cx.name(t)),
+            };
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E1304",
+                    "the argument of `spawn` must be a call of an `async def` function",
+                    a.span,
+                )
+                .with_cause(what)
+                .with_hint("write `spawn(f(...))` where `f` is declared with `async def`"),
+            );
+        }
+        Ty::Error
+    }
+
     fn call(&mut self, callee: &Ident, args: &[Expr], span: Span, id: ExprId, env: &Env) -> Ty {
+        // `await` の直下・`spawn` の引数であることは、この呼び出しだけに効く（引数の呼び出しには引き継がない）
+        let allowed = std::mem::take(&mut self.allow_async_call);
+        if callee.name == "spawn" {
+            self.check_effects(callee);
+            return self.spawn(args, span, env);
+        }
+        let is_async = callee.name == "sleep_ms"
+            || self
+                .cx
+                .sig_index
+                .get(&callee.name)
+                .is_some_and(|&i| self.cx.sigs[i].is_async);
+        if is_async && !allowed {
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E1303",
+                    format!("`{}` is an `async` function; its call must be awaited or spawned", callee.name),
+                    span,
+                )
+                .with_hint(format!(
+                    "write `await {name}(...)` to wait for it, or `spawn({name}(...))` to run it as a task",
+                    name = callee.name
+                )),
+            );
+        }
         self.check_effects(callee);
         // Generic でない関数なら、仮引数の型を手掛かりとして渡す（`f([])` のため）
         let hints: Vec<Option<Ty>> = match self.cx.sig_index.get(&callee.name) {
@@ -4131,13 +4366,15 @@ impl<'a> FnCk<'a> {
                 }
                 return Ty::None;
             }
-            "arg_count" | "arg" | "parse_scalar" | "len" | "float" | "int" => {
+            "arg_count" | "arg" | "parse_scalar" | "len" | "float" | "int" | "sleep_ms" => {
                 // 外部入力の入口（ADR-0011）、文字列の長さ（M3 T2b）、数値の変換（ADR-0019 論点 3）
                 let (params, ret): (&[Ty], Ty) = match callee.name.as_str() {
                     "arg_count" => (&[], Ty::Int),
                     "len" => (&[Ty::Str], Ty::Int),
                     "float" => (&[Ty::Int], Ty::Float),
                     "int" => (&[Ty::Float], Ty::Int),
+                    // ADR-0020 論点 10
+                    "sleep_ms" => (&[Ty::Int], Ty::None),
                     "arg" => (&[Ty::Int], self.cx.types.union([Ty::Str, Ty::None])),
                     _ => (&[Ty::Str], Ty::Unknown),
                 };

@@ -86,6 +86,10 @@
 | E1104 | Effect | `uses` の並びが正しくない（同じ名前の重複、`pure` とほかの名前の併記） |
 | E1201 | Python | `py_value` に渡せない型（レコード、`Result`、`Unknown`、型パラメータを含む値など。渡せるのは `int` / `bool` / `str` / `float` / `None` / `PyObject` と、それらを要素に持つ `list` / `dict`、構成要素がすべて渡せる Union（M4 T7）。ADR-0018） |
 | E1202 | Python | `PyObject` か `PyError`（同じフィールドの構造的なレコードを含む）を、具体的な値が要る場所（`print`、`==` / `!=`、演算、`dict` のキー）で使っている。`PyError` はフィールド（`e.kind`、`e.message`、`e.traceback`）を読む。Python のコード（`__str__`、`__eq__`）を動かすことになるので、`to_int()` などで変換してから使う（ADR-0018） |
+| E1301 | async | `await` か `spawn` を `async def` の外で使っている（`main` なら `async def main` にするよう促す。`related` に関数の定義。ADR-0020） |
+| E1302 | async | `await` の被演算子が `Task` でも `async def` の関数の呼び出しでもない（同期の関数の呼び出しなら「`await` を外す」） |
+| E1303 | async | `async def` の関数（`sleep_ms` を含む）の呼び出しを、`await` の直下か `spawn` の引数以外（式文、代入、引数、演算）に書いている（ヒント: `await f(...)` か `spawn(f(...))`） |
+| E1304 | async | `spawn` の引数が `async def` の関数の呼び出し 1 つではない（`spawn(t)`、同期の関数の呼び出し、`spawn(await f())`、引数が 1 つでない） |
 | W0201 | 未使用（警告） | 代入されたが一度も読まれないローカル変数（`for` の変数、`case Ok(x)` の束縛を含む。ADR-0016）。`_` で始まる名前と引数は対象外。読まれたかは関数の中の名前で判定する。エラーのある関数（署名のエラーを含む）では出さない。同じ関数のほかの警告とは位置の順に並ぶ |
 | W0202 | 未使用（警告） | 使われない import（`import m`、`from m import f`、別名を含む。ADR-0016）。名前解決のエラーがあるモジュールでは出さない（型検査のエラーでは止めない）。型パラメータと同じ名前の import は、型パラメータに隠されるので使われない扱い |
 | W0301 | match（警告） | それより前の `case` ですでに網羅されているため、到達しない `case`。警告だけならビルドできる |
@@ -130,3 +134,5 @@
 | `h.is_none()` | `bool` | Python の `None` か。Effect `python` |
 | `float(n)` | `float` | `int` を `float` にする（2^53 を超える値は最も近い値に丸める。ADR-0019） |
 | `int(x)` | `int` | `float` を 0 の方向に切り捨てて `int` にする。NaN・無限大・範囲外は実行時エラー（ADR-0019） |
+| `spawn(f(args))` | `Task[T]` | `async def f` の呼び出しを新しいタスクとして実行キューの末尾に入れる（`T` は `f` の戻り値の型）。`async def` の中だけで使える（ADR-0020） |
+| `sleep_ms(n)` | `None` | 仮想時計で `n` ミリ秒の間、現在のタスクを止める（`async` の関数。`await sleep_ms(n)` と書く。ADR-0020） |

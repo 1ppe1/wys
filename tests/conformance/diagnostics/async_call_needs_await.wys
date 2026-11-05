@@ -1,0 +1,7 @@
+# expect-error: E1303 6:9
+async def fetch(n: int) -> int:
+    return n
+
+async def main() -> None:
+    x = fetch(1)
+    print(x)
