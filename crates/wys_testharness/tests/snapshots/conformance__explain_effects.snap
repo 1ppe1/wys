@@ -9,6 +9,7 @@ expression: json
   "functions": [
     {
       "name": "log",
+      "async": false,
       "span": {
         "file": "tests/conformance/explain/effects.wys",
         "start": {
@@ -94,6 +95,7 @@ expression: json
     },
     {
       "name": "double",
+      "async": false,
       "span": {
         "file": "tests/conformance/explain/effects.wys",
         "start": {
@@ -154,6 +156,7 @@ expression: json
     },
     {
       "name": "helper",
+      "async": false,
       "span": {
         "file": "tests/conformance/explain/effects.wys",
         "start": {
@@ -190,6 +193,7 @@ expression: json
     },
     {
       "name": "main",
+      "async": false,
       "span": {
         "file": "tests/conformance/explain/effects.wys",
         "start": {

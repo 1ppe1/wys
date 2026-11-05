@@ -4237,7 +4237,9 @@ impl<'a> FnCk<'a> {
             return Ty::Error;
         }
         let a = &args[0];
-        if self.is_async_call(a) {
+        let is_sleep =
+            matches!(&a.kind, ExprKind::Call { callee, .. } if callee.name == "sleep_ms");
+        if self.is_async_call(a) && !is_sleep {
             self.allow_async_call = true;
             let t = self.expr(a, env);
             return self.cx.types.task(t);
@@ -4247,6 +4249,10 @@ impl<'a> FnCk<'a> {
         self.allow_async_call = false;
         if t != Ty::Error {
             let what = match &a.kind {
+                // `sleep_ms` は組み込みの中断点で、タスクにはできない（`await sleep_ms(n)` と書く）
+                ExprKind::Call { callee, .. } if callee.name == "sleep_ms" => {
+                    "`sleep_ms` cannot run as a task; write `await sleep_ms(n)`, or spawn an `async def` function that sleeps".to_string()
+                }
                 ExprKind::Call { callee, .. } => {
                     format!("`{}` is not an `async def` function", callee.name)
                 }

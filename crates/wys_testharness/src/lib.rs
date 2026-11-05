@@ -179,7 +179,9 @@ pub fn run_case(
         .to_string();
     let exe = scratch.join(stem);
     wys_driver::link_program(program, &exe, opts).map_err(|e| format!("build failed: {e:?}"))?;
+    // `sleep_ms` は仮想時計で順序を決め、実時間は待たない（ADR-0020 論点 10）
     let out = Command::new(&exe)
+        .env("WYS_VIRTUAL_TIME", "1")
         .args(&exp.args)
         .output()
         .map_err(|e| format!("cannot run: {e}"))?;

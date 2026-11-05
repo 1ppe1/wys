@@ -1,0 +1,9 @@
+# expect-exit: 3
+# expect-stdout: bye
+async def quit() -> None:
+    print("bye")
+    exit(3)
+
+async def main() -> None:
+    await spawn(quit())
+    print("not reached")

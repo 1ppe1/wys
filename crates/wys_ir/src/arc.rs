@@ -40,7 +40,7 @@ impl DropInfo {
     fn needs_drop(&mut self, p: &Program, t: Ty) -> bool {
         match t {
             Ty::Int | Ty::Bool | Ty::Float => false,
-            Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py => true,
+            Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py | Ty::Task(_) => true,
             Ty::Union(u) => {
                 if let Some(v) = self.unions[u.0 as usize] {
                     return v;
@@ -70,7 +70,7 @@ impl DropInfo {
     pub fn get(&self, t: Ty) -> bool {
         match t {
             Ty::Int | Ty::Bool | Ty::Float => false,
-            Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py => true,
+            Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py | Ty::Task(_) => true,
             Ty::Union(u) => self.unions[u.0 as usize].unwrap_or(false),
             Ty::Record(r) => self.records[r.0 as usize].unwrap_or(false),
         }
@@ -235,6 +235,21 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                     }
                     out.push(inst);
                 }
+                // `spawn` の引数はタスクが所有する（+1 で消費。ADR-0020 論点 11 (3)）。作ったタスクは +1 所有
+                Inst::Spawn { dst, args, .. } => {
+                    for a in args.clone() {
+                        consume(a, ConsumeSite::Spawn, &mut out, &mut own, &temps);
+                    }
+                    own.insert(*dst, (Own::Owned, false));
+                    out.push(inst);
+                }
+                // `await` の結果は +1 所有（ランタイムが結果を retain して返す）
+                Inst::Await { dst, .. } => {
+                    if let Some(d) = dst {
+                        own.insert(*d, (Own::Owned, false));
+                    }
+                    out.push(inst);
+                }
                 Inst::MakeUnion { dst, payload, .. } => {
                     if let Some(p) = payload {
                         consume(*p, ConsumeSite::MakeUnion, &mut out, &mut own, &temps);
@@ -371,6 +386,8 @@ fn keeps_places(inst: &Inst) -> bool {
         | Inst::ListPush { .. }
         | Inst::DictSet { .. }
         | Inst::DictPop { .. } => false,
+        // 中断点（ADR-0020 論点 11 (1)）: ほかのタスクが動き、コンテナを書き換え得る。`spawn` は引数を手放す
+        Inst::Spawn { .. } | Inst::Await { .. } => false,
         // 呼ばれた関数は、引数を通じてコンテナを書き換え得る（`xs[0] + replace_first(xs)`）
         Inst::Call {
             callee: Callee::Func(_),
@@ -574,6 +591,7 @@ fn consumes(inst: &Inst) -> bool {
             | Inst::ListPush { .. }
             | Inst::DictNew { .. }
             | Inst::DictSet { .. }
+            | Inst::Spawn { .. }
     )
 }
 
@@ -868,6 +886,13 @@ pub fn verify(p: &Program) -> Result<(), String> {
                         add(*dst, 1, &mut bal);
                     }
                     Inst::DictPop { dst, .. } => add(*dst, 1, &mut bal),
+                    Inst::Spawn { dst, args, .. } => {
+                        for a in args {
+                            add(*a, -1, &mut bal);
+                        }
+                        add(*dst, 1, &mut bal);
+                    }
+                    Inst::Await { dst: Some(d), .. } => add(*d, 1, &mut bal),
                     Inst::DictSet { key, value, .. } => {
                         add(*key, -1, &mut bal);
                         add(*value, -1, &mut bal);
@@ -915,6 +940,7 @@ mod tests {
             records: vec![],
             lists: vec![],
             dicts: vec![],
+            tasks: vec![],
             display: Default::default(),
             entry: FuncId(0),
             funcs: vec![Function {
@@ -925,6 +951,7 @@ mod tests {
                 temps,
                 blocks: vec![Block { insts, term }],
                 elided_rc: Vec::new(),
+                is_async: false,
                 effects: None,
             }],
         }
@@ -1306,6 +1333,7 @@ mod tests {
                 term: Terminator::Return(None),
             }],
             elided_rc: Vec::new(),
+            is_async: false,
             effects: None,
         });
         let (text, _) = optimized(p);

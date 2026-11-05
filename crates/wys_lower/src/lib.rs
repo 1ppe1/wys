@@ -26,6 +26,9 @@ struct Shared<'t> {
     result_ids: HashMap<wys_typeck::ResultId, UnionId>,
     dict_ids: HashMap<wys_typeck::DictId, DictId>,
     dicts: Vec<(Ty, Ty)>,
+    /// `Task[T]`（ADR-0020）
+    task_ids: HashMap<wys_typeck::TaskId, TaskId>,
+    tasks: Vec<Option<Ty>>,
     strings: Vec<String>,
     func_index: HashMap<String, usize>,
     /// (関数の番号, 型引数) → IR の関数。Generic でない関数は型引数が空。
@@ -63,8 +66,7 @@ impl Shared<'_> {
                 Some(Ty::Union(self.ir_union(u)))
             }
             TTy::Error => panic!("lowering received a type error; run the type checker first"),
-            // async のコード生成は M4 T10c。それまでドライバが lowering の前で止める
-            TTy::Task(_) => panic!("async reached lowering; the driver should have stopped it"),
+            TTy::Task(k) => Some(Ty::Task(self.ir_task(k))),
         }
     }
 
@@ -167,6 +169,18 @@ impl Shared<'_> {
         let id = DictId(self.dicts.len() as u32);
         self.dicts.push((k, v));
         self.dict_ids.insert(d, id);
+        id
+    }
+
+    fn ir_task(&mut self, k: wys_typeck::TaskId) -> TaskId {
+        if let Some(&id) = self.task_ids.get(&k) {
+            return id;
+        }
+        let r = self.types.task_elem(k);
+        let r = self.ir_ty(r);
+        let id = TaskId(self.tasks.len() as u32);
+        self.tasks.push(r);
+        self.task_ids.insert(k, id);
         id
     }
 
@@ -283,6 +297,8 @@ pub fn lower_with(
         result_ids: HashMap::new(),
         dict_ids: HashMap::new(),
         dicts: Vec::new(),
+        task_ids: HashMap::new(),
+        tasks: Vec::new(),
         lists: Vec::new(),
         strings: Vec::new(),
         func_index: module
@@ -328,7 +344,9 @@ pub fn lower_with(
             .iter()
             .map(|i| sh.instances[&(*i, Vec::new())])
             .collect();
-        funcs.push(test_dispatcher(&ids));
+        // async のテストがあれば、エントリも async にする（スケジューラの上で動かす。ADR-0020 論点 7）
+        let any_async = opts.tests.iter().any(|i| tc.sigs[*i].is_async);
+        funcs.push(test_dispatcher(&ids, any_async));
         FuncId(funcs.len() as u32 - 1)
     };
     Ok(Program {
@@ -337,6 +355,7 @@ pub fn lower_with(
         records: sh.records,
         lists: sh.lists,
         dicts: sh.dicts,
+        tasks: sh.tasks,
         display: sh.display,
         funcs,
         entry,
@@ -344,7 +363,7 @@ pub fn lower_with(
 }
 
 /// `wys test` のエントリ: 環境変数 `WYS_TEST_INDEX` の番号のテスト関数を1つだけ呼ぶ。
-fn test_dispatcher(tests: &[FuncId]) -> Function {
+fn test_dispatcher(tests: &[FuncId], is_async: bool) -> Function {
     let mut temps = vec![Ty::Int];
     let mut blocks = vec![Block {
         insts: vec![
@@ -413,6 +432,7 @@ fn test_dispatcher(tests: &[FuncId]) -> Function {
         blocks,
         elided_rc: Vec::new(),
         effects: None,
+        is_async,
     }
 }
 
@@ -505,6 +525,7 @@ impl<'s, 't> FnLower<'s, 't> {
             temps: l.temps,
             blocks,
             elided_rc: Vec::new(),
+            is_async: sig.is_async,
             effects: sig.effects.map(|es| {
                 es.iter()
                     .into_iter()
@@ -1100,9 +1121,7 @@ impl<'s, 't> FnLower<'s, 't> {
             }
             ExprKind::Binary { op, lhs, rhs } => Some(self.binary(*op, lhs, rhs)),
             ExprKind::Try(inner) => self.try_expr(inner),
-            ExprKind::Await(_) => {
-                panic!("async reached lowering; the driver should have stopped it")
-            }
+            ExprKind::Await(inner) => self.await_expr(inner, e),
             ExprKind::Field { base, name } => {
                 let v = self.expr(base).expect("records have values");
                 let TTy::Record(r) = self.ty(base) else {
@@ -1127,6 +1146,9 @@ impl<'s, 't> FnLower<'s, 't> {
                     index: index as u32,
                 });
                 self.coerce(Some(dst), ft, narrowed)
+            }
+            ExprKind::Call { callee, args, .. } if callee.name == "spawn" => {
+                Some(self.spawn(&args[0], e))
             }
             ExprKind::Call { callee, kwargs, .. } if self.is_record_constructor(&callee.name) => {
                 let TTy::Record(r) = self.ty(e) else {
@@ -1448,6 +1470,7 @@ impl<'s, 't> FnLower<'s, 't> {
                 }
                 let (target, params, ret) = match callee.name.as_str() {
                     "exit" => (Callee::Builtin(Builtin::Exit), vec![TTy::Int], TTy::None),
+                    "sleep_ms" => (Callee::Builtin(Builtin::SleepMs), vec![TTy::Int], TTy::None),
                     name => {
                         let (id, params, ret) = self.callee(name, e);
                         (Callee::Func(id), params, ret)
@@ -1479,6 +1502,50 @@ impl<'s, 't> FnLower<'s, 't> {
                 dst
             }
         }
+    }
+
+    /// `await operand`（ADR-0020 論点 5）。`async def` の呼び出しはその場で呼ぶ（タスクを作らない）。
+    /// `Task` の値なら、終わるまで待って結果を受け取る。
+    fn await_expr(&mut self, inner: &ast::Expr, e: &ast::Expr) -> Option<TempId> {
+        if !matches!(self.ty(inner), TTy::Task(_)) {
+            return self.expr(inner);
+        }
+        let task = self.expr(inner).expect("tasks have values");
+        let rt = self.ty(e);
+        let dst = self.sh.ir_ty(rt).map(|t| self.temp(t));
+        self.emit(Inst::Await { dst, task });
+        dst
+    }
+
+    /// `spawn(f(args))`（ADR-0020 論点 8）。引数をその場で評価して、タスクに渡す。
+    fn spawn(&mut self, call: &ast::Expr, e: &ast::Expr) -> TempId {
+        let ExprKind::Call { callee, args, .. } = &call.kind else {
+            panic!("spawn takes a call (checked by the type checker)")
+        };
+        let (func, params, _) = self.callee(&callee.name, call);
+        let mut evaluated = Vec::new();
+        for (a, pt) in args.iter().zip(params) {
+            let v = self.expr(a);
+            let at = self.ty(a);
+            let v = self.coerce(v, at, pt);
+            evaluated.push((v.expect("arguments have values"), self.cur));
+        }
+        let args: Vec<TempId> = evaluated
+            .into_iter()
+            .map(|(t, b)| self.materialize(t, b))
+            .collect();
+        let tt = self.ty(e);
+        let Some(Ty::Task(task)) = self.sh.ir_ty(tt) else {
+            panic!("spawn has a Task type")
+        };
+        let dst = self.temp(Ty::Task(task));
+        self.emit(Inst::Spawn {
+            dst,
+            task,
+            func,
+            args,
+        });
+        dst
     }
 
     /// ローカル `slot` から読んだ一時値 `t` を、現在のブロックで使える形にする（ブロックが変わっていれば読み直す）。
@@ -2237,6 +2304,8 @@ impl<'s, 't> FnLower<'s, 't> {
             && !matches!(
                 name,
                 "print"
+                    | "spawn"
+                    | "sleep_ms"
                     | "exit"
                     | "panic"
                     | "arg_count"

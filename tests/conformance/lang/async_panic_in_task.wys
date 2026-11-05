@@ -1,0 +1,12 @@
+# expect-exit: 101
+# expect-stdout: started
+# expect-stderr-contains: runtime error: boom in task
+async def bad() -> None:
+    await sleep_ms(1)
+    panic("boom in task")
+
+async def main() -> None:
+    t = spawn(bad())
+    print("started")
+    await t
+    print("not reached")

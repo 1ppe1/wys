@@ -1,0 +1,14 @@
+# expect-stdout: a1
+# expect-stdout: b1
+# expect-stdout: a2
+# expect-stdout: b2
+async def steps(name: str) -> None:
+    print(name + "1")
+    await sleep_ms(0)
+    print(name + "2")
+
+async def main() -> None:
+    a = spawn(steps("a"))
+    b = spawn(steps("b"))
+    await a
+    await b

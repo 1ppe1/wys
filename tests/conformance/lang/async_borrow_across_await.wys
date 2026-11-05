@@ -1,0 +1,18 @@
+# expect-stdout: ab
+# expect-stdout: z
+# xs[0] を借用で渡した関数が中断している間に、別のタスクが xs[0] を置き換える（ADR-0020 論点 11）。
+# 呼び出し側が可変な場所から読んだ値を保持するので、借用した s は解放されない（ASan で確かめる）
+async def replace_soon(xs: list[str]) -> None:
+    await sleep_ms(1)
+    xs[0] = "z"
+
+async def use_after(s: str, xs: list[str]) -> None:
+    t = spawn(replace_soon(xs))
+    await sleep_ms(5)
+    print(s)
+    await t
+
+async def main() -> None:
+    xs = ["a" + "b"]
+    await use_after(xs[0], xs)
+    print(xs[0])

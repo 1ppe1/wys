@@ -1,0 +1,12 @@
+# expect-stdout: none yet
+# expect-stdout: 42
+async def answer() -> int:
+    return 42
+
+async def main() -> None:
+    t: Task[int] | None = None
+    if t is None:
+        print("none yet")
+    t = spawn(answer())
+    if t is not None:
+        print(await t)

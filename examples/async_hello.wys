@@ -1,0 +1,13 @@
+# async（ADR-0020）: タスクは協調的に切り替わり、sleep_ms の期限の順に起きる
+async def greet(name: str, ms: int) -> str:
+    await sleep_ms(ms)
+    print("hello, " + name)
+    return name
+
+async def main() -> None:
+    late = spawn(greet("later", 20))
+    soon = spawn(greet("sooner", 10))
+    print("waiting")
+    first = await soon
+    second = await late
+    print(first + " then " + second)

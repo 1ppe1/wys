@@ -1,0 +1,15 @@
+# expect-stdout: 10
+# expect-stdout: 20
+# expect-stdout: 30
+# expect-stdout: 60
+async def wait_and_say(ms: int) -> int:
+    await sleep_ms(ms)
+    print(ms)
+    return ms
+
+async def main() -> None:
+    ts = [spawn(wait_and_say(30)), spawn(wait_and_say(10)), spawn(wait_and_say(20))]
+    total = 0
+    for t in ts:
+        total = total + await t
+    print(total)

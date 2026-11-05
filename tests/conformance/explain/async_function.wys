@@ -1,0 +1,9 @@
+# `wys explain` のスナップショット: `async` の関数と、`spawn` の引数の消費（consume_borrowed: spawn）
+# expect-stdout: hi!
+async def shout(s: str) -> str:
+    return s + "!"
+
+async def main() -> None:
+    s = "h" + "i"
+    t = spawn(shout(s))
+    print(await t)
