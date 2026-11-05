@@ -617,36 +617,48 @@ impl Resolver<'_> {
     }
 
     fn expr(&mut self, e: &mut Expr) {
+        // `m.f(...)`: 受け手がローカル変数でなく、モジュール（別名、自分自身、読み込まれたモジュール）の名前なら、
+        // メソッド呼び出しではなく修飾付きの呼び出し（M4 T4）。ローカル変数が同じ名前のモジュールを隠す
+        if let ExprKind::MethodCall { receiver, .. } = &e.kind
+            && !self.locals.contains(&receiver.name)
+            && (self.modules.contains_key(&receiver.name)
+                || receiver.name == self.own_name
+                || self.index.contains_key(&receiver.name))
+        {
+            let ExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+                kwargs,
+            } = std::mem::replace(&mut e.kind, ExprKind::None)
+            else {
+                unreachable!("checked above")
+            };
+            e.kind = ExprKind::Call {
+                callee: Ident {
+                    name: format!("{}.{}", receiver.name, method.name),
+                    span: Span::new(receiver.span.start, method.span.end),
+                },
+                args,
+                kwargs,
+            };
+        }
         match &mut e.kind {
+            ExprKind::MethodCall { args, kwargs, .. } => {
+                for a in args {
+                    self.expr(a);
+                }
+                for (_, v) in kwargs {
+                    self.expr(v);
+                }
+            }
             ExprKind::Call {
                 callee,
                 args,
                 kwargs,
             } => {
                 let span = callee.span;
-                // ローカル変数のメソッド呼び出し（`xs.append(1)`）は型検査が扱う。モジュールの参照ではない
-                let method = callee
-                    .name
-                    .split_once('.')
-                    .is_some_and(|(recv, _)| self.locals.contains(recv));
-                if !method {
-                    let written = callee.name.clone();
-                    self.name(&mut callee.name, span);
-                    // 解決した内部名（`lib.f`）の接頭辞がローカル変数と同じだと、型検査がメソッド呼び出しと区別できない
-                    if callee.name != written
-                        && let Some((recv, _)) = callee.name.rsplit_once('.')
-                        && self.locals.contains(recv)
-                    {
-                        self.diags.push(
-                            Diagnostic::error(
-                                "E0704",
-                                format!("local variable `{recv}` has the same name as module `{recv}`, which `{written}` refers to"),
-                                span,
-                            )
-                            .with_hint(format!("rename the variable `{recv}`")),
-                        );
-                    }
-                }
+                self.name(&mut callee.name, span);
                 for a in args {
                     self.expr(a);
                 }

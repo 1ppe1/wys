@@ -770,15 +770,23 @@ fn unused_locals(f: &FuncDef) -> Vec<Diagnostic> {
             ExprKind::Name(n) => {
                 reads.insert(n);
             }
-            ExprKind::Call {
-                callee,
+            // `a.b.f(...)` の `a` は変数ではない（修飾名）
+            ExprKind::Call { args, kwargs, .. } => {
+                for a in args {
+                    expr(a, reads);
+                }
+                for (_, v) in kwargs {
+                    expr(v, reads);
+                }
+            }
+            // `xs.append(1)` はメソッドの受け手を読む
+            ExprKind::MethodCall {
+                receiver,
                 args,
                 kwargs,
+                ..
             } => {
-                // `xs.append(1)` はメソッドの受け手を読む
-                if let Some((recv, _)) = callee.name.split_once('.') {
-                    reads.insert(recv);
-                }
+                reads.insert(&receiver.name);
                 for a in args {
                     expr(a, reads);
                 }
@@ -3090,14 +3098,24 @@ impl<'a> FnCk<'a> {
                 );
                 self.list_elem_of(bt, base.span).unwrap_or(Ty::Error)
             }
-            ExprKind::Call { callee, args, .. }
-                if callee
-                    .name
-                    .rsplit_once('.')
-                    .is_some_and(|(recv, _)| self.vars.contains_key(recv)) =>
-            {
-                let (recv, method) = callee.name.rsplit_once('.').expect("checked above");
-                self.method_call(recv, method, callee.span, args, e.span, env)
+            ExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+                ..
+            } => {
+                let span = Span::new(receiver.span.start, method.span.end);
+                if self.vars.contains_key(&receiver.name) {
+                    self.method_call(&receiver.name, &method.name, span, args, e.span, env)
+                } else {
+                    // 名前解決がモジュールの参照に直さなかった（ローカル変数でもモジュールでもない）
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0208",
+                        format!("undefined function `{}.{}`", receiver.name, method.name),
+                        span,
+                    ));
+                    Ty::Error
+                }
             }
             ExprKind::Call {
                 callee,

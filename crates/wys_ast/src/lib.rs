@@ -236,6 +236,16 @@ pub enum ExprKind {
         /// `name=value` のキーワード引数（レコードの作成で使う）。
         kwargs: Vec<(Ident, Expr)>,
     },
+    /// `recv.method(args)`: ローカル変数のメソッド呼び出し（M4 T4）。パーサは `a.b(...)`（`.` が1つ）を
+    /// これにし、名前解決が、`a` がローカル変数でなくモジュール（別名を含む）なら修飾付きの `Call` に直す。
+    /// `a.b.c(...)`（`.` が2つ以上）は、パーサが修飾付きの `Call` にする（ADR-0010）。
+    MethodCall {
+        receiver: Ident,
+        method: Ident,
+        args: Vec<Expr>,
+        /// 名前解決が `Call` に直すとき（`m.Tag(name=...)`）のために持つ。メソッドはキーワード引数を取らない
+        kwargs: Vec<(Ident, Expr)>,
+    },
     /// `[a, b, c]`（リストのリテラル、M3 T4a）
     List(Vec<Expr>),
     /// `{k: v, ...}`（辞書のリテラル、M3 T6a）

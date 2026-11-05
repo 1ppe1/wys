@@ -1113,14 +1113,14 @@ impl<'s, 't> FnLower<'s, 't> {
                 }
                 Some(self.builtin(Builtin::StrLen, vec![s]))
             }
-            ExprKind::Call { callee, args, .. }
-                if callee.name.ends_with(".pop")
-                    && callee
-                        .name
-                        .rsplit_once('.')
-                        .is_some_and(|(r, _)| self.local_ids.contains_key(r)) =>
-            {
-                let (recv, _) = callee.name.rsplit_once('.').expect("method call");
+            // メソッド呼び出し（受け手はローカル変数、型検査で確認済み。M4 T4 で AST に印を付けた）
+            ExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+                ..
+            } if method.name == "pop" => {
+                let recv = receiver.name.as_str();
                 let (dv, dt, direct) = self.receiver(recv, |t| matches!(t, TTy::Dict(_)));
                 let db = self.cur;
                 let TTy::Dict(d) = dt else {
@@ -1143,19 +1143,24 @@ impl<'s, 't> FnLower<'s, 't> {
                 });
                 Some(dst)
             }
-            ExprKind::Call { callee, args, .. }
-                if callee.name.ends_with(".get")
-                    && callee
-                        .name
-                        .rsplit_once('.')
-                        .is_some_and(|(r, _)| self.local_ids.contains_key(r)) =>
-            {
-                let (recv, _) = callee.name.rsplit_once('.').expect("method call");
-                Some(self.dict_get(recv, &args[0], e))
-            }
-            ExprKind::Call { callee, args, .. } if callee.name.ends_with(".append") => {
-                // xs.append(v)（受け手はローカル変数、型検査で確認済み）
-                let (recv, _) = callee.name.rsplit_once('.').expect("method call");
+            ExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+                ..
+            } if method.name == "get" => Some(self.dict_get(&receiver.name, &args[0], e)),
+            ExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+                ..
+            } => {
+                // xs.append(v)
+                debug_assert_eq!(
+                    method.name, "append",
+                    "the type checker accepts only these methods"
+                );
+                let recv = receiver.name.as_str();
                 let (list, rt, direct) = self.receiver(recv, |t| matches!(t, TTy::List(_)));
                 let lb = self.cur;
                 let TTy::List(l) = rt else {
@@ -1964,12 +1969,7 @@ impl<'s, 't> FnLower<'s, 't> {
 
     /// 関数でも組み込み関数でもない名前の呼び出しは、`type` で定義したレコードの作成。
     fn is_record_constructor(&self, name: &str) -> bool {
-        // `xs.append(...)` のように、`.` の前がローカル変数ならメソッド呼び出し
-        let method_call = name
-            .rsplit_once('.')
-            .is_some_and(|(recv, _)| self.local_ids.contains_key(recv));
-        !method_call
-            && !self.sh.func_index.contains_key(name)
+        !self.sh.func_index.contains_key(name)
             && !matches!(
                 name,
                 "print"
