@@ -1093,6 +1093,17 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                 Inst::Load { dst, src } => {
                     let _ = writeln!(out, "  {} = load {}, ptr %l{}", t(*dst), tty(*dst), src.0);
                 }
+                Inst::Take { dst, src } => {
+                    // 値を取り出してスロットを空にする（後の release は null に対するもので、何もしない。M4 T3）
+                    let _ = writeln!(
+                        out,
+                        "  {} = load {ty}, ptr %l{}\n  store {ty} zeroinitializer, ptr %l{}",
+                        t(*dst),
+                        src.0,
+                        src.0,
+                        ty = tty(*dst)
+                    );
+                }
                 Inst::Store { dst, src } => {
                     let _ = writeln!(out, "  store {} {}, ptr %l{}", tty(*src), t(*src), dst.0);
                 }

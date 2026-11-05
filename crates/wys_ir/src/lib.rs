@@ -153,6 +153,8 @@ pub enum ElisionReason {
     ParamNeverReassigned,
     /// 可変な場所から読んだ値を、使い終わるまでに場所を変え得る命令（関数の呼び出し、要素の書き換え、release）がない
     BorrowGuardUnneeded,
+    /// ローカル変数の最後の使用で、スロットから所有権を移した（`take`）。スロットは空になる
+    MovedFromSlot,
 }
 
 impl ElisionReason {
@@ -160,6 +162,7 @@ impl ElisionReason {
         match self {
             ElisionReason::ParamNeverReassigned => "param_never_reassigned",
             ElisionReason::BorrowGuardUnneeded => "borrow_guard_unneeded",
+            ElisionReason::MovedFromSlot => "moved_from_slot",
         }
     }
 
@@ -170,6 +173,9 @@ impl ElisionReason {
             }
             ElisionReason::BorrowGuardUnneeded => {
                 "nothing that could change the list or dict runs before the value's last use"
+            }
+            ElisionReason::MovedFromSlot => {
+                "this is the last use of the local, so its reference is moved out of the slot instead of copied"
             }
         }
     }
@@ -501,6 +507,12 @@ pub enum Inst {
         dst: TempId,
         src: LocalId,
     },
+    /// スロットの値を +1 所有で取り出し、スロットを空（null / ゼロ）にする（Move 最適化が作る。M4 T3）。
+    /// スロットの後の release は空の値に対するものになり、何もしない
+    Take {
+        dst: TempId,
+        src: LocalId,
+    },
     Store {
         dst: LocalId,
         src: TempId,
@@ -644,7 +656,7 @@ impl Inst {
     /// 命令が読む一時値（Move 最適化の判定用）。
     pub fn operands(&self) -> Vec<TempId> {
         match self {
-            Inst::Const { .. } | Inst::Load { .. } => vec![],
+            Inst::Const { .. } | Inst::Load { .. } | Inst::Take { .. } => vec![],
             Inst::Store { src, .. }
             | Inst::Not { src, .. }
             | Inst::Retain { src, .. }
@@ -867,7 +879,7 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                     expect("const", temp_ty(*dst)?, ty)?;
                     define(*dst, &mut defined_in)?;
                 }
-                Inst::Load { dst, src } => {
+                Inst::Load { dst, src } | Inst::Take { dst, src } => {
                     expect("load", temp_ty(*dst)?, local_ty(*src)?)?;
                     define(*dst, &mut defined_in)?;
                 }
@@ -1285,6 +1297,7 @@ impl fmt::Display for Program {
                             Const::Str(s) => writeln!(f, "t{} = const s{}", dst.0, s.0)?,
                         },
                         Inst::Load { dst, src } => writeln!(f, "t{} = load l{}", dst.0, src.0)?,
+                        Inst::Take { dst, src } => writeln!(f, "t{} = take l{}", dst.0, src.0)?,
                         Inst::Store { dst, src } => writeln!(f, "store l{}, t{}", dst.0, src.0)?,
                         Inst::Binary { dst, op, lhs, rhs } => {
                             writeln!(f, "t{} = {} t{}, t{}", dst.0, op.name(), lhs.0, rhs.0)?

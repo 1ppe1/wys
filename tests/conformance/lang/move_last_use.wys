@@ -1,0 +1,36 @@
+# Move 最適化（M4 T3、take）: ローカル変数の最後の使用で所有権を移す。`?` と `match` が作る隠しスロットの連鎖、
+# ループの中の Result を含む（3つのモードで生存オブジェクト 0、AddressSanitizer）
+# expect-stdout: 3
+# expect-stdout: ab-ab
+# expect-stdout: err: bad 4
+def parse(i: int) -> Result[str, str]:
+    if i == 4:
+        return Err("bad " + "4")
+    return Ok("v" + "!")
+
+def count(n: int) -> Result[int, str]:
+    total = 0
+    for i in range(n):
+        s = parse(i)?
+        total = total + len(s) - 1
+    return Ok(total)
+
+def twice(s: str) -> str:
+    t = s
+    return t + "-" + t
+
+def main() -> None:
+    match count(3):
+        case Ok(n):
+            print(n)
+        case Err(e):
+            print(e)
+    a = "a" + "b"
+    b = a
+    print(twice(b))
+    match count(10):
+        case Ok(n):
+            print(n)
+        case Err(e):
+            msg = "err: " + e
+            print(msg)

@@ -1,0 +1,19 @@
+# 同じローカル変数を先に読んだ借用が残っている間は、所有権を移さない（PR #91 のレビュー）。
+# `s + replace([s])`: 左の `s` を読んだ後で右の `s` を移すと、replace が要素を上書きしたときに左が解放される
+# expect-stdout: helloworld
+# expect-stdout: ab
+def replace(xs: list[str]) -> str:
+    xs[0] = "z" + "z"
+    return ""
+
+type Box = {name: str}
+
+def replace_box(bs: list[Box]) -> str:
+    bs[0] = Box(name="z" + "z")
+    return ""
+
+def main() -> None:
+    s = "hello" + "world"
+    print(s + replace([s]))
+    b = Box(name="a" + "b")
+    print(b.name + replace_box([b]))

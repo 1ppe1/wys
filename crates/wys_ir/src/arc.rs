@@ -157,6 +157,11 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                     own.insert(*dst, (Own::Borrowed, false));
                     out.push(inst);
                 }
+                // `take` は最適化が作る（挿入の後）。ここに来るのは、最適化した IR にもう一度挿入したときだけ
+                Inst::Take { dst, .. } => {
+                    own.insert(*dst, (Own::Owned, false));
+                    out.push(inst);
+                }
                 Inst::ListNew { dst, items, .. } => {
                     for it in items.clone() {
                         consume(it, ConsumeSite::ListNew, &mut out, &mut own, &temps);
@@ -522,9 +527,6 @@ fn optimize_function(f: &mut Function) {
             }
         }
     }
-    if elided.is_empty() {
-        return;
-    }
     for (b, rm) in f.blocks.iter_mut().zip(&remove) {
         if rm.is_empty() {
             continue;
@@ -537,8 +539,267 @@ fn optimize_function(f: &mut Function) {
             .map(|(_, inst)| inst)
             .collect();
     }
+    // P1: ローカルの最後の使用での所有権の移動（P4 の後。借りているだけの引数のスロットは対象外）
+    let borrowed_params: std::collections::HashSet<LocalId> = (0..f.param_count)
+        .map(LocalId)
+        .filter(|p| !stored.contains(p))
+        .collect();
+    move_from_slots(f, &borrowed_params, &mut elided);
     elided.sort_by_key(|e| (e.block, e.index));
     f.elided_rc = elided;
+}
+
+/// `load` がスロットの利用者の読み出しか（ARC パスが、古い値の release や入口の retain のために入れた読み出しでないか）。
+fn user_load(insts: &[Inst], i: usize) -> Option<(TempId, LocalId)> {
+    let Inst::Load { dst, src } = &insts[i] else {
+        return None;
+    };
+    let arc_internal = matches!(
+        insts.get(i + 1),
+        Some(Inst::Release { src: t, reason: RcReason::StoreOverwritesSlot | RcReason::SlotAtFunctionExit })
+            | Some(Inst::Retain { src: t, reason: RcReason::ParamSlotEntry }) if t == dst
+    );
+    (!arc_internal).then_some((*dst, *src))
+}
+
+/// 値を消費する命令か（`insert` の `consume` の地点）。
+fn consumes(inst: &Inst) -> bool {
+    matches!(
+        inst,
+        Inst::Store { .. }
+            | Inst::MakeUnion { .. }
+            | Inst::MakeRecord { .. }
+            | Inst::ListNew { .. }
+            | Inst::ListSet { .. }
+            | Inst::ListPush { .. }
+            | Inst::DictNew { .. }
+            | Inst::DictSet { .. }
+    )
+}
+
+/// ブロックの出口で、スロット `l` の今の値をまだ読む経路があるか（後ろ向きの生存解析。ループの戻り経路を含む）。
+fn live_out(f: &Function, l: LocalId) -> Vec<bool> {
+    let n = f.blocks.len();
+    // ブロックの中で、store より前に利用者の読み出しがあるか（gen）、store があるか（kill）
+    let (mut gen_, mut kill) = (vec![false; n], vec![false; n]);
+    for (bi, b) in f.blocks.iter().enumerate() {
+        for i in 0..b.insts.len() {
+            match &b.insts[i] {
+                Inst::Store { dst, .. } if *dst == l => {
+                    kill[bi] = true;
+                    break;
+                }
+                Inst::Take { src, .. } if *src == l => {
+                    gen_[bi] = true;
+                    break;
+                }
+                _ if user_load(&b.insts, i).is_some_and(|(_, src)| src == l) => {
+                    gen_[bi] = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    let succs = |b: &Block| -> Vec<usize> {
+        match &b.term {
+            Terminator::Jump(t) => vec![t.0 as usize],
+            Terminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => vec![then_block.0 as usize, else_block.0 as usize],
+            Terminator::Return(_) | Terminator::Unreachable => vec![],
+        }
+    };
+    let mut live_in = vec![false; n];
+    let mut out = vec![false; n];
+    loop {
+        let mut changed = false;
+        for bi in (0..n).rev() {
+            let o = succs(&f.blocks[bi]).into_iter().any(|s| live_in[s]);
+            let i = gen_[bi] || (!kill[bi] && o);
+            if o != out[bi] || i != live_in[bi] {
+                out[bi] = o;
+                live_in[bi] = i;
+                changed = true;
+            }
+        }
+        if !changed {
+            return out;
+        }
+    }
+}
+
+/// P1（`moved_from_slot`）: `t = load L` の値を、借用のまま `retain` して1回だけ消費し、その後 L の今の値を
+/// どの経路でも読まないなら、`t = take L`（スロットを空にして所有権を移す）にして retain を取り除く。
+/// スロットの後の release（上書きと関数の出口）は空の値に対するものになり、何もしない。
+fn move_from_slots(
+    f: &mut Function,
+    borrowed_params: &std::collections::HashSet<LocalId>,
+    elided: &mut Vec<ElidedRcOp>,
+) {
+    let mut lives: std::collections::HashMap<LocalId, Vec<bool>> = Default::default();
+    for bi in 0..f.blocks.len() {
+        let mut rewrites = Vec::new();
+        {
+            let b = &f.blocks[bi];
+            for i in 0..b.insts.len() {
+                let Some((t, l)) = user_load(&b.insts, i) else {
+                    continue;
+                };
+                if borrowed_params.contains(&l) {
+                    continue;
+                }
+                // t の最初の retain は、借用を消費するためのもの
+                let Some(j) = (i + 1..b.insts.len()).find(|&j| {
+                    matches!(&b.insts[j], Inst::Retain { src, .. } | Inst::Release { src, .. } if *src == t)
+                }) else {
+                    continue;
+                };
+                let Inst::Retain {
+                    reason: reason @ RcReason::ConsumeBorrowed(site),
+                    ..
+                } = b.insts[j]
+                else {
+                    continue;
+                };
+                // 消費する命令: retain の後で最初に t を使う命令（または return）。その後は t を使わない
+                let consumer = (j + 1..b.insts.len()).find(|&c| b.insts[c].operands().contains(&t));
+                // t から取り出した値（`Field` / `UnionPayload`）も t の使用として数える（防御。PR #91 のレビュー）
+                let mut own_derived: std::collections::HashSet<TempId> = [t].into();
+                for x in &b.insts[i + 1..] {
+                    if let Inst::Field { dst, src, .. } | Inst::UnionPayload { dst, src, .. } = x
+                        && own_derived.contains(src)
+                    {
+                        own_derived.insert(*dst);
+                    }
+                }
+                let derived_used_after = |c: usize| {
+                    b.insts[c + 1..].iter().any(|x| {
+                        x.operands()
+                            .iter()
+                            .any(|o| own_derived.contains(o) && *o != t)
+                    })
+                };
+                let ok_consumer = match consumer {
+                    Some(c) => {
+                        consumes(&b.insts[c])
+                            && !derived_used_after(c)
+                            && !b.insts[c + 1..].iter().any(|x| x.operands().contains(&t))
+                            && !matches!(&b.term, Terminator::Return(Some(r)) | Terminator::Branch { cond: r, .. } if *r == t)
+                    }
+                    None => {
+                        site == ConsumeSite::Return
+                            && matches!(&b.term, Terminator::Return(Some(r)) if *r == t)
+                    }
+                };
+                if !ok_consumer {
+                    continue;
+                }
+                // L の今の値を、後で読まない: ブロックの残りで利用者の読み出しがなく、store がないなら出口で生きていない
+                let end = consumer.unwrap_or(b.insts.len());
+                if (i + 1..end).any(|k| matches!(&b.insts[k], Inst::Store { dst, .. } if *dst == l))
+                {
+                    continue;
+                }
+                let mut killed = false;
+                let mut read_later = false;
+                for k in i + 1..b.insts.len() {
+                    match &b.insts[k] {
+                        Inst::Store { dst, .. } if *dst == l => {
+                            killed = true;
+                            break;
+                        }
+                        Inst::Take { src, .. } if *src == l => {
+                            read_later = true;
+                            break;
+                        }
+                        _ if user_load(&b.insts, k).is_some_and(|(_, src)| src == l) => {
+                            read_later = true;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                if read_later {
+                    continue;
+                }
+                // 同じスロットを先に読んだ借用（とそこから取り出した値）が、この後でまだ使われるなら移さない。
+                // 移すとスロットが値を持たなくなり、先の借用が宙に浮く（`s + replace([s])`、PR #91 のレビュー）。
+                // 一時値はブロックの中でだけ使えるので、このブロックだけを調べればよい
+                let mut earlier: std::collections::HashSet<TempId> = Default::default();
+                for k in 0..i {
+                    match &b.insts[k] {
+                        Inst::Load { dst, src } | Inst::Take { dst, src } if *src == l => {
+                            earlier.insert(*dst);
+                        }
+                        Inst::Field { dst, src, .. } | Inst::UnionPayload { dst, src, .. }
+                            if earlier.contains(src) =>
+                        {
+                            earlier.insert(*dst);
+                        }
+                        _ => {}
+                    }
+                }
+                let mut outstanding = false;
+                for x in &b.insts[i + 1..] {
+                    if x.operands().iter().any(|o| earlier.contains(o)) {
+                        outstanding = true;
+                        break;
+                    }
+                    if let Inst::Field { dst, src, .. } | Inst::UnionPayload { dst, src, .. } = x
+                        && earlier.contains(src)
+                    {
+                        earlier.insert(*dst);
+                    }
+                }
+                let term_uses = match &b.term {
+                    Terminator::Return(Some(r)) => vec![*r],
+                    Terminator::Branch { cond, .. } => vec![*cond],
+                    _ => vec![],
+                };
+                if outstanding || term_uses.iter().any(|r| earlier.contains(r)) {
+                    continue;
+                }
+                if !killed {
+                    let live = lives.entry(l).or_insert_with(|| live_out(f, l));
+                    if live[bi] {
+                        continue;
+                    }
+                }
+                rewrites.push((i, j, t, l, reason));
+            }
+        }
+        if rewrites.is_empty() {
+            continue;
+        }
+        let b = &mut f.blocks[bi];
+        let removed: std::collections::HashSet<usize> = rewrites.iter().map(|r| r.1).collect();
+        for &(i, j, t, l, reason) in &rewrites {
+            b.insts[i] = Inst::Take { dst: t, src: l };
+            elided.push(ElidedRcOp {
+                retain: true,
+                reason,
+                src: t,
+                block: bi as u32,
+                index: j,
+                local: Some(l),
+                elision: ElisionReason::MovedFromSlot,
+            });
+        }
+        let insts = std::mem::take(&mut b.insts);
+        b.insts = insts
+            .into_iter()
+            .enumerate()
+            .filter(|(k, _)| !removed.contains(k))
+            .map(|(_, x)| x)
+            .collect();
+        // ブロックの中身が変わったので、このスロットの生存解析をやり直す
+        for &(_, _, _, l, _) in &rewrites {
+            lives.remove(&l);
+        }
+    }
 }
 
 /// ARC の釣り合いの検査（各ブロック）:
@@ -566,6 +827,8 @@ pub fn verify(p: &Program) -> Result<(), String> {
                     Inst::Load { dst, .. } => {
                         loaded.insert(*dst);
                     }
+                    // スロットから所有権を移した値は +1 所有（ちょうど1回消費されること）
+                    Inst::Take { dst, .. } => add(*dst, 1, &mut bal),
                     Inst::Call {
                         dst: Some(d),
                         callee,
@@ -769,6 +1032,149 @@ mod tests {
             err.contains("no retain on entry but a release on exit"),
             "{err}"
         );
+    }
+
+    fn copy_then(extra: Vec<Inst>, temps: Vec<Ty>) -> Program {
+        // l0 = "s"; l1 = l0; <extra>
+        let mut insts = vec![
+            Inst::Const {
+                dst: TempId(0),
+                value: Const::Str(StrId(0)),
+            },
+            Inst::Store {
+                dst: LocalId(0),
+                src: TempId(0),
+            },
+            Inst::Load {
+                dst: TempId(1),
+                src: LocalId(0),
+            },
+            Inst::Store {
+                dst: LocalId(1),
+                src: TempId(1),
+            },
+        ];
+        insts.extend(extra);
+        let mut ts = vec![Ty::Str, Ty::Str];
+        ts.extend(temps);
+        str_fn(
+            insts,
+            ts,
+            vec![Ty::Str, Ty::Str],
+            0,
+            None,
+            Terminator::Return(None),
+        )
+    }
+
+    #[test]
+    fn the_last_use_of_a_local_moves_out_of_its_slot() {
+        // l0 = "s"; l1 = l0（l0 はもう読まない）→ take（P1）
+        let (text, elided) = optimized(copy_then(vec![], vec![]));
+        assert!(text.contains("t1 = take l0"), "{text}");
+        // 移した値は retain しない（定数を l0 に入れる retain t0 は残る）
+        assert!(!text.contains("retain t1"), "{text}");
+        assert!(
+            elided
+                .iter()
+                .any(|e| e.elision == ElisionReason::MovedFromSlot)
+        );
+    }
+
+    #[test]
+    fn a_local_read_again_is_not_moved() {
+        // l0 = "s"; l1 = l0; l1 = l0: 最初の読み出しの後にも l0 を読むので、最初は take にしない
+        let (text, _) = optimized(copy_then(
+            vec![
+                Inst::Load {
+                    dst: TempId(2),
+                    src: LocalId(0),
+                },
+                Inst::Store {
+                    dst: LocalId(1),
+                    src: TempId(2),
+                },
+            ],
+            vec![Ty::Str],
+        ));
+        assert!(text.contains("t1 = load l0"), "{text}");
+        // 最後の読み出しは移せる
+        assert!(text.contains("t2 = take l0"), "{text}");
+    }
+
+    #[test]
+    fn a_local_read_on_the_next_loop_iteration_is_not_moved() {
+        // bb0: l0 = "s"; jump bb1 / bb1: l1 = l0; jump bb1（次の反復でも l0 を読む）
+        let mut p = copy_then(vec![], vec![]);
+        let f = &mut p.funcs[0];
+        let tail = f.blocks[0].insts.split_off(2);
+        f.blocks[0].term = Terminator::Jump(BlockId(1));
+        f.blocks.push(Block {
+            insts: tail,
+            term: Terminator::Jump(BlockId(1)),
+        });
+        let (text, _) = optimized(p);
+        assert!(!text.contains("take"), "{text}");
+    }
+
+    #[test]
+    fn a_local_with_an_outstanding_earlier_borrow_is_not_moved() {
+        // l0 = "s"; t1 = l0; t2 = l0; l1 = t2; print(t1): t1 がまだ l0 から借りているので、t2 は移さない（PR #91）
+        let p = str_fn(
+            vec![
+                Inst::Const {
+                    dst: TempId(0),
+                    value: Const::Str(StrId(0)),
+                },
+                Inst::Store {
+                    dst: LocalId(0),
+                    src: TempId(0),
+                },
+                Inst::Load {
+                    dst: TempId(1),
+                    src: LocalId(0),
+                },
+                Inst::Load {
+                    dst: TempId(2),
+                    src: LocalId(0),
+                },
+                Inst::Store {
+                    dst: LocalId(1),
+                    src: TempId(2),
+                },
+                Inst::Call {
+                    dst: None,
+                    callee: Callee::Builtin(Builtin::PrintStr),
+                    args: vec![TempId(1)],
+                },
+            ],
+            vec![Ty::Str, Ty::Str, Ty::Str],
+            vec![Ty::Str, Ty::Str],
+            0,
+            None,
+            Terminator::Return(None),
+        );
+        let (text, _) = optimized(p);
+        assert!(!text.contains("take"), "{text}");
+    }
+
+    #[test]
+    fn a_borrowed_parameter_is_never_moved() {
+        // def f(s: str) -> str: return s（P4 で借りているだけのスロットから所有権は移せない）
+        let p = str_fn(
+            vec![Inst::Load {
+                dst: TempId(0),
+                src: LocalId(0),
+            }],
+            vec![Ty::Str],
+            vec![Ty::Str],
+            1,
+            Some(Ty::Str),
+            Terminator::Return(Some(TempId(0))),
+        );
+        let (text, _) = optimized(p);
+        assert!(!text.contains("take"), "{text}");
+        assert!(text.contains("consume_borrowed:return"), "{text}");
     }
 
     #[test]
