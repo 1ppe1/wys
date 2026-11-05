@@ -113,6 +113,12 @@ bb0:
 
 - `str` はヒープオブジェクト `{ 参照カウント, 長さ, バイト列 }` へのポインタ。文字列リテラルは参照カウント −1 の不死の定数、コマンドライン引数も起動時に不死オブジェクトにする。
 - 命令 `retain t` / `release t` は、lowering の後に `wys_ir::arc::insert` が挿入する。規則はモジュールの先頭コメント（memory-model 2.2 のとおり）。
+- **Move 最適化（M4 T3、memory-model 2.3）:** `insert` の後に `wys_ir::arc::optimize` が冗長な組を取り除き、その後に検証器（`arc::verify`）が釣り合いを確かめる。`WYS_ARC_OPT=0` で止められる。取り除いた操作は `Function::elided_rc` に記録し、`wys explain` の `elided` に出す（項目の追加なので版は 0 のまま）。取り除いた理由（`elision`）:
+
+  | id | 内容 |
+  |---|---|
+  | `param_never_reassigned` | 関数の中で代入しない引数のスロットは、呼び出し側の参照を借りる。入口の `param_slot_entry` と出口の `slot_at_function_exit` の組を取り除く |
+  | `borrow_guard_unneeded` | 可変な場所から読んだ値（`list_get` / `dict_get` / `dict_key_at`）を、最後の使用までに場所を変え得る命令（関数の呼び出し、`py_*`、要素の書き換え、release）がないなら、`borrow_from_mutable_place` の retain とブロックの終わりの release の組を取り除く。最後の使用が関数の呼び出しの引数なら残す |
 - `wys_ir::arc::verify` が、ブロックごとに参照カウントの釣り合いを検査する（driver が毎回実行する）。
 - 各 `retain` / `release` は、挿入した理由（`RcReason`、ADR-0017）を持つ。バックエンドは理由を読まないので、生成コードは変わらない。IR テキストでは `retain t3 ; borrow_from_mutable_place` のように末尾に出す（消費の理由は `consume_borrowed:store` のように消費する地点を付ける）。命令を動かしたり消したりする後続のパス（M3b の Move 最適化）は、理由を保つ。
 

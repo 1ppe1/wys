@@ -11,7 +11,7 @@
 | M1（最小サブセット） | **完了**。AC-001 / AC-004 / AC-005 を確認（`docs/test-plan.md`）。CLI 名は `wys` |
 | M2（型拡張・モジュール） | **完了**（出口判定は [docs/plans/m2.md](plans/m2.md)）。AC-002 / AC-003、LANG-001・003〜006、DX-001 合格。DX-005 は計測の仕組みまで（計測はユーザー） |
 | M3（メモリ・stdlib・Phase 1 完了） | **完了**（出口判定は [docs/plans/m3.md](plans/m3.md)）。Phase 1 の完了条件、MEM-001 / MEM-002 / MEM-005、COMP-005、NFR-006 合格。ADR-0012〜0017 Accepted。Move 最適化・`fmt` の折り返し・`list` を経由する再帰レコードは M4 に持ち越し。DX-005 の計測はユーザー待ち |
-| M4（CPython FFI・`async`） | 計画承認済み（[docs/plans/m4.md](plans/m4.md)）。T1（PoC3: CPython の埋め込み）成功（[docs/poc/poc3-results.md](poc/poc3-results.md)）。ADR-0018 Accepted、T4（AST のメソッド呼び出しの印）完了、T5（Python のランタイムとリンク）完了、ADR-0019（`float`）Accepted、T12（`float`）完了、T6（Python の言語側の表面）完了、T7（境界の変換）完了、T8（FFI の検査とベンチ）完了、T0（持ち越しの小修正）PR 中 |
+| M4（CPython FFI・`async`） | 計画承認済み（[docs/plans/m4.md](plans/m4.md)）。T1（PoC3: CPython の埋め込み）成功（[docs/poc/poc3-results.md](poc/poc3-results.md)）。ADR-0018 Accepted、T4（AST のメソッド呼び出しの印）完了、T5（Python のランタイムとリンク）完了、ADR-0019（`float`）Accepted、T12（`float`）完了、T6（Python の言語側の表面）完了、T7（境界の変換）完了、T8（FFI の検査とベンチ）完了、T0（持ち越しの小修正）完了、T3 第1段（Move 最適化）PR 中 |
 
 ## Context
 

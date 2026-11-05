@@ -56,9 +56,19 @@ expression: json
       "arc": [
         {
           "instance": "first",
-          "retains": 2,
-          "releases": 1,
+          "retains": 1,
+          "releases": 0,
           "ops": [
+            {
+              "op": "retain",
+              "reason": "borrow_from_mutable_place",
+              "block": 0,
+              "index": 3,
+              "temp": 2,
+              "message": "a value read from a mutable place (list element, dict value or key) is held while it is used (borrow safety, memory-model 2.2)"
+            }
+          ],
+          "elided": [
             {
               "op": "retain",
               "reason": "param_slot_entry",
@@ -66,15 +76,8 @@ expression: json
               "index": 1,
               "temp": 3,
               "local": "xs",
-              "message": "parameters are passed borrowed (+0); the callee's slot takes its own reference on entry"
-            },
-            {
-              "op": "retain",
-              "reason": "borrow_from_mutable_place",
-              "block": 0,
-              "index": 5,
-              "temp": 2,
-              "message": "a value read from a mutable place (list element, dict value or key) is held while it is used (borrow safety, memory-model 2.2)"
+              "elision": "param_never_reassigned",
+              "message": "the parameter is never reassigned, so its slot can borrow the caller's reference"
             },
             {
               "op": "release",
@@ -83,7 +86,8 @@ expression: json
               "index": 7,
               "temp": 4,
               "local": "xs",
-              "message": "leaving the function gives up the reference held by a local slot"
+              "elision": "param_never_reassigned",
+              "message": "the parameter is never reassigned, so its slot can borrow the caller's reference"
             }
           ]
         }

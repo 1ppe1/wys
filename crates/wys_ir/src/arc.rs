@@ -11,7 +11,8 @@
 //!   引数は入口で `Retain` してスロットに所有させる。スロットの初期値はゼロ（null）で、`Release` は null を無視する。
 //! - ブロックの終わりまで消費されなかった +1 所有の値は、終端命令の前で `Release` する。
 //!
-//! 冗長な組（retain と直後の release など）の除去は、正しさを確かめた後の別段階（M3b）で行う。
+//! 冗長な組の除去は、挿入の後の別段階（`optimize`、M4 T3、memory-model 2.3）で行う。取り除いた操作は
+//! `Function::elided_rc` に記録し、`wys explain` が報告する。
 
 use crate::*;
 
@@ -288,6 +289,187 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
     f.temps = temps;
 }
 
+/// Move 最適化（M4 T3、memory-model 2.3）: `insert` が保守的に入れた retain / release のうち、冗長な組を取り除く。
+/// 取り除いた操作は `Function::elided_rc` に記録する。`verify` はこの後に実行する（最適化の釣り合いも検査する）。
+///
+/// - **P4（`param_never_reassigned`）**: 関数の中で代入しない引数のスロットは、呼び出し側の参照を借りるだけでよい。
+///   呼び出し側は、渡した値を呼び出しの間生かしておく（借用の安全条件、memory-model 2.2）。入口の
+///   `param_slot_entry` の retain と、出口の `slot_at_function_exit` の release を取り除く。
+/// - **P0（`borrow_guard_unneeded`）**: 可変な場所（`list` の要素、`dict` の値やキー）から読んだ値を保持する
+///   `borrow_from_mutable_place` の retain と、ブロックの終わりの release の組。読んでから最後の使用までに、
+///   場所を変え得る命令（関数の呼び出し、要素の書き換え、release）がなければ取り除く。
+pub fn optimize(p: &mut Program) {
+    for f in &mut p.funcs {
+        optimize_function(f);
+    }
+}
+
+/// 可変な場所から読んだ値の保持（P0）を省いてよい命令か: オブジェクトを解放せず、コンテナを書き換えない。
+fn keeps_places(inst: &Inst) -> bool {
+    match inst {
+        Inst::Release { .. }
+        | Inst::ListSet { .. }
+        | Inst::ListPush { .. }
+        | Inst::DictSet { .. }
+        | Inst::DictPop { .. } => false,
+        // 呼ばれた関数は、引数を通じてコンテナを書き換え得る（`xs[0] + replace_first(xs)`）
+        Inst::Call {
+            callee: Callee::Func(_),
+            ..
+        } => false,
+        Inst::Call {
+            callee: Callee::Builtin(b),
+            ..
+        } => matches!(
+            b,
+            Builtin::PrintInt
+                | Builtin::PrintBool
+                | Builtin::PrintStr
+                | Builtin::PrintFloat
+                | Builtin::PrintValue
+                | Builtin::StrConcat
+                | Builtin::StrEq
+                | Builtin::StrLen
+                | Builtin::FloatFromInt
+                | Builtin::IntFromFloat
+                | Builtin::ArgCount
+                | Builtin::ArgExists
+                | Builtin::ArgStr
+                | Builtin::ScalarKind
+                | Builtin::ScalarInt
+                | Builtin::ScalarBool
+                | Builtin::ScalarFloat
+                | Builtin::TestIndex
+                | Builtin::Exit
+                | Builtin::Panic
+                | Builtin::AssertFail
+        ),
+        _ => true,
+    }
+}
+
+fn optimize_function(f: &mut Function) {
+    let mut remove: Vec<std::collections::HashSet<usize>> =
+        vec![Default::default(); f.blocks.len()];
+    let mut elided = Vec::new();
+    // P4: 代入しない引数のスロット
+    let stored: std::collections::HashSet<LocalId> = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.insts)
+        .filter_map(|i| match i {
+            Inst::Store { dst, .. } => Some(*dst),
+            _ => None,
+        })
+        .collect();
+    for p in (0..f.param_count).map(LocalId) {
+        if stored.contains(&p) {
+            continue;
+        }
+        for (bi, b) in f.blocks.iter().enumerate() {
+            for (i, pair) in b.insts.windows(2).enumerate() {
+                let [Inst::Load { dst, src }, op] = pair else {
+                    continue;
+                };
+                if *src != p {
+                    continue;
+                }
+                let found = match op {
+                    Inst::Retain {
+                        src: t,
+                        reason: r @ RcReason::ParamSlotEntry,
+                    } if t == dst && bi == 0 => Some((true, *r)),
+                    Inst::Release {
+                        src: t,
+                        reason: r @ RcReason::SlotAtFunctionExit,
+                    } if t == dst => Some((false, *r)),
+                    _ => None,
+                };
+                if let Some((retain, reason)) = found {
+                    remove[bi].insert(i);
+                    remove[bi].insert(i + 1);
+                    elided.push(ElidedRcOp {
+                        retain,
+                        reason,
+                        src: *dst,
+                        block: bi as u32,
+                        index: i + 1,
+                        local: Some(p),
+                        elision: ElisionReason::ParamNeverReassigned,
+                    });
+                }
+            }
+        }
+    }
+    // P0: 可変な場所から読んだ値の保持
+    for (bi, b) in f.blocks.iter().enumerate() {
+        for i in 0..b.insts.len() {
+            let t = match &b.insts[i] {
+                Inst::ListGet { dst, .. }
+                | Inst::DictGet { dst, .. }
+                | Inst::DictKeyAt { dst, .. } => *dst,
+                _ => continue,
+            };
+            let guarded = matches!(
+                b.insts.get(i + 1),
+                Some(Inst::Retain { src, reason: RcReason::BorrowFromMutablePlace }) if *src == t
+            );
+            if !guarded {
+                continue;
+            }
+            // 消費されなかったので、ブロックの終わりで release されている（消費された値は対象外）
+            let Some(k) = (i + 2..b.insts.len()).find(|&k| {
+                matches!(&b.insts[k], Inst::Release { src, reason: RcReason::UnconsumedOwnedAtBlockEnd } if *src == t)
+            }) else {
+                continue;
+            };
+            let last_use = (i + 2..k)
+                .rev()
+                .find(|&j| b.insts[j].operands().contains(&t));
+            let safe = match last_use {
+                Some(u) => (i + 2..=u).all(|j| keeps_places(&b.insts[j])),
+                None => true,
+            };
+            if !safe {
+                continue;
+            }
+            remove[bi].insert(i + 1);
+            remove[bi].insert(k);
+            for (retain, reason, index) in [
+                (true, RcReason::BorrowFromMutablePlace, i + 1),
+                (false, RcReason::UnconsumedOwnedAtBlockEnd, k),
+            ] {
+                elided.push(ElidedRcOp {
+                    retain,
+                    reason,
+                    src: t,
+                    block: bi as u32,
+                    index,
+                    local: None,
+                    elision: ElisionReason::BorrowGuardUnneeded,
+                });
+            }
+        }
+    }
+    if elided.is_empty() {
+        return;
+    }
+    for (b, rm) in f.blocks.iter_mut().zip(&remove) {
+        if rm.is_empty() {
+            continue;
+        }
+        let insts = std::mem::take(&mut b.insts);
+        b.insts = insts
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !rm.contains(i))
+            .map(|(_, inst)| inst)
+            .collect();
+    }
+    elided.sort_by_key(|e| (e.block, e.index));
+    f.elided_rc = elided;
+}
+
 /// ARC の釣り合いの検査（各ブロック）:
 /// - +1 所有で定義した値（関数呼び出しの結果、`MakeUnion` / `MakeRecord`）と、ローカル以外からの借用（リテラル、
 ///   取り出した値）は、「定義での +1 + Retain − Release − 消費」が 0 になること。
@@ -407,9 +589,181 @@ mod tests {
                 ret,
                 temps,
                 blocks: vec![Block { insts, term }],
+                elided_rc: Vec::new(),
                 effects: None,
             }],
         }
+    }
+
+    /// `def f(xs: list[str]) -> None`: 本体は `body`（t0 = load xs、t1 = 0、t2 = xs[0] の後に続く命令）。
+    fn list_fn(body: Vec<Inst>, extra_temps: Vec<Ty>) -> Program {
+        let mut insts = vec![
+            Inst::Load {
+                dst: TempId(0),
+                src: LocalId(0),
+            },
+            Inst::Const {
+                dst: TempId(1),
+                value: Const::Int(0),
+            },
+            Inst::ListGet {
+                dst: TempId(2),
+                src: TempId(0),
+                index: TempId(1),
+            },
+        ];
+        insts.extend(body);
+        let mut temps = vec![Ty::List(ListId(0)), Ty::Int, Ty::Str];
+        temps.extend(extra_temps);
+        let mut p = str_fn(
+            insts,
+            temps,
+            vec![Ty::List(ListId(0))],
+            1,
+            None,
+            Terminator::Return(None),
+        );
+        p.lists = vec![Ty::Str];
+        p
+    }
+
+    fn optimized(mut p: Program) -> (String, Vec<ElidedRcOp>) {
+        insert(&mut p);
+        optimize(&mut p);
+        // 参照カウントの釣り合い（最適化の後でも成り立つこと）
+        verify(&p).unwrap();
+        (p.to_string(), p.funcs[0].elided_rc.clone())
+    }
+
+    #[test]
+    fn a_parameter_that_is_never_reassigned_borrows_the_callers_reference() {
+        // def f(s: str) -> str: return s（P4）
+        let p = str_fn(
+            vec![Inst::Load {
+                dst: TempId(0),
+                src: LocalId(0),
+            }],
+            vec![Ty::Str],
+            vec![Ty::Str],
+            1,
+            Some(Ty::Str),
+            Terminator::Return(Some(TempId(0))),
+        );
+        let (text, elided) = optimized(p);
+        assert!(!text.contains("param_slot_entry"), "{text}");
+        assert!(!text.contains("slot_at_function_exit"), "{text}");
+        // 戻り値として消費するための retain は残る
+        assert!(text.contains("consume_borrowed:return"), "{text}");
+        assert_eq!(elided.len(), 2);
+        assert!(
+            elided
+                .iter()
+                .all(|e| e.elision == ElisionReason::ParamNeverReassigned)
+        );
+        assert_eq!(elided[0].local, Some(LocalId(0)));
+    }
+
+    #[test]
+    fn a_reassigned_parameter_keeps_its_own_reference() {
+        // def f(s: str) -> None: s = "s"
+        let p = str_fn(
+            vec![
+                Inst::Const {
+                    dst: TempId(0),
+                    value: Const::Str(StrId(0)),
+                },
+                Inst::Store {
+                    dst: LocalId(0),
+                    src: TempId(0),
+                },
+            ],
+            vec![Ty::Str],
+            vec![Ty::Str],
+            1,
+            None,
+            Terminator::Return(None),
+        );
+        let (text, elided) = optimized(p);
+        assert!(text.contains("param_slot_entry"), "{text}");
+        assert!(text.contains("slot_at_function_exit"), "{text}");
+        assert!(elided.is_empty());
+    }
+
+    #[test]
+    fn a_list_element_used_only_by_print_needs_no_guard() {
+        // print(xs[0])（P0）
+        let p = list_fn(
+            vec![Inst::Call {
+                dst: None,
+                callee: Callee::Builtin(Builtin::PrintStr),
+                args: vec![TempId(2)],
+            }],
+            vec![],
+        );
+        let (text, elided) = optimized(p);
+        assert!(!text.contains("borrow_from_mutable_place"), "{text}");
+        assert!(!text.contains("unconsumed_owned_at_block_end"), "{text}");
+        let guard: Vec<_> = elided
+            .iter()
+            .filter(|e| e.elision == ElisionReason::BorrowGuardUnneeded)
+            .collect();
+        assert_eq!(guard.len(), 2);
+    }
+
+    #[test]
+    fn a_list_element_used_after_a_call_keeps_its_guard() {
+        // y = xs[0]; f(xs); print(y): 呼ばれた関数が xs を書き換え得るので、保持は残す（借用の安全条件）
+        let p = list_fn(
+            vec![
+                Inst::Call {
+                    dst: None,
+                    callee: Callee::Func(FuncId(0)),
+                    args: vec![TempId(0)],
+                },
+                Inst::Call {
+                    dst: None,
+                    callee: Callee::Builtin(Builtin::PrintStr),
+                    args: vec![TempId(2)],
+                },
+            ],
+            vec![],
+        );
+        let (text, elided) = optimized(p);
+        assert!(text.contains("borrow_from_mutable_place"), "{text}");
+        assert!(text.contains("unconsumed_owned_at_block_end"), "{text}");
+        assert!(
+            elided
+                .iter()
+                .all(|e| e.elision != ElisionReason::BorrowGuardUnneeded)
+        );
+    }
+
+    #[test]
+    fn a_list_element_passed_to_a_call_keeps_its_guard() {
+        // f(xs[0]): 最後の使用が関数の呼び出しなら、保持は残す
+        let mut p = list_fn(
+            vec![Inst::Call {
+                dst: None,
+                callee: Callee::Func(FuncId(1)),
+                args: vec![TempId(2)],
+            }],
+            vec![],
+        );
+        p.funcs.push(Function {
+            name: "g".into(),
+            param_count: 1,
+            locals: vec![Ty::Str],
+            ret: None,
+            temps: vec![],
+            blocks: vec![Block {
+                insts: vec![],
+                term: Terminator::Return(None),
+            }],
+            elided_rc: Vec::new(),
+            effects: None,
+        });
+        let (text, _) = optimized(p);
+        assert!(text.contains("borrow_from_mutable_place"), "{text}");
     }
 
     #[test]

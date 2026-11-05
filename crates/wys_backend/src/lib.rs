@@ -1694,6 +1694,7 @@ mod tests {
                     insts: vec![],
                     term: Terminator::Return(None),
                 }],
+                elided_rc: Vec::new(),
                 effects: None,
             }],
         };
@@ -1733,6 +1734,7 @@ mod tests {
                     }],
                     term: Terminator::Return(Some(TempId(0))),
                 }],
+                elided_rc: Vec::new(),
                 effects: None,
             }],
         };

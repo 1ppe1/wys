@@ -712,6 +712,41 @@ fn python_values_are_copied_across_the_boundary() {
 }
 
 #[test]
+fn move_optimization_reduces_rc_ops() {
+    // M4 T3: 同じプログラムを最適化あり／なし（WYS_ARC_OPT=0）で動かし、出力が同じで回数が減ることを確かめる
+    let path = scratch(
+        "move_opt",
+        "def same(s: str) -> str:\n    return s\n\ndef main() -> None:\n    xs = [\"a\" + \"b\", \"c\" + \"d\"]\n    n = 0\n    for i in range(1000):\n        n = n + len(xs[i % 2])\n        n = n + len(same(xs[0]))\n    print(n)\n",
+    );
+    let stats = |opt: &str| {
+        let out = cli_env(
+            &["run", path.to_str().unwrap()],
+            &[("WYS_RC_STATS", "1"), ("WYS_ARC_OPT", opt)],
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let err = String::from_utf8(out.stderr).unwrap();
+        let nums: Vec<u64> = err
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|w| w.parse().ok())
+            .collect();
+        (String::from_utf8(out.stdout).unwrap(), nums[0], nums[1])
+    };
+    let (out_on, retains_on, releases_on) = stats("1");
+    let (out_off, retains_off, releases_off) = stats("0");
+    assert_eq!(out_on, out_off);
+    assert_eq!(out_on, "4000\n");
+    assert!(retains_on < retains_off, "{retains_on} vs {retains_off}");
+    assert!(
+        releases_on < releases_off,
+        "{releases_on} vs {releases_off}"
+    );
+}
+
+#[test]
 fn floats_follow_ieee_754_and_print_like_python() {
     let (code, stdout, stderr) = run(
         "floats",
