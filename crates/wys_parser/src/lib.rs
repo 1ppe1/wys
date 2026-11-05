@@ -990,6 +990,10 @@ impl Parser<'_> {
                 self.bump();
                 ExprKind::Int(v)
             }
+            TokenKind::Float(b) => {
+                self.bump();
+                ExprKind::Float(f64::from_bits(b))
+            }
             TokenKind::Str(s) => {
                 self.bump();
                 ExprKind::Str(s)

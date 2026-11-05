@@ -659,6 +659,19 @@ fn modules_and_names_can_be_imported_under_aliases() {
 }
 
 #[test]
+fn floats_follow_ieee_754_and_print_like_python() {
+    let (code, stdout, stderr) = run(
+        "floats",
+        "def main() -> None:\n    x = 1.0 / 3.0\n    print(x)\n    print(0.1 + 0.2 == 0.3)\n    print(float(2) * 1e16)\n    print(int(-2.7))\n    print([1.5, -0.0])\n",
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        "0.3333333333333333\nFalse\n2e+16\n-2\n[1.5, -0.0]\n"
+    );
+}
+
+#[test]
 fn structural_values_are_printed() {
     let (code, stdout, stderr) = run(
         "structural_print",

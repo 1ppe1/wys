@@ -1,0 +1,35 @@
+# parse_scalar は小数点か指数を含む数値を float にする（ADR-0019 論点 7）。"1." や "inf" は str のまま
+# expect-stdout: float
+# expect-stdout: 1.5
+# expect-stdout: float
+# expect-stdout: 1000.0
+# expect-stdout: float
+# expect-stdout: -0.5
+# expect-stdout: int
+# expect-stdout: 3
+# expect-stdout: str
+# expect-stdout: 1.
+# expect-stdout: str
+# expect-stdout: inf
+def show(s: str) -> None:
+    v = parse_scalar(s)
+    match v:
+        case float():
+            print("float")
+            print(v)
+        case int():
+            print("int")
+            print(v)
+        case str():
+            print("str")
+            print(v)
+        case _:
+            print("other")
+
+def main() -> None:
+    show("1.5")
+    show("1e3")
+    show("-0.5")
+    show("3")
+    show("1.")
+    show("inf")

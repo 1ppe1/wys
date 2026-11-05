@@ -1,0 +1,7 @@
+# float の引数に int を渡せない（暗黙の変換なし）
+# expect-error: E0201 7:17
+def twice(x: float) -> float:
+    return x * 2.0
+
+def main() -> None:
+    print(twice(3))

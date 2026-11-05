@@ -10,6 +10,8 @@ use wys_span::Span;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
     Int(i64),
+    /// 浮動小数点のリテラル（ADR-0019）。`Eq` を保つため、`f64` のビット列で持つ（`f64::from_bits`）
+    Float(u64),
     Str(String),
     Ident(String),
     // keywords
@@ -83,6 +85,7 @@ impl TokenKind {
         use TokenKind::*;
         let s = match self {
             Int(v) => return format!("integer `{v}`"),
+            Float(b) => return format!("float `{:?}`", f64::from_bits(*b)),
             Str(_) => "string literal",
             Ident(n) => return format!("identifier `{n}`"),
             Def => "`def`",
@@ -385,20 +388,40 @@ impl Lexer<'_> {
         while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
             self.pos += 1;
         }
-        if self.pos + 1 < self.bytes.len()
-            && self.bytes[self.pos] == b'.'
-            && self.bytes[self.pos + 1].is_ascii_digit()
-        {
+        // `1.5` / `1e10` / `1.5e-3`（ADR-0019 論点 2）。小数点の後と、指数の後には数字が要る
+        let digits_at = |pos: usize| pos < self.bytes.len() && self.bytes[pos].is_ascii_digit();
+        let mut is_float = false;
+        if self.pos < self.bytes.len() && self.bytes[self.pos] == b'.' && digits_at(self.pos + 1) {
+            is_float = true;
             self.pos += 1;
-            while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
+            while digits_at(self.pos) {
                 self.pos += 1;
             }
-            self.diags.push(Diagnostic::error(
-                "E0007",
-                "float literals are not supported yet",
-                sp(start, self.pos),
-            ));
-            self.push(TokenKind::Int(0), start, self.pos);
+        }
+        if self.pos < self.bytes.len() && matches!(self.bytes[self.pos], b'e' | b'E') {
+            let sign = usize::from(
+                self.pos + 1 < self.bytes.len() && matches!(self.bytes[self.pos + 1], b'+' | b'-'),
+            );
+            if digits_at(self.pos + 1 + sign) {
+                is_float = true;
+                self.pos += 1 + sign;
+                while digits_at(self.pos) {
+                    self.pos += 1;
+                }
+            }
+        }
+        if is_float {
+            let text = &self.src[start..self.pos];
+            let v: f64 = text
+                .parse()
+                .expect("the lexer accepted a valid float literal");
+            if v.is_infinite() {
+                self.diags.push(
+                    Diagnostic::error("E0009", "float literal is too large", sp(start, self.pos))
+                        .with_cause("it rounds to infinity (`float` is an IEEE 754 double)"),
+                );
+            }
+            self.push(TokenKind::Float(v.to_bits()), start, self.pos);
             return;
         }
         let text = &self.src[start..self.pos];
@@ -666,7 +689,11 @@ mod tests {
         assert_eq!(codes("if x:\n    a\n  b\n"), vec!["E0003"]);
         assert_eq!(codes("x = 99999999999999999999\n"), vec!["E0005"]);
         assert_eq!(codes("x = \"\\q\"\n"), vec!["E0006"]);
-        assert_eq!(codes("x = 1.5\n"), vec!["E0007"]);
+        assert_eq!(codes("x = 1e400\n"), vec!["E0009"]);
+        assert_eq!(
+            kinds("1.5 2e3 1.")[..3],
+            [Float(1.5f64.to_bits()), Float(2e3f64.to_bits()), Int(1)]
+        );
         assert_eq!(codes("x = $\n"), vec!["E0001"]);
         assert_eq!(kinds("a is not b | c")[1..4], [Is, Not, Ident("b".into())]);
         assert_eq!(codes("f(1\n"), vec!["E0008"]);

@@ -18,6 +18,8 @@ pub enum Ty {
     Int,
     Bool,
     Str,
+    /// IEEE 754 の倍精度（ADR-0019、M4 T12）。値型で、LLVM では `double`
+    Float,
     Union(UnionId),
     Record(RecordId),
     /// `list[T]`（ヒープ上のリストへのポインタ1語、M3 T4a）
@@ -43,6 +45,7 @@ impl Ty {
             Ty::Int => "int".into(),
             Ty::Bool => "bool".into(),
             Ty::Str => "str".into(),
+            Ty::Float => "float".into(),
             Ty::Union(u) => format!("u{}", u.0),
             Ty::Record(r) => format!("r{}", r.0),
             Ty::List(l) => format!("list{}", l.0),
@@ -151,6 +154,8 @@ pub enum Const {
     Int(i64),
     Bool(bool),
     Str(StrId),
+    /// `f64` のビット列（`Eq` を保つため。`f64::from_bits` で戻す）
+    Float(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +163,8 @@ pub enum BinOp {
     Add,
     Sub,
     Mul,
+    /// `float` の割り算（ADR-0019 論点 4）。0 での割り算は実行時エラー
+    Div,
     FloorDiv,
     Mod,
     Eq,
@@ -174,6 +181,7 @@ impl BinOp {
             BinOp::Add => "add",
             BinOp::Sub => "sub",
             BinOp::Mul => "mul",
+            BinOp::Div => "div",
             BinOp::FloorDiv => "floordiv",
             BinOp::Mod => "mod",
             BinOp::Eq => "eq",
@@ -198,6 +206,12 @@ pub enum Builtin {
     PrintInt,
     PrintBool,
     PrintStr,
+    /// `float` の表示と改行（Python の `repr` と同じ書式、ADR-0019 論点 6）
+    PrintFloat,
+    /// `float(n)`（`int` から）
+    FloatFromInt,
+    /// `int(x)`（0 の方向に切り捨て。NaN・無限大・範囲外は実行時エラー、ADR-0019 論点 3）
+    IntFromFloat,
     /// 構造を持つ値（レコード・`list`・`dict`・Union）の表示と改行（ADR-0016 論点 15〜17）。
     /// 引数は1つで、型は問わない。値は借用で読む。
     PrintValue,
@@ -207,10 +221,12 @@ pub enum Builtin {
     ArgExists,
     /// `ArgExists` が真の番号にだけ使う。
     ArgStr,
-    /// 0 = int、1 = bool、2 = str、3 = null
+    /// 0 = int、1 = bool、2 = str、3 = null、4 = float（ADR-0019）
     ScalarKind,
     ScalarInt,
     ScalarBool,
+    /// `ScalarKind` が 4（float）の文字列の値（ADR-0019 論点 7）
+    ScalarFloat,
     /// `wys test` で実行するテストの番号
     TestIndex,
     /// `assert` の失敗（引数は場所の文字列）。戻らない。
@@ -254,6 +270,9 @@ impl Builtin {
             Builtin::PrintInt => "print_int",
             Builtin::PrintBool => "print_bool",
             Builtin::PrintStr => "print_str",
+            Builtin::PrintFloat => "print_float",
+            Builtin::FloatFromInt => "float_from_int",
+            Builtin::IntFromFloat => "int_from_float",
             Builtin::PrintValue => "print_value",
             Builtin::Exit => "exit",
             Builtin::ArgCount => "arg_count",
@@ -262,6 +281,7 @@ impl Builtin {
             Builtin::ScalarKind => "scalar_kind",
             Builtin::ScalarInt => "scalar_int",
             Builtin::ScalarBool => "scalar_bool",
+            Builtin::ScalarFloat => "scalar_float",
             Builtin::TestIndex => "test_index",
             Builtin::AssertFail => "assert_fail",
             Builtin::Panic => "panic",
@@ -316,6 +336,7 @@ impl Builtin {
             Builtin::PrintInt
             | Builtin::PrintBool
             | Builtin::PrintStr
+            | Builtin::PrintFloat
             | Builtin::PrintValue
             | Builtin::Exit
             | Builtin::AssertFail
@@ -325,7 +346,8 @@ impl Builtin {
             }
             Builtin::ArgExists | Builtin::ScalarBool | Builtin::StrEq => Some(Ty::Bool),
             Builtin::ArgStr | Builtin::StrConcat => Some(Ty::Str),
-            Builtin::StrLen => Some(Ty::Int),
+            Builtin::StrLen | Builtin::IntFromFloat => Some(Ty::Int),
+            Builtin::FloatFromInt | Builtin::ScalarFloat => Some(Ty::Float),
             Builtin::PyImport
             | Builtin::PyGetAttr
             | Builtin::PyCall
@@ -347,6 +369,8 @@ impl Builtin {
             Builtin::PrintInt | Builtin::Exit => &[Ty::Int],
             Builtin::PrintBool => &[Ty::Bool],
             Builtin::PrintStr => &[Ty::Str],
+            Builtin::PrintFloat | Builtin::IntFromFloat => &[Ty::Float],
+            Builtin::FloatFromInt => &[Ty::Int],
             Builtin::PrintValue => {
                 unreachable!("print_value takes any type; verify checks it separately")
             }
@@ -354,7 +378,10 @@ impl Builtin {
             Builtin::AssertFail | Builtin::StrLen => &[Ty::Str],
             Builtin::StrConcat | Builtin::StrEq | Builtin::Panic => &[Ty::Str, Ty::Str],
             Builtin::ArgExists | Builtin::ArgStr => &[Ty::Int],
-            Builtin::ScalarKind | Builtin::ScalarInt | Builtin::ScalarBool => &[Ty::Str],
+            Builtin::ScalarKind
+            | Builtin::ScalarInt
+            | Builtin::ScalarBool
+            | Builtin::ScalarFloat => &[Ty::Str],
             Builtin::PyImport | Builtin::PyFromStr => &[Ty::Str],
             Builtin::PyGetAttr => &[Ty::Py, Ty::Str],
             Builtin::PyCall => {
@@ -690,6 +717,7 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                 Inst::Const { dst, value } => {
                     let ty = match value {
                         Const::Int(_) => Ty::Int,
+                        Const::Float(_) => Ty::Float,
                         Const::Bool(_) => Ty::Bool,
                         Const::Str(s) => {
                             if s.0 as usize >= p.strings.len() {
@@ -715,16 +743,15 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                     let operand_ok = match op {
                         // 構造を持つ値の比較は、バックエンドが型ごとの関数で行う（ADR-0016）
                         BinOp::Eq | BinOp::Ne => true,
-                        _ => lt == Ty::Int,
+                        // float（ADR-0019）: 四則と大小の比較。`//` と `%` は int だけ、`/` は float だけ
+                        BinOp::Div => lt == Ty::Float,
+                        BinOp::FloorDiv | BinOp::Mod => lt == Ty::Int,
+                        _ => matches!(lt, Ty::Int | Ty::Float),
                     };
                     if !operand_ok {
                         return Err(format!("bb{bi}: {} on {}", op.name(), lt.name()));
                     }
-                    let rty = if op.is_comparison() {
-                        Ty::Bool
-                    } else {
-                        Ty::Int
-                    };
+                    let rty = if op.is_comparison() { Ty::Bool } else { lt };
                     expect("binary result", temp_ty(*dst)?, rty)?;
                     define(*dst, &mut defined_in)?;
                 }
@@ -1055,6 +1082,9 @@ impl fmt::Display for Program {
                     match inst {
                         Inst::Const { dst, value } => match value {
                             Const::Int(v) => writeln!(f, "t{} = const {v}", dst.0)?,
+                            Const::Float(b) => {
+                                writeln!(f, "t{} = const {:?}", dst.0, f64::from_bits(*b))?
+                            }
                             Const::Bool(v) => writeln!(f, "t{} = const {v}", dst.0)?,
                             Const::Str(s) => writeln!(f, "t{} = const s{}", dst.0, s.0)?,
                         },

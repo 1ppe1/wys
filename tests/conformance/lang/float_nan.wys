@@ -1,0 +1,12 @@
+# NaN はどの値とも等しくない（自分自身とも。ADR-0019 論点 5）
+# expect-stdout: nan
+# expect-stdout: False
+# expect-stdout: True
+# expect-stdout: False
+def main() -> None:
+    inf = 1e308 * 10.0
+    nan = inf - inf
+    print(nan)
+    print(nan == nan)
+    print(nan != nan)
+    print([nan] == [nan])

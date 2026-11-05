@@ -1,5 +1,5 @@
 # expect-error: E0203 2:10
-def f(x: float) -> None:
+def f(x: decimal) -> None:
     pass
 
 def main() -> None:

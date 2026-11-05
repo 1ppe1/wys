@@ -1,0 +1,4 @@
+# int と float は暗黙に変換しない（LANG-002、ADR-0019 論点 3）
+# expect-error: E0207 4:11
+def main() -> None:
+    print(1 + 1.5)

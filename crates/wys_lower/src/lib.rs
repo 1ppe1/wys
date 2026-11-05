@@ -47,6 +47,7 @@ impl Shared<'_> {
             TTy::Int => Some(Ty::Int),
             TTy::Bool => Some(Ty::Bool),
             TTy::Str => Some(Ty::Str),
+            TTy::Float => Some(Ty::Float),
             TTy::None => None,
             TTy::Union(u) => Some(Ty::Union(self.ir_union(u))),
             TTy::Record(r) => Some(Ty::Record(self.ir_record(r))),
@@ -64,9 +65,13 @@ impl Shared<'_> {
         }
     }
 
-    /// `Unknown` の実行時表現（ADR-0011）: `int | bool | str | None` の Union。
+    /// `Unknown` の実行時表現（ADR-0011）: `int | bool | str | float | None` の Union（`float` は ADR-0019）。
     fn unknown_union(&mut self) -> wys_typeck::UnionId {
-        match self.types.union([TTy::Int, TTy::Bool, TTy::Str, TTy::None]) {
+        // `float` は ADR-0019 論点 7 で足した
+        match self
+            .types
+            .union([TTy::Int, TTy::Bool, TTy::Str, TTy::Float, TTy::None])
+        {
             TTy::Union(u) => u,
             _ => unreachable!("four members always form a union"),
         }
@@ -769,6 +774,7 @@ impl<'s, 't> FnLower<'s, 't> {
                     "int" => TTy::Int,
                     "bool" => TTy::Bool,
                     "str" => TTy::Str,
+                    "float" => TTy::Float,
                     "Result" => match st {
                         TTy::Union(u) => self
                             .members(u)
@@ -1000,6 +1006,7 @@ impl<'s, 't> FnLower<'s, 't> {
     fn expr(&mut self, e: &ast::Expr) -> Option<TempId> {
         match &e.kind {
             ExprKind::Int(v) => Some(self.konst(Const::Int(*v), Ty::Int)),
+            ExprKind::Float(v) => Some(self.konst(Const::Float(v.to_bits()), Ty::Float)),
             ExprKind::Bool(v) => Some(self.konst(Const::Bool(*v), Ty::Bool)),
             ExprKind::Str(s) => {
                 let id = StrId(self.sh.strings.len() as u32);
@@ -1047,6 +1054,18 @@ impl<'s, 't> FnLower<'s, 't> {
             ExprKind::Unary { op, operand } => {
                 let v = self.expr(operand).expect("unary operands have values");
                 Some(match op {
+                    // float は `-0.0 - x`（`0.0 - x` だと `-0.0` の符号を失う。ADR-0019）
+                    UnaryOp::Neg if self.ty(operand) == TTy::Float => {
+                        let zero = self.konst(Const::Float((-0.0f64).to_bits()), Ty::Float);
+                        let dst = self.temp(Ty::Float);
+                        self.emit(Inst::Binary {
+                            dst,
+                            op: BinOp::Sub,
+                            lhs: zero,
+                            rhs: v,
+                        });
+                        dst
+                    }
                     UnaryOp::Neg => {
                         let zero = self.konst(Const::Int(0), Ty::Int);
                         let dst = self.temp(Ty::Int);
@@ -1097,6 +1116,18 @@ impl<'s, 't> FnLower<'s, 't> {
                     panic!("record construction without a record type")
                 };
                 Some(self.construct(r, kwargs))
+            }
+            // 数値の変換（ADR-0019 論点 3）
+            ExprKind::Call { callee, args, .. }
+                if matches!(callee.name.as_str(), "float" | "int") =>
+            {
+                let v = self.expr(&args[0]).expect("numbers have values");
+                let b = if callee.name == "float" {
+                    Builtin::FloatFromInt
+                } else {
+                    Builtin::IntFromFloat
+                };
+                Some(self.builtin(b, vec![v]))
             }
             ExprKind::Call { callee, args, .. } if callee.name == "len" => {
                 let at = self.ty(&args[0]);
@@ -1806,7 +1837,13 @@ impl<'s, 't> FnLower<'s, 't> {
             src: k,
         });
         let join = self.new_block();
-        for (code, member) in [(0, TTy::Int), (1, TTy::Bool), (3, TTy::None), (2, TTy::Str)] {
+        for (code, member) in [
+            (0, TTy::Int),
+            (1, TTy::Bool),
+            (3, TTy::None),
+            (4, TTy::Float),
+            (2, TTy::Str),
+        ] {
             let last = member == TTy::Str;
             let next = if last {
                 None
@@ -1844,6 +1881,7 @@ impl<'s, 't> FnLower<'s, 't> {
                 Some(match member {
                     TTy::Int => self.builtin(Builtin::ScalarInt, vec![ls]),
                     TTy::Bool => self.builtin(Builtin::ScalarBool, vec![ls]),
+                    TTy::Float => self.builtin(Builtin::ScalarFloat, vec![ls]),
                     _ => ls,
                 })
             };
@@ -1982,6 +2020,8 @@ impl<'s, 't> FnLower<'s, 't> {
                     | "Ok"
                     | "Err"
                     | "len"
+                    | "float"
+                    | "int"
                     | "range"
             )
     }
@@ -2116,6 +2156,7 @@ impl<'s, 't> FnLower<'s, 't> {
                 TTy::Int => Builtin::PrintInt,
                 TTy::Bool => Builtin::PrintBool,
                 TTy::Str => Builtin::PrintStr,
+                TTy::Float => Builtin::PrintFloat,
                 _ => Builtin::PrintValue,
             }
         }
@@ -2222,10 +2263,17 @@ impl<'s, 't> FnLower<'s, 't> {
             }
             return d;
         }
+        // 四則の結果は被演算子と同じ型（int か float。ADR-0019）
+        let num = if self.ty(lhs) == TTy::Float {
+            Ty::Float
+        } else {
+            Ty::Int
+        };
         let (iop, ty) = match op {
-            A::Add => (BinOp::Add, Ty::Int),
-            A::Sub => (BinOp::Sub, Ty::Int),
-            A::Mul => (BinOp::Mul, Ty::Int),
+            A::Add => (BinOp::Add, num),
+            A::Sub => (BinOp::Sub, num),
+            A::Mul => (BinOp::Mul, num),
+            A::Div => (BinOp::Div, Ty::Float),
             A::FloorDiv => (BinOp::FloorDiv, Ty::Int),
             A::Mod => (BinOp::Mod, Ty::Int),
             A::Eq => (BinOp::Eq, Ty::Bool),
@@ -2234,7 +2282,7 @@ impl<'s, 't> FnLower<'s, 't> {
             A::Le => (BinOp::Le, Ty::Bool),
             A::Gt => (BinOp::Gt, Ty::Bool),
             A::Ge => (BinOp::Ge, Ty::Bool),
-            A::Div | A::And | A::Or | A::In | A::NotIn => {
+            A::And | A::Or | A::In | A::NotIn => {
                 unreachable!("rejected by the type checker or handled above")
             }
         };

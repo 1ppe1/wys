@@ -137,6 +137,11 @@ declare void @wys_print_int(i64)
 declare void @wys_print_bool(i1 zeroext)
 declare void @wys_print_str(ptr)
 declare void @wys_write_int(i64)
+declare void @wys_write_float(double)
+declare void @wys_print_float(double)
+declare double @wys_float_div(double, double)
+declare i64 @wys_float_to_int(double)
+declare double @wys_scalar_float(ptr)
 declare void @wys_write_bool(i1 zeroext)
 declare void @wys_write_str(ptr)
 declare void @wys_write_bytes(ptr, i64)
@@ -184,6 +189,7 @@ fn llty(t: Ty) -> String {
     match t {
         Ty::Int => "i64".into(),
         Ty::Bool => "i1".into(),
+        Ty::Float => "double".into(),
         // ヒープオブジェクトへのポインタ（ADR-0012）
         Ty::Str => "ptr".into(),
         Ty::Union(u) => format!("%union.{}", u.0),
@@ -196,7 +202,7 @@ fn llty(t: Ty) -> String {
 /// `str` は ptr と長さで2語、Union はタグ1語 + 中身、レコードはフィールドの和。
 fn words(p: &Program, t: Ty) -> u32 {
     match t {
-        Ty::Int | Ty::Bool => 1,
+        Ty::Int | Ty::Bool | Ty::Float => 1,
         Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py => 1,
         Ty::Union(u) => 1 + union_payload_words(p, u),
         // フィールドのないレコードは埋め草の 1 バイト（`type_defs`）を持つので 1 語
@@ -373,7 +379,7 @@ fn glue(kind: &str, t: Ty) -> String {
         // Python のハンドル: retain は参照カウントだけ、最後の release が Python の参照を手放す（ADR-0018 論点 6）
         Ty::Py if kind == "retain" => "@wys_rc_retain".to_string(),
         Ty::Py => "@wys_py_release".to_string(),
-        Ty::Int | Ty::Bool => unreachable!("scalars have no reference counts"),
+        Ty::Int | Ty::Bool | Ty::Float => unreachable!("scalars have no reference counts"),
     }
 }
 
@@ -497,6 +503,8 @@ fn emit_dict_glue(out: &mut String, p: &Program, drops: &DropInfo) {
 fn eq_inst(t: Ty, dst: &str, a: &str, b: &str) -> String {
     match t {
         Ty::Int | Ty::Bool => format!("  {dst} = icmp eq {} {a}, {b}", llty(t)),
+        // IEEE 754 のとおり（NaN はどの値とも等しくない、ADR-0019 論点 5）
+        Ty::Float => format!("  {dst} = fcmp oeq double {a}, {b}"),
         Ty::Str => format!("  {dst} = call zeroext i1 @wys_str_eq(ptr {a}, ptr {b})"),
         Ty::Py => unreachable!("Python handles cannot be compared (E1202)"),
         Ty::List(l) => format!("  {dst} = call i1 @wys_eq_list{}(ptr {a}, ptr {b})", l.0),
@@ -533,7 +541,7 @@ fn eq_types(p: &Program) -> Vec<Ty> {
     }
     let mut seen: Vec<Ty> = Vec::new();
     while let Some(t) = work.pop() {
-        if matches!(t, Ty::Int | Ty::Bool | Ty::Str) || seen.contains(&t) {
+        if matches!(t, Ty::Int | Ty::Bool | Ty::Str | Ty::Float) || seen.contains(&t) {
             continue;
         }
         seen.push(t);
@@ -542,7 +550,7 @@ fn eq_types(p: &Program) -> Vec<Ty> {
             Ty::Dict(d) => work.push(p.dicts[d.0 as usize].1),
             Ty::Union(u) => work.extend(p.unions[u.0 as usize].iter().flatten()),
             Ty::Record(r) => work.extend(p.records[r.0 as usize].iter().map(|(_, t)| *t)),
-            Ty::Int | Ty::Bool | Ty::Str | Ty::Py => {}
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py => {}
         }
     }
     seen
@@ -620,7 +628,7 @@ fn emit_eq_glue(out: &mut String, p: &Program) {
                 }
                 let _ = writeln!(out, "  ret i1 {acc}\n}}");
             }
-            Ty::Int | Ty::Bool | Ty::Str | Ty::Py => {}
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py => {}
         }
     }
 }
@@ -644,7 +652,7 @@ fn show_types(p: &Program) -> Vec<Ty> {
     }
     let mut seen: Vec<Ty> = Vec::new();
     while let Some(t) = work.pop() {
-        if matches!(t, Ty::Int | Ty::Bool | Ty::Str) || seen.contains(&t) {
+        if matches!(t, Ty::Int | Ty::Bool | Ty::Str | Ty::Float) || seen.contains(&t) {
             continue;
         }
         seen.push(t);
@@ -656,7 +664,7 @@ fn show_types(p: &Program) -> Vec<Ty> {
             }
             Ty::Union(u) => work.extend(p.unions[u.0 as usize].iter().flatten()),
             Ty::Record(r) => work.extend(p.records[r.0 as usize].iter().map(|(_, t)| *t)),
-            Ty::Int | Ty::Bool | Ty::Str | Ty::Py => {}
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py => {}
         }
     }
     seen
@@ -699,6 +707,7 @@ fn show_inst(t: Ty, v: &str) -> String {
     match t {
         Ty::Int => format!("  call void @wys_write_int(i64 {v})"),
         Ty::Bool => format!("  call void @wys_write_bool(i1 zeroext {v})"),
+        Ty::Float => format!("  call void @wys_write_float(double {v})"),
         Ty::Str => format!("  call void @wys_write_str(ptr {v})"),
         Ty::Py => unreachable!("Python handles cannot be printed (E1202)"),
         Ty::List(l) => format!("  call void @wys_show_list{}(ptr {v})", l.0),
@@ -807,7 +816,7 @@ fn emit_show_glue(out: &mut String, p: &Program) {
                 }
                 let _ = writeln!(out, "{}\n  ret void\n}}", texts.write(")"));
             }
-            Ty::Int | Ty::Bool | Ty::Str | Ty::Py => {}
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py => {}
         }
     }
     texts.emit(out);
@@ -946,6 +955,10 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                     }
                     Const::Bool(v) => {
                         let _ = writeln!(out, "  {} = or i1 false, {v}", t(*dst));
+                    }
+                    // `-0.0 + x` は x そのもの（負のゼロも保つ）。定数は 16 進のビット列で書く
+                    Const::Float(bits) => {
+                        let _ = writeln!(out, "  {} = fadd double -0.0, 0x{bits:016X}", t(*dst));
                     }
                     Const::Str(s) => {
                         let _ = writeln!(
@@ -1255,7 +1268,9 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                     let (d, a, bb) = (t(*dst), t(*lhs), t(*rhs));
                     let ty = tty(*lhs);
                     let ir_ty = f.temps[lhs.0 as usize];
-                    if matches!(op, BinOp::Eq | BinOp::Ne) && !matches!(ir_ty, Ty::Int | Ty::Bool) {
+                    if matches!(op, BinOp::Eq | BinOp::Ne)
+                        && !matches!(ir_ty, Ty::Int | Ty::Bool | Ty::Float)
+                    {
                         // 構造を持つ値（と str）の比較は型ごとの関数で（ADR-0016）
                         if *op == BinOp::Eq {
                             let _ = writeln!(out, "{}", eq_inst(ir_ty, &d, &a, &bb));
@@ -1264,6 +1279,32 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                                 writeln!(out, "{}", eq_inst(ir_ty, &format!("{d}.eq"), &a, &bb));
                             let _ = writeln!(out, "  {d} = xor i1 {d}.eq, true");
                         }
+                        continue;
+                    }
+                    if ir_ty == Ty::Float {
+                        // float（ADR-0019）: IEEE 754 のとおり。あふれは無限大、0 での割り算はランタイムが止める
+                        let inst = match op {
+                            BinOp::Add => format!("{d} = fadd double {a}, {bb}"),
+                            BinOp::Sub => format!("{d} = fsub double {a}, {bb}"),
+                            BinOp::Mul => format!("{d} = fmul double {a}, {bb}"),
+                            BinOp::Div => {
+                                format!("{d} = call double @wys_float_div(double {a}, double {bb})")
+                            }
+                            cmp => {
+                                // 順序付きの比較（NaN を含めば偽）。`!=` は「等しくない」なので NaN を含めば真
+                                let pred = match cmp {
+                                    BinOp::Eq => "oeq",
+                                    BinOp::Ne => "une",
+                                    BinOp::Lt => "olt",
+                                    BinOp::Le => "ole",
+                                    BinOp::Gt => "ogt",
+                                    BinOp::Ge => "oge",
+                                    _ => unreachable!("verify rejects // and % on float"),
+                                };
+                                format!("{d} = fcmp {pred} double {a}, {bb}")
+                            }
+                        };
+                        let _ = writeln!(out, "  {inst}");
                         continue;
                     }
                     match op {
@@ -1296,7 +1337,7 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                                 BinOp::Le => "sle",
                                 BinOp::Gt => "sgt",
                                 BinOp::Ge => "sge",
-                                _ => unreachable!(),
+                                _ => unreachable!("verify rejects / on int"),
                             };
                             let _ = writeln!(out, "  {d} = icmp {pred} {ty} {a}, {bb}");
                         }
@@ -1364,6 +1405,26 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                             }
                         }
                     }
+                    Callee::Builtin(Builtin::PrintFloat) => {
+                        let _ =
+                            writeln!(out, "  call void @wys_print_float(double {})", t(args[0]));
+                    }
+                    Callee::Builtin(Builtin::FloatFromInt) => {
+                        let _ = writeln!(
+                            out,
+                            "  {} = sitofp i64 {} to double",
+                            t(dst.expect("float() returns a value")),
+                            t(args[0])
+                        );
+                    }
+                    Callee::Builtin(Builtin::IntFromFloat) => {
+                        let _ = writeln!(
+                            out,
+                            "  {} = call i64 @wys_float_to_int(double {})",
+                            t(dst.expect("int() returns a value")),
+                            t(args[0])
+                        );
+                    }
                     Callee::Builtin(Builtin::PrintValue) => {
                         let _ = writeln!(
                             out,
@@ -1378,6 +1439,7 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                         | Builtin::ScalarKind
                         | Builtin::ScalarInt
                         | Builtin::ScalarBool
+                        | Builtin::ScalarFloat
                         | Builtin::TestIndex),
                     ) => {
                         let d = t(dst.expect("input builtins return a value"));
@@ -1403,6 +1465,7 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                                 let (sym, ret) = match b {
                                     Builtin::ScalarKind => ("@wys_scalar_kind", "i64"),
                                     Builtin::ScalarInt => ("@wys_scalar_int", "i64"),
+                                    Builtin::ScalarFloat => ("@wys_scalar_float", "double"),
                                     _ => ("@wys_scalar_bool", "zeroext i1"),
                                 };
                                 let _ =
