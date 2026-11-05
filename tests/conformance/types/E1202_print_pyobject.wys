@@ -1,0 +1,5 @@
+# PyObject は print できない（Python のコードを動かすので、変換メソッドを使う。ADR-0018 論点 13）
+# expect-error: E1202 5:11
+
+def main() -> None:
+    print(py_value(1))

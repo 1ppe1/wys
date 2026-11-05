@@ -48,6 +48,7 @@ impl Shared<'_> {
             TTy::Bool => Some(Ty::Bool),
             TTy::Str => Some(Ty::Str),
             TTy::Float => Some(Ty::Float),
+            TTy::PyObject => Some(Ty::Py),
             TTy::None => None,
             TTy::Union(u) => Some(Ty::Union(self.ir_union(u))),
             TTy::Record(r) => Some(Ty::Record(self.ir_record(r))),
@@ -506,6 +507,7 @@ impl<'s, 't> FnLower<'s, 't> {
                     .map(|e| match e {
                         wys_typeck::Effect::Io => Effect::Io,
                         wys_typeck::Effect::Exit => Effect::Exit,
+                        wys_typeck::Effect::Python => Effect::Python,
                     })
                     .collect()
             }),
@@ -1129,6 +1131,29 @@ impl<'s, 't> FnLower<'s, 't> {
                 };
                 Some(self.builtin(b, vec![v]))
             }
+            // Python（ADR-0018 論点 9・10）
+            ExprKind::Call { callee, args, .. } if callee.name == "py_import" => {
+                let name = self.expr(&args[0]).expect("names have values");
+                Some(self.py_op(Builtin::PyImport, vec![name], e))
+            }
+            ExprKind::Call { callee, args, .. } if callee.name == "py_value" => {
+                let at = self.ty(&args[0]);
+                let v = self.expr(&args[0]);
+                Some(match at {
+                    TTy::PyObject => v.expect("handles have values"),
+                    TTy::None => self.builtin(Builtin::PyNone, vec![]),
+                    t => {
+                        let b = match t {
+                            TTy::Int => Builtin::PyFromInt,
+                            TTy::Bool => Builtin::PyFromBool,
+                            TTy::Str => Builtin::PyFromStr,
+                            TTy::Float => Builtin::PyFromFloat,
+                            other => panic!("py_value of {other:?} passed type checking"),
+                        };
+                        self.builtin(b, vec![v.expect("scalars have values")])
+                    }
+                })
+            }
             ExprKind::Call { callee, args, .. } if callee.name == "len" => {
                 let at = self.ty(&args[0]);
                 let s = self.expr(&args[0]).expect("len takes a value");
@@ -1144,14 +1169,25 @@ impl<'s, 't> FnLower<'s, 't> {
                 }
                 Some(self.builtin(Builtin::StrLen, vec![s]))
             }
-            // メソッド呼び出し（受け手はローカル変数、型検査で確認済み。M4 T4 で AST に印を付けた）
+            // Python のオブジェクトのメソッド（受け手は式。ADR-0018 論点 9）
+            ExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+                ..
+            } if self.ty(receiver) == TTy::PyObject => {
+                Some(self.py_method(receiver, &method.name, args, e))
+            }
+            // list / dict のメソッド（受け手はローカル変数、型検査で確認済み。M4 T4 で AST に印を付けた）
             ExprKind::MethodCall {
                 receiver,
                 method,
                 args,
                 ..
             } if method.name == "pop" => {
-                let recv = receiver.name.as_str();
+                let recv = receiver
+                    .as_name()
+                    .expect("list and dict methods take a variable");
                 let (dv, dt, direct) = self.receiver(recv, |t| matches!(t, TTy::Dict(_)));
                 let db = self.cur;
                 let TTy::Dict(d) = dt else {
@@ -1179,7 +1215,15 @@ impl<'s, 't> FnLower<'s, 't> {
                 method,
                 args,
                 ..
-            } if method.name == "get" => Some(self.dict_get(&receiver.name, &args[0], e)),
+            } if method.name == "get" => Some(
+                self.dict_get(
+                    receiver
+                        .as_name()
+                        .expect("list and dict methods take a variable"),
+                    &args[0],
+                    e,
+                ),
+            ),
             ExprKind::MethodCall {
                 receiver,
                 method,
@@ -1191,7 +1235,9 @@ impl<'s, 't> FnLower<'s, 't> {
                     method.name, "append",
                     "the type checker accepts only these methods"
                 );
-                let recv = receiver.name.as_str();
+                let recv = receiver
+                    .as_name()
+                    .expect("list and dict methods take a variable");
                 let (list, rt, direct) = self.receiver(recv, |t| matches!(t, TTy::List(_)));
                 let lb = self.cur;
                 let TTy::List(l) = rt else {
@@ -1785,6 +1831,107 @@ impl<'s, 't> FnLower<'s, 't> {
         (u, self.hidden_local(Ty::Union(iu)))
     }
 
+    /// `PyObject` のメソッド（ADR-0018 論点 9）。受け手を先に評価し、引数の評価でブロックが変わっても使えるようにする。
+    fn py_method(
+        &mut self,
+        receiver: &ast::Expr,
+        method: &str,
+        args: &[ast::Expr],
+        e: &ast::Expr,
+    ) -> TempId {
+        let h = self.expr(receiver).expect("handles have values");
+        let hb = self.cur;
+        let mut evaluated = Vec::new();
+        for a in args {
+            let v = self.expr(a).expect("arguments have values");
+            evaluated.push((v, self.cur));
+        }
+        let h = self.materialize(h, hb);
+        let mut vals = vec![h];
+        vals.extend(evaluated.into_iter().map(|(t, b)| self.materialize(t, b)));
+        let b = match method {
+            "attr" => Builtin::PyGetAttr,
+            "call" => Builtin::PyCall,
+            "to_int" => Builtin::PyToInt,
+            "to_bool" => Builtin::PyToBool,
+            "to_str" => Builtin::PyToStr,
+            "is_none" => return self.builtin(Builtin::PyIsNone, vals),
+            other => panic!("PyObject method `{other}` passed type checking"),
+        };
+        self.py_op(b, vals, e)
+    }
+
+    /// 失敗し得る Python の操作 `b(args)` を呼び、`Result[T, PyError]`（`e` の型）にする（ADR-0018 論点 8）。
+    /// 成功なら値を `Ok` に、失敗なら例外の型名・メッセージ・トレースバックの `PyError` を `Err` に入れる。
+    fn py_op(&mut self, b: Builtin, args: Vec<TempId>, e: &ast::Expr) -> TempId {
+        let TTy::Result(r) = self.ty(e) else {
+            panic!("Python operations return a Result")
+        };
+        let (_, err) = self.sh.types.result_args(r);
+        let union = self.sh.ir_result(r);
+        let out = self.hidden_local(Ty::Union(union));
+        // 値は失敗したときも（使わない値として）返るので、いったんローカルに置き、成功の側でだけ読む
+        let v = self.builtin(b, args);
+        let vt = self.temps[v.0 as usize];
+        let slot = self.hidden_local(vt);
+        self.emit(Inst::Store { dst: slot, src: v });
+        let failed = self.builtin(Builtin::PyFailed, vec![]);
+        let (ok_b, err_b, join) = (self.new_block(), self.new_block(), self.new_block());
+        self.terminate(Terminator::Branch {
+            cond: failed,
+            then_block: err_b,
+            else_block: ok_b,
+        });
+        self.switch_to(ok_b);
+        let lv = self.temp(vt);
+        self.emit(Inst::Load { dst: lv, src: slot });
+        let okv = self.temp(Ty::Union(union));
+        self.emit(Inst::MakeUnion {
+            dst: okv,
+            union,
+            variant: 0,
+            payload: Some(lv),
+        });
+        self.emit(Inst::Store { dst: out, src: okv });
+        self.terminate(Terminator::Jump(join));
+        self.switch_to(err_b);
+        let TTy::Record(rid) = err else {
+            panic!("PyError is a record")
+        };
+        let record = self.sh.ir_record(rid);
+        // フィールドは名前の順（kind, message, traceback）に並んでいる
+        let fields: Vec<TempId> = [
+            Builtin::PyErrKind,
+            Builtin::PyErrMessage,
+            Builtin::PyErrTraceback,
+        ]
+        .into_iter()
+        .map(|b| self.builtin(b, vec![]))
+        .collect();
+        let rec = self.temp(Ty::Record(record));
+        self.emit(Inst::MakeRecord {
+            dst: rec,
+            record,
+            fields,
+        });
+        let errv = self.temp(Ty::Union(union));
+        self.emit(Inst::MakeUnion {
+            dst: errv,
+            union,
+            variant: 1,
+            payload: Some(rec),
+        });
+        self.emit(Inst::Store {
+            dst: out,
+            src: errv,
+        });
+        self.terminate(Terminator::Jump(join));
+        self.switch_to(join);
+        let d = self.temp(Ty::Union(union));
+        self.emit(Inst::Load { dst: d, src: out });
+        d
+    }
+
     /// `arg(i)`: 引数があれば `str`、なければ `None` の `str | None`。
     fn lower_arg(&mut self, index: &ast::Expr, e: &ast::Expr) -> TempId {
         let (u, out) = self.result_union(e);
@@ -2022,6 +2169,8 @@ impl<'s, 't> FnLower<'s, 't> {
                     | "len"
                     | "float"
                     | "int"
+                    | "py_import"
+                    | "py_value"
                     | "range"
             )
     }

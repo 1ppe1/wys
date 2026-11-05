@@ -644,14 +644,15 @@ impl Resolver<'_> {
         // `m.f(...)`: 受け手がローカル変数でなく、モジュール（別名、自分自身、読み込まれたモジュール）の名前なら、
         // メソッド呼び出しではなく修飾付きの呼び出し（M4 T4）。ローカル変数が同じ名前のモジュールを隠す
         if let ExprKind::MethodCall { receiver, .. } = &e.kind
+            && let Some(name) = receiver.as_name()
             && !self
                 .locals
-                .get(&receiver.name)
+                .get(name)
                 .is_some_and(|&at| at < receiver.span.start)
-            && (self.modules.contains_key(&receiver.name)
-                || receiver.name == self.own_name
-                || self.index.contains_key(&receiver.name)
-                || self.longer_module(&receiver.name).is_some())
+            && (self.modules.contains_key(name)
+                || name == self.own_name
+                || self.index.contains_key(name)
+                || self.longer_module(name).is_some())
         {
             let ExprKind::MethodCall {
                 receiver,
@@ -664,7 +665,11 @@ impl Resolver<'_> {
             };
             e.kind = ExprKind::Call {
                 callee: Ident {
-                    name: format!("{}.{}", receiver.name, method.name),
+                    name: format!(
+                        "{}.{}",
+                        receiver.as_name().expect("checked above"),
+                        method.name
+                    ),
                     span: Span::new(receiver.span.start, method.span.end),
                 },
                 args,
@@ -672,7 +677,13 @@ impl Resolver<'_> {
             };
         }
         match &mut e.kind {
-            ExprKind::MethodCall { args, kwargs, .. } => {
+            ExprKind::MethodCall {
+                receiver,
+                args,
+                kwargs,
+                ..
+            } => {
+                self.expr(receiver);
                 for a in args {
                     self.expr(a);
                 }

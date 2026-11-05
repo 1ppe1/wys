@@ -1,0 +1,39 @@
+# Python の関数を呼んで値を往復する（ADR-0018 論点 9〜11）
+# expect-stdout: 3628800
+# expect-stdout: "hi"
+# expect-stdout: True
+# expect-stdout: True
+# expect-stdout: False
+def factorial(n: int) -> Result[int, PyError] uses python:
+    math = py_import("math")?
+    f = math.attr("factorial")?
+    r = f.call([py_value(n)])?
+    return r.to_int()
+
+def dumps(s: str) -> Result[str, PyError]:
+    json = py_import("json")?
+    f = json.attr("dumps")?
+    r = f.call([py_value(s)])?
+    return r.to_str()
+
+def show(r: Result[int, PyError]) -> None:
+    match r:
+        case Ok(n):
+            print(n)
+        case Err(e):
+            print(e.kind)
+
+def main() -> None:
+    show(factorial(10))
+    match dumps("hi"):
+        case Ok(s):
+            print(s)
+        case Err(e):
+            print(e.message)
+    match py_value(True).to_bool():
+        case Ok(b):
+            print(b)
+        case Err(e):
+            print(e.kind)
+    print(py_value(None).is_none())
+    print(py_value(1).is_none())

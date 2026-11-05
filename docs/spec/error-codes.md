@@ -67,7 +67,7 @@
 | E0902 | コレクション | `range` を `for` の外で使っている |
 | E0903 | コレクション | `for` で反復できない値（`list[T]` か `range(...)` だけ） |
 | E0904 | コレクション | `list` 以外に添字を付けている |
-| E0905 | コレクション | その型にないメソッド（M3 では `list` の `append`、`dict` の `get` と `pop` だけ） |
+| E0905 | コレクション | その型にないメソッド（`list` の `append`、`dict` の `get` と `pop`、`PyObject` の `attr` / `call` / `to_int` / `to_bool` / `to_str` / `is_none`）。`list` / `dict` のメソッドを、変数でない受け手（`f().append(1)`）に呼んだ場合も含む |
 | E0906 | コレクション | 空の `{}` のキーと値の型が決まらない（`d: dict[str, int] = {}` のように注釈する） |
 | E0907 | コレクション | `dict` のキーに使えない型（キーは `int` / `bool` / `str`。ADR-0015） |
 | E0908 | コレクション | 値の型が `None` を含む `dict` に `.get` を使っている（「キーがない」と区別できない。`in` と `d[k]` を使う） |
@@ -80,10 +80,12 @@
 | E1010 | Result | `?` を `Result` 以外に使っている（`T \| None` には使えない。ADR-0006） |
 | E1011 | Result | `Result` を返さない関数（`main` を含む）で `?` を使っている |
 | E1012 | Result | `?` の被演算子のエラー型が、関数が宣言したエラー型に収まらない（収まらない構成要素を列挙する） |
-| E1101 | Effect | 未知の Effect 名（Phase 1 は `io` / `exit` / `pure` だけ。ADR-0014） |
+| E1101 | Effect | 未知の Effect 名（`io` / `exit` / `python` / `pure`。ADR-0014、`python` は ADR-0018） |
 | E1102 | Effect | 呼び出し先の Effect を、呼び出し元の `uses` が宣言していない（修正案で `uses` 節を書き換える） |
 | E1103 | Effect | `uses` を書いた関数から、`uses` のない関数を呼んでいる |
 | E1104 | Effect | `uses` の並びが正しくない（同じ名前の重複、`pure` とほかの名前の併記） |
+| E1201 | Python | `py_value` に渡せない型（レコード、`Result`、`Unknown`、型パラメータを含む値など。M4 T6 の時点では `int` / `bool` / `str` / `float` / `None` / `PyObject` だけ。ADR-0018） |
+| E1202 | Python | `PyObject` を、具体的な値が要る場所（`print`、`==` / `!=`、演算、`dict` のキー）で使っている。Python のコード（`__str__`、`__eq__`）を動かすことになるので、`to_int()` などで変換してから使う（ADR-0018） |
 | W0201 | 未使用（警告） | 代入されたが一度も読まれないローカル変数（`for` の変数、`case Ok(x)` の束縛を含む。ADR-0016）。`_` で始まる名前と引数は対象外。読まれたかは関数の中の名前で判定する。エラーのある関数（署名のエラーを含む）では出さない。同じ関数のほかの警告とは位置の順に並ぶ |
 | W0202 | 未使用（警告） | 使われない import（`import m`、`from m import f`、別名を含む。ADR-0016）。名前解決のエラーがあるモジュールでは出さない（型検査のエラーでは止めない）。型パラメータと同じ名前の import は、型パラメータに隠されるので使われない扱い |
 | W0301 | match（警告） | それより前の `case` ですでに網羅されているため、到達しない `case`。警告だけならビルドできる |
@@ -120,5 +122,10 @@
 | `len(x)` | `int` | 文字列の長さ（文字数 = Unicode のコードポイント数。Python の `len` と同じ）、リストの要素数、または辞書のキーの数 |
 | `range(n)` / `range(a, b)` | — | `for` の中だけで使える整数の範囲 |
 | `parse_scalar(s)` | `Unknown` | 10進の整数 → `int`、JSON の数値の文法で小数点か指数を含むもの（`1.5`、`-0.5`、`1e3`。無限大になるものは除く）→ `float`、`true` / `false` → `bool`、`null` → `None`、それ以外 → `str`（ADR-0019） |
+| `py_import(name)` | `Result[PyObject, PyError]` | Python のモジュールを import する。Effect `python`（ADR-0018） |
+| `py_value(x)` | `PyObject` | `int` / `bool` / `str` / `float` / `None` を Python のオブジェクトにする（`PyObject` はそのまま）。Effect `python` |
+| `h.attr(name)` / `h.call(args)` | `Result[PyObject, PyError]` | 属性の参照と呼び出し（`args` は `list[PyObject]`）。Effect `python` |
+| `h.to_int()` / `h.to_bool()` / `h.to_str()` | `Result[int / bool / str, PyError]` | Python の値を本言語の値にする。暗黙の変換はしない（`to_bool` は `bool` だけ、`to_int` は `int` と `bool` だけ）。Effect `python` |
+| `h.is_none()` | `bool` | Python の `None` か。Effect `python` |
 | `float(n)` | `float` | `int` を `float` にする（2^53 を超える値は最も近い値に丸める。ADR-0019） |
 | `int(x)` | `int` | `float` を 0 の方向に切り捨てて `int` にする。NaN・無限大・範囲外は実行時エラー（ADR-0019） |

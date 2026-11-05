@@ -24,6 +24,8 @@ pub enum Ty {
     Str,
     /// IEEE 754 の倍精度（ADR-0019）
     Float,
+    /// Python のオブジェクト（組み込みの名目的な型、ADR-0018 論点 6）。比較・表示・`dict` のキーには使えない（E1202）
+    PyObject,
     /// 構造的レコード（ADR-0007、不変）。
     Record(RecordId),
     /// 型パラメータ（`def f[T]` の `T`）。中身の分からない型として扱い、単相化で具体的な型に置き換える。
@@ -166,6 +168,7 @@ impl Types {
         match t {
             Ty::Int => "int".into(),
             Ty::Float => "float".into(),
+            Ty::PyObject => "PyObject".into(),
             Ty::Bool => "bool".into(),
             Ty::Str => "str".into(),
             Ty::None => "None".into(),
@@ -372,6 +375,50 @@ impl Types {
     }
 
     /// `Unknown` を含むか。レコードは登録時に計算した値を使う。
+    /// Python のオブジェクト（`PyObject`）を含む型か（ADR-0018 論点 13: 比較・表示に使えない）。
+    pub fn contains_py(&self, t: Ty) -> bool {
+        fn go(ts: &Types, t: Ty, seen: &mut HashSet<Ty>) -> bool {
+            if !seen.insert(t) {
+                return false;
+            }
+            match t {
+                Ty::PyObject => true,
+                Ty::List(l) => go(ts, ts.list_elem(l), seen),
+                Ty::Dict(d) => {
+                    let (k, v) = ts.dict_args(d);
+                    go(ts, k, seen) || go(ts, v, seen)
+                }
+                Ty::Result(r) => {
+                    let (o, e) = ts.result_args(r);
+                    go(ts, o, seen) || go(ts, e, seen)
+                }
+                Ty::Union(_) => ts.members(t).into_iter().any(|m| go(ts, m, seen)),
+                Ty::Record(id) => ts
+                    .record_def(id)
+                    .fields
+                    .clone()
+                    .into_iter()
+                    .any(|(_, f)| go(ts, f, seen)),
+                _ => false,
+            }
+        }
+        go(self, t, &mut HashSet::new())
+    }
+
+    /// Python の例外を表す組み込みのレコード `PyError`（ADR-0018 論点 8）。最初に登録するので、
+    /// 同じフィールドを持つ構造的な型も `PyError` の名前で表示する。
+    pub fn py_error(&mut self) -> Ty {
+        self.record_named(
+            vec![
+                ("kind".into(), Ty::Str),
+                ("message".into(), Ty::Str),
+                ("traceback".into(), Ty::Str),
+            ],
+            Some("PyError".into()),
+            vec![],
+        )
+    }
+
     pub fn contains_unknown(&self, t: Ty) -> bool {
         match t {
             Ty::Unknown => true,
@@ -481,7 +528,7 @@ impl Types {
             }
             match t {
                 Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::None => true,
-                Ty::Param(_) | Ty::Unknown | Ty::Error => false,
+                Ty::Param(_) | Ty::Unknown | Ty::Error | Ty::PyObject => false,
                 Ty::List(l) => go(ts, ts.list_elem(l), seen),
                 Ty::Dict(d) => {
                     let (k, v) = ts.dict_args(d);
@@ -621,15 +668,18 @@ pub enum Effect {
     Io,
     /// プロセスの終了（`exit`）
     Exit,
+    /// Python のコードの実行（ADR-0018 論点 12）。任意の副作用を起こし得る。`io` を含意しない
+    Python,
 }
 
 impl Effect {
-    pub const ALL: [Effect; 2] = [Effect::Io, Effect::Exit];
+    pub const ALL: [Effect; 3] = [Effect::Io, Effect::Exit, Effect::Python];
 
     pub fn name(self) -> &'static str {
         match self {
             Effect::Io => "io",
             Effect::Exit => "exit",
+            Effect::Python => "python",
         }
     }
 
@@ -641,6 +691,7 @@ impl Effect {
         match self {
             Effect::Io => 1,
             Effect::Exit => 2,
+            Effect::Python => 4,
         }
     }
 }
@@ -685,13 +736,17 @@ impl EffectSet {
 
 /// 組み込み関数の Effect（ADR-0014 論点 6）。組み込み関数でなければ `None`。
 pub fn builtin_effects(name: &str) -> Option<EffectSet> {
-    if !BUILTINS.contains(&name) {
+    // `PyObject` のメソッドは Python のコードを動かす（ADR-0018 論点 12。ADR-0014 論点 5 の例外）
+    let py_method = name.starts_with("PyObject.");
+    if !BUILTINS.contains(&name) && !py_method {
         return None;
     }
     let mut s = EffectSet::default();
     match name {
         "print" | "arg" | "arg_count" => s.insert(Effect::Io),
         "exit" => s.insert(Effect::Exit),
+        "py_import" | "py_value" => s.insert(Effect::Python),
+        _ if py_method => s.insert(Effect::Python),
         _ => {}
     }
     Some(s)
@@ -789,7 +844,7 @@ fn unused_locals(f: &FuncDef) -> Vec<Diagnostic> {
                 kwargs,
                 ..
             } => {
-                reads.insert(&receiver.name);
+                expr(receiver, reads);
                 for a in args {
                     expr(a, reads);
                 }
@@ -863,6 +918,8 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
         type_scope: Vec::new(),
         call_type_args: HashMap::new(),
     };
+    // `PyError` を最初に登録する（同じフィールドの構造的な型より先に名前を付ける）
+    cx.types.py_error();
     declare_types(&mut cx, module);
     for f in &module.funcs {
         let type_params: Vec<ParamId> = f
@@ -963,7 +1020,16 @@ fn declare_types(cx: &mut Ctx, module: &Module) {
         let name = &t.name.name;
         if matches!(
             name.as_str(),
-            "int" | "bool" | "str" | "float" | "None" | "Result" | "list" | "dict"
+            "int"
+                | "bool"
+                | "str"
+                | "float"
+                | "None"
+                | "Result"
+                | "list"
+                | "dict"
+                | "PyObject"
+                | "PyError"
         ) {
             cx.diags.push(Diagnostic::error(
                 "E0209",
@@ -1016,7 +1082,9 @@ fn effect_clause(cx: &mut Ctx, c: &EffectClause) -> EffectSet {
         } else {
             cx.diags.push(
                 Diagnostic::error("E1101", format!("unknown effect `{}`", n.name), n.span)
-                    .with_hint("the effects are `io` and `exit`; write `uses pure` for none"),
+                    .with_hint(
+                        "the effects are `io`, `exit` and `python`; write `uses pure` for none",
+                    ),
             );
         }
     }
@@ -1265,6 +1333,8 @@ impl Ctx {
                 "float" => Ty::Float,
                 "None" => Ty::None,
                 "Unknown" => Ty::Unknown,
+                "PyObject" => Ty::PyObject,
+                "PyError" => self.types.py_error(),
                 other if self.aliases.contains_key(other) => self.resolve_alias(other),
                 other => {
                     self.diags.push(
@@ -3116,46 +3186,52 @@ impl<'a> FnCk<'a> {
                 kwargs,
             } => {
                 let span = Span::new(receiver.span.start, method.span.end);
-                if let Some(var) = self.vars.get(&receiver.name) {
-                    let decl = var.decl;
-                    if !env.contains_key(&receiver.name) {
-                        // 受け手も「代入の前の使用」を検査する（`len(xs)` と同じ）
-                        self.cx.diags.push(
-                            Diagnostic::error(
-                                "E0204",
-                                format!(
-                                    "variable `{}` may be used before it is assigned",
-                                    receiver.name
-                                ),
-                                receiver.span,
-                            )
-                            .with_cause("it is not assigned on every path that reaches this use")
-                            .with_related(
-                                RelatedKind::Variable,
-                                &receiver.name,
-                                Some(decl),
-                            ),
-                        );
-                    }
-                    if let Some((k, _)) = kwargs.first() {
-                        self.cx.diags.push(Diagnostic::error(
-                            "E0205",
-                            format!("`{}` takes no keyword arguments", method.name),
-                            k.span,
-                        ));
-                        for (_, v) in kwargs {
-                            self.expr(v, env);
-                        }
-                    }
-                    self.method_call(&receiver.name, &method.name, span, args, e.span, env)
-                } else {
+                if let Some(n) = receiver.as_name()
+                    && !self.vars.contains_key(n)
+                {
                     // 名前解決がモジュールの参照に直さなかった（ローカル変数でもモジュールでもない）
                     self.cx.diags.push(Diagnostic::error(
                         "E0208",
-                        format!("undefined function `{}.{}`", receiver.name, method.name),
+                        format!("undefined function `{n}.{}`", method.name),
                         span,
                     ));
-                    Ty::Error
+                    return Ty::Error;
+                }
+                if let Some((k, _)) = kwargs.first() {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!("`{}` takes no keyword arguments", method.name),
+                        k.span,
+                    ));
+                    for (_, v) in kwargs {
+                        self.expr(v, env);
+                    }
+                }
+                // 受け手を式として検査する（変数なら「代入の前の使用」E0204 もここで出る）
+                let rt = self.expr(receiver, env);
+                match (rt, receiver.as_name()) {
+                    (Ty::Error, _) => Ty::Error,
+                    (Ty::PyObject, _) => self.py_method(&method.name, span, args, e.span, env),
+                    (_, Some(n)) => self.method_call(n, &method.name, span, args, e.span, env),
+                    _ => {
+                        // `list` / `dict` のメソッドは受け手を書き換えるので、変数に対してだけ呼べる
+                        self.cx.diags.push(
+                            Diagnostic::error(
+                                "E0905",
+                                format!(
+                                    "`{}` on `{}` can only be called on a variable",
+                                    method.name,
+                                    self.cx.name(rt)
+                                ),
+                                span,
+                            )
+                            .with_hint("assign the value to a variable first"),
+                        );
+                        for a in args {
+                            self.expr(a, env);
+                        }
+                        Ty::Error
+                    }
                 }
             }
             ExprKind::Call {
@@ -3315,6 +3391,15 @@ impl<'a> FnCk<'a> {
             );
             return Ty::Error;
         }
+        if self.cx.types.contains_py(lt) || self.cx.types.contains_py(rt) {
+            let place = if matches!(op, BinOp::Eq | BinOp::Ne) {
+                "an operand of `==` / `!=`".to_string()
+            } else {
+                format!("an operand of `{}`", op.symbol())
+            };
+            self.cx.diags.push(py_value_use_error(&place, span));
+            return Ty::Error;
+        }
         if matches!(op, BinOp::FloorDiv | BinOp::Mod) && lt == Ty::Float && rt == Ty::Float {
             self.cx.diags.push(
                 Diagnostic::error(
@@ -3387,11 +3472,90 @@ impl<'a> FnCk<'a> {
         Ty::Error
     }
 
+    /// `py_value` に渡せる型（ADR-0018 論点 10）: `int` / `bool` / `str` / `float` / `None` / `PyObject`。
+    /// （`list` / `dict` のコピーは M4 T7 で足す）
+    fn require_py_convertible(&mut self, t: Ty, span: Span) {
+        if matches!(
+            t,
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::None | Ty::PyObject | Ty::Error
+        ) {
+            return;
+        }
+        let found = self.cx.name(t);
+        self.cx.diags.push(
+            Diagnostic::error(
+                "E1201",
+                format!("`py_value` cannot convert `{found}` to a Python object"),
+                span,
+            )
+            .with_cause("`py_value` accepts `int`, `bool`, `str`, `float`, `None` and `PyObject` (ADR-0018)")
+            .with_hint("pass the fields one by one, or convert the value to one of these types first"),
+        );
+    }
+
+    /// `PyObject` のメソッド（ADR-0018 論点 9）。すべて Effect `python` を持ち、失敗し得るものは `Result[.., PyError]`。
+    fn py_method(&mut self, m: &str, mspan: Span, args: &[Expr], span: Span, env: &Env) -> Ty {
+        self.check_effects(&Ident {
+            name: format!("PyObject.{m}"),
+            span: mspan,
+        });
+        let err = self.cx.types.py_error();
+        let list_of_py = self.cx.types.list(Ty::PyObject);
+        let (params, ok): (Vec<Ty>, Option<Ty>) = match m {
+            "attr" => (vec![Ty::Str], Some(Ty::PyObject)),
+            "call" => (vec![list_of_py], Some(Ty::PyObject)),
+            "to_int" => (vec![], Some(Ty::Int)),
+            "to_bool" => (vec![], Some(Ty::Bool)),
+            "to_str" => (vec![], Some(Ty::Str)),
+            "is_none" => (vec![], None),
+            _ => {
+                for a in args {
+                    self.expr(a, env);
+                }
+                self.cx.diags.push(
+                    Diagnostic::error("E0905", format!("`PyObject` has no method `{m}`"), mspan)
+                        .with_cause("the methods of `PyObject` are `attr`, `call`, `to_int`, `to_bool`, `to_str` and `is_none` (ADR-0018)"),
+                );
+                return Ty::Error;
+            }
+        };
+        if args.len() != params.len() {
+            for a in args {
+                self.expr(a, env);
+            }
+            self.cx.diags.push(Diagnostic::error(
+                "E0205",
+                format!(
+                    "`{m}` takes {} argument(s) but {} were given",
+                    params.len(),
+                    args.len()
+                ),
+                span,
+            ));
+            return Ty::Error;
+        }
+        for (a, &pt) in args.iter().zip(&params) {
+            let at = self.expr_hint(a, env, Some(pt));
+            let ctx = format!("argument of `{m}`");
+            self.cx.require(at, pt, a.span, &ctx, None);
+        }
+        match ok {
+            Some(t) => self.cx.types.result(t, err),
+            None => Ty::Bool,
+        }
+    }
+
     /// `print` の引数は `int` / `bool` / `str`、レコード、`list`、`dict`、`Result` と、それらの Union（ADR-0016 論点 15）。
     /// トップレベルの `None` は E0301、構造の中の `Unknown` は E0601、型パラメータは E0201。
     /// 検査のために Union 型を登録しない（使われない Union が IR に入らないようにする）。
     fn require_printable(&mut self, t: Ty, span: Span) {
         if t == Ty::Error {
+            return;
+        }
+        if self.cx.types.contains_py(t) {
+            self.cx
+                .diags
+                .push(py_value_use_error("an argument of `print`", span));
             return;
         }
         if self.cx.types.members(t).contains(&Ty::Unknown) {
@@ -3883,6 +4047,38 @@ impl<'a> FnCk<'a> {
             return Ty::Int;
         }
         match callee.name.as_str() {
+            // Python（ADR-0018 論点 9・10）
+            "py_import" => {
+                if args.len() != 1 {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!("`py_import` takes 1 argument but {} were given", args.len()),
+                        span,
+                    ));
+                } else {
+                    self.cx.require(
+                        arg_tys[0],
+                        Ty::Str,
+                        args[0].span,
+                        "argument of `py_import`",
+                        None,
+                    );
+                }
+                let err = self.cx.types.py_error();
+                return self.cx.types.result(Ty::PyObject, err);
+            }
+            "py_value" => {
+                if args.len() != 1 {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!("`py_value` takes 1 argument but {} were given", args.len()),
+                        span,
+                    ));
+                } else {
+                    self.require_py_convertible(arg_tys[0], args[0].span);
+                }
+                return Ty::PyObject;
+            }
             "print" => {
                 if args.len() != 1 {
                     self.cx.diags.push(Diagnostic::error(
@@ -4061,6 +4257,9 @@ fn none_type_arg_error(slot: &str, span: Span) -> Diagnostic {
 }
 
 fn dict_key_error(name: &str, span: Span) -> Diagnostic {
+    if name == "PyObject" {
+        return py_value_use_error("a dict key", span);
+    }
     Diagnostic::error(
         "E0907",
         format!("`{name}` cannot be used as a dict key"),
@@ -4068,6 +4267,17 @@ fn dict_key_error(name: &str, span: Span) -> Diagnostic {
     )
     .with_cause("dict keys must be `int`, `bool` or `str` (ADR-0015)")
     .with_hint("use a `str` or `int` key, e.g. by building a string from the parts")
+}
+
+/// `PyObject` を、具体的な値が要る場所で使っている（E1202、ADR-0018 論点 13）。
+fn py_value_use_error(place: &str, span: Span) -> Diagnostic {
+    Diagnostic::error(
+        "E1202",
+        format!("a Python object cannot be used as {place}"),
+        span,
+    )
+    .with_cause("printing, comparing or hashing it would run Python code (`__str__`, `__eq__`)")
+    .with_hint("convert it first, e.g. `h.to_int()`, `h.to_str()` or `h.to_bool()`")
 }
 
 fn is_result_ctor(name: &str) -> bool {

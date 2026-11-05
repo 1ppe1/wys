@@ -364,7 +364,8 @@
     "effect_name": {
       "enum": [
         "io",
-        "exit"
+        "exit",
+        "python"
       ]
     },
     "effects": {

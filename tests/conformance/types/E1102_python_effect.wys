@@ -1,0 +1,8 @@
+# Python を使う操作は Effect `python` を持ち、`io` には含まれない（ADR-0018 論点 12）
+# expect-error: E1102 4:9
+def load() -> None uses io:
+    m = py_import("math")
+    print(1)
+
+def main() -> None:
+    load()

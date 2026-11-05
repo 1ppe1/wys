@@ -16,7 +16,15 @@ fn runtime_lib() -> &'static PathBuf {
     LIB.get_or_init(|| {
         let profile_dir = PathBuf::from(CLI).parent().unwrap().to_path_buf();
         let mut cmd = Command::new(env!("CARGO"));
-        cmd.args(["build", "-q", "-p", "wys_runtime"]);
+        // Python を使うプログラム用のランタイム（ADR-0018）も一緒に作る
+        cmd.args([
+            "build",
+            "-q",
+            "-p",
+            "wys_runtime",
+            "-p",
+            "wys_runtime_python",
+        ]);
         if profile_dir.ends_with("release") {
             cmd.arg("--release");
         }
@@ -40,14 +48,20 @@ fn cli(args: &[&str]) -> Output {
     Command::new(CLI)
         .args(args)
         .env("WYS_RUNTIME_LIB", runtime_lib())
+        .env("WYS_RUNTIME_PYTHON_LIB", python_runtime_lib())
         .output()
         .expect("run wys")
+}
+
+fn python_runtime_lib() -> PathBuf {
+    runtime_lib().with_file_name("libwys_runtime_python.a")
 }
 
 fn cli_env(args: &[&str], envs: &[(&str, &str)]) -> Output {
     Command::new(CLI)
         .args(args)
         .env("WYS_RUNTIME_LIB", runtime_lib())
+        .env("WYS_RUNTIME_PYTHON_LIB", python_runtime_lib())
         .envs(envs.iter().copied())
         .output()
         .expect("run wys")
@@ -656,6 +670,28 @@ fn modules_and_names_can_be_imported_under_aliases() {
     );
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(stdout, "42\nlib\nmain\n");
+}
+
+#[test]
+fn python_libraries_can_be_called_and_exceptions_are_values() {
+    // ADR-0018: Python 3.14 がなければ飛ばす（CI では必須）
+    if wys_driver::python_link_flags().is_err() {
+        assert!(
+            std::env::var_os("WYS_REQUIRE_PYTHON").is_none(),
+            "WYS_REQUIRE_PYTHON is set but Python 3.14 was not found"
+        );
+        eprintln!("skipping: Python 3.14 was not found");
+        return;
+    }
+    let (code, stdout, stderr) = run(
+        "python",
+        "def sqrt(x: float) -> Result[str, PyError] uses python:\n    m = py_import(\"math\")?\n    r = (m.attr(\"sqrt\")?).call([py_value(x)])?\n    return ((r.attr(\"__repr__\")?).call([])?).to_str()\n\ndef main() -> None:\n    match sqrt(2.0):\n        case Ok(s):\n            print(s)\n        case Err(e):\n            print(e.kind)\n    match sqrt(-1.0):\n        case Ok(s):\n            print(s)\n        case Err(e):\n            print(e.kind + \": \" + e.message)\n",
+    );
+    assert_eq!(code, 0, "{stderr}");
+    // メッセージの文言は Python の版で変わるので、例外の種類だけを確かめる
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines[0], "1.4142135623730951");
+    assert!(lines[1].starts_with("ValueError: "), "{stdout}");
 }
 
 #[test]

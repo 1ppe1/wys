@@ -902,19 +902,14 @@ impl Parser<'_> {
             }
             let name = self.ident("a field name")?;
             let start = e.span.start;
-            // `x.f(...)`: 名前1つの後なら、メソッド呼び出し（名前解決がモジュールの参照と区別する。M4 T4）
-            if self.at(&TokenKind::LParen)
-                && let ExprKind::Name(recv) = &e.kind
-            {
-                let receiver = Ident {
-                    name: recv.clone(),
-                    span: e.span,
-                };
+            // `x.f(...)` / `f().g(...)`: 受け手が名前の並び（`a.b`）でなければ、メソッド呼び出し。
+            // 名前1つの受け手は、名前解決がモジュールの参照と区別する（M4 T4）
+            if self.at(&TokenKind::LParen) && dotted_name(&e).is_none_or(|p| !p.contains('.')) {
                 self.bump();
                 let (args, kwargs) = self.call_args()?;
                 e = self.mk(
                     ExprKind::MethodCall {
-                        receiver,
+                        receiver: Box::new(e),
                         method: name,
                         args,
                         kwargs,
@@ -1114,7 +1109,7 @@ mod tests {
     #[test]
     fn method_calls_and_qualified_calls() {
         // `x.f(...)` はメソッド呼び出し（名前解決がモジュールの参照と区別する）、`a.b.f(...)` は修飾付きの呼び出し
-        let m = ok("def main() -> None:\n    xs.append(1)\n    a.b.f(2)\n");
+        let m = ok("def main() -> None:\n    xs.append(1)\n    a.b.f(2)\n    f(1).g()\n");
         let kinds: Vec<&ExprKind> = m.funcs[0]
             .body
             .iter()
@@ -1126,9 +1121,15 @@ mod tests {
         assert!(matches!(
             kinds[0],
             ExprKind::MethodCall { receiver, method, args, .. }
-                if receiver.name == "xs" && method.name == "append" && args.len() == 1
+                if receiver.as_name() == Some("xs") && method.name == "append" && args.len() == 1
         ));
         assert!(matches!(kinds[1], ExprKind::Call { callee, .. } if callee.name == "a.b.f"));
+        // 受け手は式でもよい（M4 T6）
+        assert!(matches!(
+            kinds[2],
+            ExprKind::MethodCall { receiver, method, .. }
+                if matches!(receiver.kind, ExprKind::Call { .. }) && method.name == "g"
+        ));
     }
 
     #[test]

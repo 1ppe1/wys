@@ -50,6 +50,7 @@ unsafe extern "C" {
     fn PyLong_FromLongLong(v: i64) -> *mut PyObject;
     fn PyLong_AsLongLong(o: *mut PyObject) -> i64;
     fn PyBool_FromLong(v: c_long) -> *mut PyObject;
+    fn PyFloat_FromDouble(v: f64) -> *mut PyObject;
     fn PyUnicode_FromStringAndSize(s: *const c_char, n: isize) -> *mut PyObject;
     fn PyUnicode_AsUTF8AndSize(o: *mut PyObject, size: *mut isize) -> *const c_char;
     fn PyErr_Occurred() -> *mut PyObject;
@@ -350,6 +351,14 @@ pub extern "C" fn wys_py_from_bool(v: bool) -> *mut Header {
     ensure_init();
     // SAFETY: 初期化済み。
     wrap(unsafe { PyBool_FromLong(v as c_long) })
+}
+
+/// `float` から Python の `float`（ADR-0019）。
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_py_from_float(v: f64) -> *mut Header {
+    ensure_init();
+    // SAFETY: 初期化済み。
+    wrap(unsafe { PyFloat_FromDouble(v) })
 }
 
 /// 文字列から Python の `str`。

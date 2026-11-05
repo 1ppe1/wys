@@ -55,6 +55,9 @@ pub const BUILTINS: &[&str] = &[
     // 数値の変換（ADR-0019 論点 3）
     "float",
     "int",
+    // Python（ADR-0018 論点 9）
+    "py_import",
+    "py_value",
 ];
 
 /// `import a.b [as c]`（`names` が `None`）または `from a.b import f [as g], ...`。
@@ -217,6 +220,16 @@ pub struct Expr {
     pub span: Span,
 }
 
+impl Expr {
+    /// 名前だけの式（`x`）なら、その名前。
+    pub fn as_name(&self) -> Option<&str> {
+        match &self.kind {
+            ExprKind::Name(n) => Some(n),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Int(i64),
@@ -241,11 +254,11 @@ pub enum ExprKind {
         /// `name=value` のキーワード引数（レコードの作成で使う）。
         kwargs: Vec<(Ident, Expr)>,
     },
-    /// `recv.method(args)`: ローカル変数のメソッド呼び出し（M4 T4）。パーサは `a.b(...)`（`.` が1つ）を
-    /// これにし、名前解決が、`a` がローカル変数でなくモジュール（別名を含む）なら修飾付きの `Call` に直す。
-    /// `a.b.c(...)`（`.` が2つ以上）は、パーサが修飾付きの `Call` にする（ADR-0010）。
+    /// `recv.method(args)`: メソッド呼び出し（M4 T4）。受け手は式（`f().attr(...)` も書ける。M4 T6）。
+    /// パーサは `a.b(...)`（受け手が名前1つ）もこれにし、名前解決が、`a` がローカル変数でなくモジュール
+    /// （別名を含む）なら修飾付きの `Call` に直す。`a.b.c(...)`（名前の並び）は、パーサが修飾付きの `Call` にする（ADR-0010）。
     MethodCall {
-        receiver: Ident,
+        receiver: Box<Expr>,
         method: Ident,
         args: Vec<Expr>,
         /// 名前解決が `Call` に直すとき（`m.Tag(name=...)`）のために持つ。メソッドはキーワード引数を取らない
