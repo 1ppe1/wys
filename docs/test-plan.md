@@ -43,7 +43,7 @@ CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は 
 | DX-005（AI 修正ループ、PoC5） | **準備済み・未計測（M2 T9）**。ケース20件と `scripts/poc5/verify.sh`（CI）。計測は `scripts/poc5/run.sh`（ユーザー実行）。結果は `docs/poc/poc5-results.md` |
 | DX-001（`fmt`） | **合格（M2 T8）**。`wys_fmt` の `formatting_preserves_tokens_and_is_idempotent`（全 Conformance ケースと例で、トークン列が変わらないことと冪等性）、e2e の `wys_fmt_rewrites_and_checks`、CI で `examples/` の `fmt --check` |
 | DX-001（`test`） | **合格（M2 T7）**。e2e の `wys_test_*`、`types/E0801_*`（`# expect-mode: test`） |
-| MEM-005 / NFR-001（use-after-free・二重解放・リークの検出）、COMP-005（Debug / Release） | **M3 T3 で検査の仕組みを導入**（3つのモードの Conformance、注入した誤りの検出）。M3 の出口で判定する |
+| MEM-005 / NFR-001（use-after-free・二重解放・リークの検出）、COMP-005（Debug / Release） | **合格（M3）**。M3 T3 で検査の仕組みを導入（3つのモードの Conformance、注入した誤りの検出）。判定は `docs/plans/m3.md` の出口判定 |
 | `list[T]` と `for`（M3 T4a） | `lang/list_*`・`for_range`・`runtime_index_out_of_range`、`types/E090x_*`。要素が `str` のリストも含め、3つのモードで生存オブジェクト 0 |
 | 参照型の要素・入れ子のリストと借用の安全条件（M3 T4b） | `lang/list_borrow_safety.wys`（`xs[i]` の値を、`xs` を変更する関数の呼び出しと同じ式で使う。ASan で use-after-free を検出したため、`xs[i]` の結果を retain するよう修正）、`lang/list_nested_and_records.wys`。代入による絞り込み: `lang/assign_narrowing.wys` |
 | `Result[T, E]` と束縛パターン（M3 T5a、ADR-0013） | `lang/result_*`・`generic_result_match`、`types/E100x_*`・`E0303_result_missing_err`、e2e の `result_values_run_and_missing_types_are_hinted`。参照型の中身を持つ `Result` も3つのモードで生存オブジェクト 0 |
