@@ -1,4 +1,5 @@
-//! PoC3（M4 T1）: CPython の埋め込み。`embed_poc.c` を `libwys_runtime_python.a` と `libpython3.14` にリンクして実行する。
+//! Python のランタイムの C ABI（ADR-0018。PoC3 の M4 T1 から）。`embed_poc.c` を `libwys_runtime_python.a` と
+//! `libpython3.14` にリンクして実行する。生成コードからの利用は `wys_driver/tests/python_link.rs`。
 //!
 //! Python 3.14 は `WYS_PYTHON`（既定は `python3.14`）で探す。見つからなければ理由を出して飛ばす。
 //! `WYS_REQUIRE_PYTHON=1`（CI）なら、見つからないときに失敗させる。
@@ -10,56 +11,43 @@ use std::sync::OnceLock;
 const EXPECTED: &str = "\
 3628800
 \"hi\"
-ValueError: invalid literal for int() with base 10: 'x'
-ValueError: factorial() not defined for negative values
-ModuleNotFoundError: No module named 'wys_no_such_module'
-AttributeError: module 'math' has no attribute 'nope'
-ZeroDivisionError: division by zero
-TypeError: 'str' object cannot be interpreted as an integer
-E: <str() of the exception failed>
-ValueError: embedded null character in a Python name
-ValueError: embedded null character in a Python name
+True
+True
+False
+ValueError
+invalid literal for int() with base 10: 'x'
+ValueError
+factorial() not defined for negative values
+ModuleNotFoundError
+No module named 'wys_no_such_module'
+AttributeError
+module 'math' has no attribute 'nope'
+ZeroDivisionError
+division by zero
+TypeError
+expected an int
+TypeError
+expected a bool
+E
+<str() of the exception failed>
+ValueError
+embedded null character in a Python name
+ValueError
+embedded null character in a Python name
+ok
+traceback mentions boom
+TypeError
+expected an int
+ValueError
+v
+ok
 ";
 
-/// リンクのフラグ（`python3.14-config --embed --ldflags` と、共有ライブラリを見つけるための rpath）。
+/// リンクのフラグ（driver と同じもの）。
 fn python_ldflags() -> Option<Vec<String>> {
     static FLAGS: OnceLock<Option<Vec<String>>> = OnceLock::new();
     FLAGS
-        .get_or_init(|| {
-            let python = std::env::var("WYS_PYTHON").unwrap_or_else(|_| "python3.14".into());
-            let out = |cmd: &str, args: &[&str]| -> Option<String> {
-                let o = Command::new(cmd).args(args).output().ok()?;
-                o.status
-                    .success()
-                    .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            };
-            let version = out(
-                &python,
-                &["-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
-            )?;
-            if version != "3.14" {
-                return None;
-            }
-            let config = format!("{python}-config");
-            let config = out(&config, &["--embed", "--ldflags"])
-                .map(|_| config)
-                .or_else(|| {
-                    // `python` が絶対パスなら、同じディレクトリの `python3-config`
-                    let dir = Path::new(&python).parent()?;
-                    Some(dir.join("python3-config").to_string_lossy().into_owned())
-                })?;
-            let ldflags = out(&config, &["--embed", "--ldflags"])?;
-            let libdir = out(
-                &python,
-                &[
-                    "-c",
-                    "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))",
-                ],
-            )?;
-            let mut flags: Vec<String> = ldflags.split_whitespace().map(String::from).collect();
-            flags.push(format!("-Wl,-rpath,{libdir}"));
-            Some(flags)
-        })
+        .get_or_init(|| wys_driver::python_link_flags().ok())
         .clone()
 }
 
@@ -135,9 +123,8 @@ fn python_calls_round_trip_and_exceptions_become_values() {
     let (code, stdout, stderr) = run(&exe);
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(stdout, EXPECTED);
-    // 計測値（絶対値）は PoC の記録用に出すだけ
-    assert!(stderr.contains("poc3: init_us="), "{stderr}");
-    eprintln!("{}", stderr.trim());
+    // 送出中の例外を残していれば、終了処理で「Exception ignored」が出る
+    assert!(!stderr.contains("Exception ignored"), "{stderr}");
 }
 
 #[test]

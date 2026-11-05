@@ -181,6 +181,9 @@ fn run_frontend(
 pub struct BuildOptions {
     /// ランタイムの静的ライブラリ。未指定なら `WYS_RUNTIME_LIB`、次に実行ファイルの隣を探す。
     pub runtime_lib: Option<PathBuf>,
+    /// Python を使うプログラムのランタイム（`libwys_runtime_python.a`、ADR-0018 論点 4）。未指定なら
+    /// `WYS_RUNTIME_PYTHON_LIB`、次に実行ファイルの隣を探す。
+    pub python_runtime_lib: Option<PathBuf>,
     /// C コンパイラ／リンカ。未指定なら `WYS_CC`、なければ `clang`。
     pub cc: Option<String>,
     /// 最適化レベル（0 = Debug、2 = Release）。未指定なら `WYS_OPT`、なければ 0。
@@ -231,28 +234,97 @@ impl std::fmt::Debug for Frontend {
 }
 
 const RUNTIME_LIB_NAME: &str = "libwys_runtime.a";
+const PYTHON_RUNTIME_LIB_NAME: &str = "libwys_runtime_python.a";
 
-pub fn find_runtime_lib(opts: &BuildOptions) -> Result<PathBuf, BuildError> {
-    if let Some(p) = &opts.runtime_lib {
+/// ランタイムの静的ライブラリ。`python` なら Python を含む上位集合の方（ADR-0018 論点 4）。
+pub fn find_runtime_lib(opts: &BuildOptions, python: bool) -> Result<PathBuf, BuildError> {
+    let (explicit, env, name, krate) = if python {
+        (
+            &opts.python_runtime_lib,
+            "WYS_RUNTIME_PYTHON_LIB",
+            PYTHON_RUNTIME_LIB_NAME,
+            "wys_runtime_python",
+        )
+    } else {
+        (
+            &opts.runtime_lib,
+            "WYS_RUNTIME_LIB",
+            RUNTIME_LIB_NAME,
+            "wys_runtime",
+        )
+    };
+    if let Some(p) = explicit {
         return Ok(p.clone());
     }
-    if let Some(p) = std::env::var_os("WYS_RUNTIME_LIB") {
+    if let Some(p) = std::env::var_os(env) {
         return Ok(PathBuf::from(p));
     }
     let exe = std::env::current_exe().map_err(|e| BuildError::Io(e.to_string()))?;
     let mut candidates = Vec::new();
     if let Some(dir) = exe.parent() {
-        candidates.push(dir.join(RUNTIME_LIB_NAME));
+        candidates.push(dir.join(name));
         if let Some(parent) = dir.parent() {
             // `target/debug/deps/` から実行されるテストバイナリ用
-            candidates.push(parent.join(RUNTIME_LIB_NAME));
+            candidates.push(parent.join(name));
         }
     }
     candidates.into_iter().find(|p| p.exists()).ok_or_else(|| {
         BuildError::Tool(format!(
-            "cannot find the runtime library `{RUNTIME_LIB_NAME}`; build it with `cargo build -p wys_runtime` or set WYS_RUNTIME_LIB"
+            "cannot find the runtime library `{name}`; build it with `cargo build -p {krate}` or set {env}"
         ))
     })
+}
+
+/// Python 3.14 を埋め込むためのリンクのフラグ（ADR-0018 論点 4・5）。Python は `WYS_PYTHON`（既定は
+/// `python3.14`）。インタプリタの実体（`sys.executable`）の隣の `python3.14-config` / `python3-config` の
+/// `--embed --ldflags` と、共有ライブラリを見つけるための rpath（`LIBDIR`）。見つからない理由ごとに文言を分ける。
+pub fn python_link_flags() -> Result<Vec<String>, BuildError> {
+    let python = std::env::var("WYS_PYTHON").unwrap_or_else(|_| "python3.14".into());
+    let run = |cmd: &Path, args: &[&str]| -> Option<String> {
+        let o = Command::new(cmd).args(args).output().ok()?;
+        o.status
+            .success()
+            .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    // 1回の起動で、版・実体のパス・GIL のないビルドか・LIBDIR を読む
+    const PROBE: &str = "import sys, sysconfig\nprint('%d.%d' % sys.version_info[:2])\nprint(sys.executable)\nprint(sysconfig.get_config_var('Py_GIL_DISABLED') or 0)\nprint(sysconfig.get_config_var('LIBDIR') or '')";
+    let probe = run(Path::new(&python), &["-c", PROBE]).ok_or_else(|| {
+        BuildError::Tool(format!(
+            "cannot find Python 3.14 (tried `{python}`); set WYS_PYTHON to a Python 3.14 executable"
+        ))
+    })?;
+    let lines: Vec<&str> = probe.lines().collect();
+    let [version, executable, gil_disabled, libdir] = lines[..] else {
+        return Err(BuildError::Tool(format!(
+            "cannot query `{python}` for its configuration"
+        )));
+    };
+    if version != "3.14" {
+        return Err(BuildError::Tool(format!(
+            "`{python}` is Python {version}, but Python 3.14 is required; set WYS_PYTHON"
+        )));
+    }
+    if gil_disabled != "0" {
+        return Err(BuildError::Tool(format!(
+            "`{python}` is a free-threaded build of Python 3.14, which is not supported (ADR-0018); set WYS_PYTHON to the default build"
+        )));
+    }
+    // 実体の隣の `*-config`（venv にはないので、そのときは元のインタプリタを指すよう促す）
+    let dir = Path::new(executable).parent().unwrap_or(Path::new(""));
+    let ldflags = ["python3.14-config", "python3-config"]
+        .iter()
+        .find_map(|c| run(&dir.join(c), &["--embed", "--ldflags"]))
+        .ok_or_else(|| {
+            BuildError::Tool(format!(
+                "found Python 3.14 at `{executable}`, but no `python3.14-config` next to it (a virtual environment has none; on Debian or Ubuntu, install `python3.14-dev`); set WYS_PYTHON to the base interpreter"
+            ))
+        })?;
+    // パスに空白を含むフラグは分けられない（python.org と Homebrew の macOS 版、Linux の配布版は含まない）
+    let mut flags: Vec<String> = ldflags.split_whitespace().map(String::from).collect();
+    if !libdir.is_empty() {
+        flags.push(format!("-Wl,-rpath,{libdir}"));
+    }
+    Ok(flags)
 }
 
 fn cc(opts: &BuildOptions) -> String {
@@ -271,8 +343,12 @@ impl TempDir {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("wys-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).map_err(|e| BuildError::Io(e.to_string()))?;
+        // 同じプロセスの複数のスレッド（並列のテスト）が同時に作っても重ならないように、連番も入れる。
+        // 時刻だけだと、時計の分解能の中で同じ名前になり、互いの `module.o` を上書きしていた
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("wys-{}-{nanos}-{n}", std::process::id()));
+        std::fs::create_dir(&dir).map_err(|e| BuildError::Io(e.to_string()))?;
         Ok(Self(dir))
     }
 }
@@ -308,7 +384,13 @@ pub fn link_program(
     output: &Path,
     opts: &BuildOptions,
 ) -> Result<(), BuildError> {
-    let runtime = find_runtime_lib(opts)?;
+    let python = wys_ir::uses_python(program);
+    let runtime = find_runtime_lib(opts, python)?;
+    let python_flags = if python {
+        python_link_flags()?
+    } else {
+        Vec::new()
+    };
     let cc = cc(opts);
     let tmp = TempDir::new()?;
     let obj = tmp.0.join("module.o");
@@ -325,6 +407,7 @@ pub fn link_program(
     let out = Command::new(&cc)
         .arg(&obj)
         .arg(&runtime)
+        .args(&python_flags)
         .args(native_link_args())
         .args(&sanitize)
         .arg("-o")

@@ -24,6 +24,9 @@ pub enum Ty {
     List(ListId),
     /// `dict[K, V]`（ヒープ上の辞書へのポインタ1語、M3 T6a、ADR-0015）
     Dict(DictId),
+    /// Python のオブジェクトのハンドル（ヒープオブジェクトへのポインタ1語、ADR-0018 論点 6、M4 T5）。
+    /// 最後の release が Python の参照を手放す。
+    Py,
 }
 
 impl Ty {
@@ -44,6 +47,7 @@ impl Ty {
             Ty::Record(r) => format!("r{}", r.0),
             Ty::List(l) => format!("list{}", l.0),
             Ty::Dict(d) => format!("dict{}", d.0),
+            Ty::Py => "py".into(),
         }
     }
 }
@@ -219,6 +223,29 @@ pub enum Builtin {
     StrEq,
     /// 文字列の長さ（文字数 = Unicode のコードポイント数）
     StrLen,
+    // Python（ADR-0018、M4 T5）。失敗し得る操作の後は `PyFailed` で確かめ、失敗なら `PyErr*` で理由を読む。
+    // 失敗したときの戻り値（null のハンドルなど）は使わない
+    /// `import name`
+    PyImport,
+    /// `h.name`
+    PyGetAttr,
+    /// `h(*args)`（`args` はハンドルの `list`）
+    PyCall,
+    PyFromInt,
+    PyFromBool,
+    PyFromStr,
+    PyNone,
+    PyToInt,
+    PyToBool,
+    PyToStr,
+    /// 失敗しない
+    PyIsNone,
+    /// 直前の Python の操作が失敗したか
+    PyFailed,
+    /// 直前の失敗の例外の型名・メッセージ・トレースバック（`PyError` のフィールド）
+    PyErrKind,
+    PyErrMessage,
+    PyErrTraceback,
 }
 
 impl Builtin {
@@ -241,12 +268,46 @@ impl Builtin {
             Builtin::StrConcat => "str_concat",
             Builtin::StrEq => "str_eq",
             Builtin::StrLen => "str_len",
+            Builtin::PyImport => "py_import",
+            Builtin::PyGetAttr => "py_getattr",
+            Builtin::PyCall => "py_call",
+            Builtin::PyFromInt => "py_from_int",
+            Builtin::PyFromBool => "py_from_bool",
+            Builtin::PyFromStr => "py_from_str",
+            Builtin::PyNone => "py_none",
+            Builtin::PyToInt => "py_to_int",
+            Builtin::PyToBool => "py_to_bool",
+            Builtin::PyToStr => "py_to_str",
+            Builtin::PyIsNone => "py_is_none",
+            Builtin::PyFailed => "py_failed",
+            Builtin::PyErrKind => "py_err_kind",
+            Builtin::PyErrMessage => "py_err_message",
+            Builtin::PyErrTraceback => "py_err_traceback",
         }
+    }
+
+    /// Python のランタイムが要る組み込み関数か（ADR-0018 論点 4: これを呼ぶプログラムだけ `libpython` をリンクする）。
+    pub fn is_python(self) -> bool {
+        self.name().starts_with("py_")
     }
 
     /// 戻り値を +1 所有で返すか（新しく作ったオブジェクト）。そうでなければ借用（不死の文字列など）。
     pub fn returns_owned(self) -> bool {
-        matches!(self, Builtin::StrConcat)
+        matches!(
+            self,
+            Builtin::StrConcat
+                | Builtin::PyImport
+                | Builtin::PyGetAttr
+                | Builtin::PyCall
+                | Builtin::PyFromInt
+                | Builtin::PyFromBool
+                | Builtin::PyFromStr
+                | Builtin::PyNone
+                | Builtin::PyToStr
+                | Builtin::PyErrKind
+                | Builtin::PyErrMessage
+                | Builtin::PyErrTraceback
+        )
     }
 
     /// 戻り値の型（なければ `None`）。
@@ -265,6 +326,19 @@ impl Builtin {
             Builtin::ArgExists | Builtin::ScalarBool | Builtin::StrEq => Some(Ty::Bool),
             Builtin::ArgStr | Builtin::StrConcat => Some(Ty::Str),
             Builtin::StrLen => Some(Ty::Int),
+            Builtin::PyImport
+            | Builtin::PyGetAttr
+            | Builtin::PyCall
+            | Builtin::PyFromInt
+            | Builtin::PyFromBool
+            | Builtin::PyFromStr
+            | Builtin::PyNone => Some(Ty::Py),
+            Builtin::PyToInt => Some(Ty::Int),
+            Builtin::PyToBool | Builtin::PyIsNone | Builtin::PyFailed => Some(Ty::Bool),
+            Builtin::PyToStr
+            | Builtin::PyErrKind
+            | Builtin::PyErrMessage
+            | Builtin::PyErrTraceback => Some(Ty::Str),
         }
     }
 
@@ -281,6 +355,21 @@ impl Builtin {
             Builtin::StrConcat | Builtin::StrEq | Builtin::Panic => &[Ty::Str, Ty::Str],
             Builtin::ArgExists | Builtin::ArgStr => &[Ty::Int],
             Builtin::ScalarKind | Builtin::ScalarInt | Builtin::ScalarBool => &[Ty::Str],
+            Builtin::PyImport | Builtin::PyFromStr => &[Ty::Str],
+            Builtin::PyGetAttr => &[Ty::Py, Ty::Str],
+            Builtin::PyCall => {
+                unreachable!("py_call takes a list of handles; verify checks it separately")
+            }
+            Builtin::PyFromInt => &[Ty::Int],
+            Builtin::PyFromBool => &[Ty::Bool],
+            Builtin::PyToInt | Builtin::PyToBool | Builtin::PyToStr | Builtin::PyIsNone => {
+                &[Ty::Py]
+            }
+            Builtin::PyNone
+            | Builtin::PyFailed
+            | Builtin::PyErrKind
+            | Builtin::PyErrMessage
+            | Builtin::PyErrTraceback => &[],
         }
     }
 }
@@ -834,6 +923,23 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                             [a] => (vec![use_(*a, &defined_in)?], None),
                             _ => return Err(format!("bb{bi}: print_value takes one argument")),
                         },
+                        Callee::Builtin(Builtin::PyCall) => match args.as_slice() {
+                            [h, l] => {
+                                expect("py_call callee", use_(*h, &defined_in)?, Ty::Py)?;
+                                let Ty::List(lid) = use_(*l, &defined_in)? else {
+                                    return Err(format!(
+                                        "bb{bi}: py_call arguments must be a list"
+                                    ));
+                                };
+                                if list_elem(p, lid)? != Ty::Py {
+                                    return Err(format!(
+                                        "bb{bi}: py_call arguments must be handles"
+                                    ));
+                                }
+                                (vec![Ty::Py, Ty::List(lid)], Some(Ty::Py))
+                            }
+                            _ => return Err(format!("bb{bi}: py_call takes two arguments")),
+                        },
                         Callee::Builtin(b) => (b.signature().to_vec(), b.ret()),
                         Callee::Func(id) => {
                             let g = p
@@ -1105,6 +1211,22 @@ impl fmt::Display for Program {
         }
         Ok(())
     }
+}
+
+/// Python のランタイムを使うプログラムか（Python の組み込み関数を呼ぶか、ハンドルの型 `py` を使う）。
+/// driver がリンクするランタイムを選び、バックエンドが宣言と終了処理を入れる（ADR-0018 論点 4・7）。
+pub fn uses_python(p: &Program) -> bool {
+    let has_py = |t: &Ty| *t == Ty::Py;
+    p.lists.iter().any(has_py)
+        || p.dicts.iter().any(|(_, v)| has_py(v))
+        || p.unions.iter().flatten().flatten().any(has_py)
+        || p.records.iter().flatten().any(|(_, t)| has_py(t))
+        || p.funcs.iter().any(|f| {
+            f.locals.iter().chain(&f.temps).any(has_py)
+                || f.blocks.iter().flat_map(|b| &b.insts).any(
+                    |i| matches!(i, Inst::Call { callee: Callee::Builtin(b), .. } if b.is_python()),
+                )
+        })
 }
 
 #[cfg(test)]
