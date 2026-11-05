@@ -666,9 +666,26 @@ fn move_from_slots(
                 };
                 // 消費する命令: retain の後で最初に t を使う命令（または return）。その後は t を使わない
                 let consumer = (j + 1..b.insts.len()).find(|&c| b.insts[c].operands().contains(&t));
+                // t から取り出した値（`Field` / `UnionPayload`）も t の使用として数える（防御。PR #91 のレビュー）
+                let mut own_derived: std::collections::HashSet<TempId> = [t].into();
+                for x in &b.insts[i + 1..] {
+                    if let Inst::Field { dst, src, .. } | Inst::UnionPayload { dst, src, .. } = x
+                        && own_derived.contains(src)
+                    {
+                        own_derived.insert(*dst);
+                    }
+                }
+                let derived_used_after = |c: usize| {
+                    b.insts[c + 1..].iter().any(|x| {
+                        x.operands()
+                            .iter()
+                            .any(|o| own_derived.contains(o) && *o != t)
+                    })
+                };
                 let ok_consumer = match consumer {
                     Some(c) => {
                         consumes(&b.insts[c])
+                            && !derived_used_after(c)
                             && !b.insts[c + 1..].iter().any(|x| x.operands().contains(&t))
                             && !matches!(&b.term, Terminator::Return(Some(r)) | Terminator::Branch { cond: r, .. } if *r == t)
                     }

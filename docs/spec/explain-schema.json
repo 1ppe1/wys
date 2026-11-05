@@ -499,7 +499,7 @@
           "minimum": 0
         },
         "index": {
-          "description": "その操作を取り除く直前の IR での命令の位置（取り除いた命令は最適化の後の IR にないため）。`ops` の `index` とは座標が違う。",
+          "description": "その操作を取り除く直前の IR での命令の位置（取り除いた命令は最適化の後の IR にないため）。最適化は段階的に行うので、`param_never_reassigned` / `borrow_guard_unneeded` は最適化の前の IR、`moved_from_slot` はそれらを取り除いた後の IR での位置になる。`ops` の `index` とは座標が違う。",
           "type": "integer",
           "minimum": 0
         },
