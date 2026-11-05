@@ -54,6 +54,15 @@ LIT(s_dict, "dict");
 LIT(s_bad_str, "class E(Exception):\n    def __str__(self):\n        raise RuntimeError('bad')\nraise E()\n");
 LIT(s_nul_name, "ma\0th");
 LIT(s_raise, "def boom():\n    raise ValueError('deep')\nboom()\n");
+LIT(s_eval, "eval");
+LIT(s_index_obj, "type('I', (), {'__index__': lambda self: 42})()");
+LIT(s_bad_tb, "import traceback\ntraceback.format_exception = lambda *a, **k: ('x',)\nraise ValueError('v')\n");
+
+// C の stdout と、ランタイム（Rust）の stdout は別々にバッファするので、C で書いたら必ず flush する
+static void say(const char *line) {
+    puts(line);
+    fflush(stdout);
+}
 
 static void print_and_release(Obj *s) {
     wys_print_str(s);
@@ -63,7 +72,7 @@ static void print_and_release(Obj *s) {
 // 直前の操作の失敗を「型名」「メッセージ」の2行で出す。失敗していなければ ok
 static void report(void) {
     if (!wys_py_failed()) {
-        puts("ok");
+        say("ok");
         return;
     }
     print_and_release(wys_py_err_kind());
@@ -154,11 +163,26 @@ int main(int argc, char **argv) {
     int found = 0;
     for (int64_t i = 0; i + 4 <= len; i++)
         if (bytes[i] == 'b' && bytes[i + 1] == 'o' && bytes[i + 2] == 'o' && bytes[i + 3] == 'm') found = 1;
-    puts(found ? "traceback mentions boom" : "traceback is missing boom");
+    say(found ? "traceback mentions boom" : "traceback is missing boom");
     wys_release(tb);
+    // 12. `__index__` を持つだけのオブジェクトは int ではない（暗黙に変換しない）
+    Obj *eval_ = wys_py_getattr(builtins, S(s_eval));
+    Obj *src = wys_py_from_str(S(s_index_obj));
+    Obj *iargs[2] = {src, globals};
+    Obj *iobj = call(eval_, 2, iargs);
+    wys_py_to_int(iobj);
+    report();
+    // 13. traceback.format_exception が list 以外を返しても、送出中の例外を残さない
+    Obj *code3 = wys_py_from_str(S(s_bad_tb));
+    Obj *eargs3[2] = {code3, globals};
+    call(exec_, 2, eargs3);
+    report();
+    wys_py_to_int(ten);
+    report();
 
     Obj *handles[] = {math, json, builtins, op, fact, ten, dumps, hi, t, none, int_, x, minus,
-                      floordiv, pair[0], pair[1], exec_, dict, globals, code, code2};
+                      floordiv, pair[0], pair[1], exec_, dict, globals, code, code2,
+                      eval_, src, iobj, code3};
     for (size_t i = 0; i < sizeof handles / sizeof *handles; i++) wys_py_release(handles[i]);
     wys_py_finish();
     wys_runtime_finish();  // 生存しているハンドルや文字列があれば終了コード 102

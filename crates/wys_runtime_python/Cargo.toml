@@ -18,3 +18,7 @@ doctest = false
 
 [dependencies]
 wys_runtime = { path = "../wys_runtime" }
+
+[dev-dependencies]
+# テストで、driver と同じ Python のリンクのフラグを使う
+wys_driver = { path = "../wys_driver" }

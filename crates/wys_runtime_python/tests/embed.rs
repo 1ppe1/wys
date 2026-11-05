@@ -25,7 +25,7 @@ module 'math' has no attribute 'nope'
 ZeroDivisionError
 division by zero
 TypeError
-'str' object cannot be interpreted as an integer
+expected an int
 TypeError
 expected a bool
 E
@@ -36,47 +36,18 @@ ValueError
 embedded null character in a Python name
 ok
 traceback mentions boom
+TypeError
+expected an int
+ValueError
+v
+ok
 ";
 
-/// リンクのフラグ（`python3.14-config --embed --ldflags` と、共有ライブラリを見つけるための rpath）。
+/// リンクのフラグ（driver と同じもの）。
 fn python_ldflags() -> Option<Vec<String>> {
     static FLAGS: OnceLock<Option<Vec<String>>> = OnceLock::new();
     FLAGS
-        .get_or_init(|| {
-            let python = std::env::var("WYS_PYTHON").unwrap_or_else(|_| "python3.14".into());
-            let out = |cmd: &str, args: &[&str]| -> Option<String> {
-                let o = Command::new(cmd).args(args).output().ok()?;
-                o.status
-                    .success()
-                    .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            };
-            let version = out(
-                &python,
-                &["-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
-            )?;
-            if version != "3.14" {
-                return None;
-            }
-            let config = format!("{python}-config");
-            let config = out(&config, &["--embed", "--ldflags"])
-                .map(|_| config)
-                .or_else(|| {
-                    // `python` が絶対パスなら、同じディレクトリの `python3-config`
-                    let dir = Path::new(&python).parent()?;
-                    Some(dir.join("python3-config").to_string_lossy().into_owned())
-                })?;
-            let ldflags = out(&config, &["--embed", "--ldflags"])?;
-            let libdir = out(
-                &python,
-                &[
-                    "-c",
-                    "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))",
-                ],
-            )?;
-            let mut flags: Vec<String> = ldflags.split_whitespace().map(String::from).collect();
-            flags.push(format!("-Wl,-rpath,{libdir}"));
-            Some(flags)
-        })
+        .get_or_init(|| wys_driver::python_link_flags().ok())
         .clone()
 }
 
@@ -152,6 +123,8 @@ fn python_calls_round_trip_and_exceptions_become_values() {
     let (code, stdout, stderr) = run(&exe);
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(stdout, EXPECTED);
+    // 送出中の例外を残していれば、終了処理で「Exception ignored」が出る
+    assert!(!stderr.contains("Exception ignored"), "{stderr}");
 }
 
 #[test]

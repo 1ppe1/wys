@@ -276,52 +276,54 @@ pub fn find_runtime_lib(opts: &BuildOptions, python: bool) -> Result<PathBuf, Bu
 }
 
 /// Python 3.14 を埋め込むためのリンクのフラグ（ADR-0018 論点 4・5）。Python は `WYS_PYTHON`（既定は
-/// `python3.14`）。`<python>-config --embed --ldflags` と、共有ライブラリを見つけるための rpath（`LIBDIR`）。
+/// `python3.14`）。インタプリタの実体（`sys.executable`）の隣の `python3.14-config` / `python3-config` の
+/// `--embed --ldflags` と、共有ライブラリを見つけるための rpath（`LIBDIR`）。見つからない理由ごとに文言を分ける。
 pub fn python_link_flags() -> Result<Vec<String>, BuildError> {
     let python = std::env::var("WYS_PYTHON").unwrap_or_else(|_| "python3.14".into());
-    let missing = || {
-        BuildError::Tool(format!(
-            "cannot find Python 3.14 (tried `{python}`); set WYS_PYTHON to a Python 3.14 executable"
-        ))
-    };
-    let run = |cmd: &str, args: &[&str]| -> Option<String> {
+    let run = |cmd: &Path, args: &[&str]| -> Option<String> {
         let o = Command::new(cmd).args(args).output().ok()?;
         o.status
             .success()
             .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
-    let version = run(
-        &python,
-        &["-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
-    )
-    .ok_or_else(missing)?;
+    // 1回の起動で、版・実体のパス・GIL のないビルドか・LIBDIR を読む
+    const PROBE: &str = "import sys, sysconfig\nprint('%d.%d' % sys.version_info[:2])\nprint(sys.executable)\nprint(sysconfig.get_config_var('Py_GIL_DISABLED') or 0)\nprint(sysconfig.get_config_var('LIBDIR') or '')";
+    let probe = run(Path::new(&python), &["-c", PROBE]).ok_or_else(|| {
+        BuildError::Tool(format!(
+            "cannot find Python 3.14 (tried `{python}`); set WYS_PYTHON to a Python 3.14 executable"
+        ))
+    })?;
+    let lines: Vec<&str> = probe.lines().collect();
+    let [version, executable, gil_disabled, libdir] = lines[..] else {
+        return Err(BuildError::Tool(format!(
+            "cannot query `{python}` for its configuration"
+        )));
+    };
     if version != "3.14" {
         return Err(BuildError::Tool(format!(
             "`{python}` is Python {version}, but Python 3.14 is required; set WYS_PYTHON"
         )));
     }
-    // `python3.14-config` か、`python` が絶対パスなら同じディレクトリの `python3-config`
-    let mut configs = vec![format!("{python}-config")];
-    if let Some(dir) = Path::new(&python)
-        .parent()
-        .filter(|d| !d.as_os_str().is_empty())
-    {
-        configs.push(dir.join("python3-config").to_string_lossy().into_owned());
+    if gil_disabled != "0" {
+        return Err(BuildError::Tool(format!(
+            "`{python}` is a free-threaded build of Python 3.14, which is not supported (ADR-0018); set WYS_PYTHON to the default build"
+        )));
     }
-    let ldflags = configs
+    // 実体の隣の `*-config`（venv にはないので、そのときは元のインタプリタを指すよう促す）
+    let dir = Path::new(executable).parent().unwrap_or(Path::new(""));
+    let ldflags = ["python3.14-config", "python3-config"]
         .iter()
-        .find_map(|c| run(c, &["--embed", "--ldflags"]))
-        .ok_or_else(missing)?;
-    let libdir = run(
-        &python,
-        &[
-            "-c",
-            "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))",
-        ],
-    )
-    .ok_or_else(missing)?;
+        .find_map(|c| run(&dir.join(c), &["--embed", "--ldflags"]))
+        .ok_or_else(|| {
+            BuildError::Tool(format!(
+                "found Python 3.14 at `{executable}`, but no `python3.14-config` next to it (a virtual environment has none; on Debian or Ubuntu, install `python3.14-dev`); set WYS_PYTHON to the base interpreter"
+            ))
+        })?;
+    // パスに空白を含むフラグは分けられない（python.org と Homebrew の macOS 版、Linux の配布版は含まない）
     let mut flags: Vec<String> = ldflags.split_whitespace().map(String::from).collect();
-    flags.push(format!("-Wl,-rpath,{libdir}"));
+    if !libdir.is_empty() {
+        flags.push(format!("-Wl,-rpath,{libdir}"));
+    }
     Ok(flags)
 }
 

@@ -1035,6 +1035,7 @@ version = "0.0.0"
 name = "wys_runtime_python"
 version = "0.0.0"
 dependencies = [
+ "wys_driver",
  "wys_runtime",
 ]
 

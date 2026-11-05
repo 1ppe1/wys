@@ -55,6 +55,9 @@ unsafe extern "C" {
     fn PyErr_Occurred() -> *mut PyObject;
     fn PyErr_GetRaisedException() -> *mut PyObject;
     fn PyErr_Clear();
+    fn PyObject_IsInstance(o: *mut PyObject, cls: *mut PyObject) -> c_int;
+    /// `int` の型オブジェクト（Stable ABI のデータ記号）
+    static mut PyLong_Type: u8;
 }
 
 /// `Py_GetConstantBorrowed` の `Py_CONSTANT_NONE`
@@ -72,6 +75,8 @@ thread_local! {
     static LAST: RefCell<Option<Failure>> = const { RefCell::new(None) };
 }
 
+/// Python を初期化する。`Py_InitializeEx` は失敗すると CPython の致命的なエラーで終了し、戻ってこない
+/// （`Py_InitializeFromConfig` は Stable ABI にない）。下の検査は念のため。
 fn ensure_init() {
     // SAFETY: CPython の初期化。GIL は初期化したスレッドが持つ（論点 3）。
     unsafe {
@@ -165,7 +170,12 @@ unsafe fn traceback_of(exc: *mut PyObject) -> String {
             return String::new();
         }
         let mut out = String::new();
-        for i in 0..PyList_Size(lines).max(0) {
+        let n = PyList_Size(lines);
+        if n < 0 {
+            // `format_exception` が置き換えられて list 以外を返した。送出中の例外を残さない
+            PyErr_Clear();
+        }
+        for i in 0..n.max(0) {
             let line = PyList_GetItem(lines, i);
             match (!line.is_null()).then(|| py_str(line)).flatten() {
                 Some(s) => out.push_str(&s),
@@ -224,6 +234,12 @@ fn wrap(o: *mut PyObject) -> *mut Header {
 /// # Safety
 /// `h` は `wrap` が作った、生存しているハンドル。
 unsafe fn inner(h: *const Header) -> *mut PyObject {
+    if h.is_null() {
+        // 失敗した操作のハンドル（null）を、`wys_py_failed` を確かめずに使った: 生成コードの誤り
+        embed::runtime_error(
+            "a failed Python operation's handle was used (this is a compiler bug)",
+        );
+    }
     // SAFETY: 関数の安全条件どおり。中身は PyObject* 1語。
     let b = unsafe { embed::bytes(h) };
     usize::from_ne_bytes(b.try_into().expect("a handle holds one pointer")) as *mut PyObject
@@ -362,6 +378,7 @@ pub extern "C" fn wys_py_none() -> *mut Header {
 }
 
 /// Python の `int`（`bool` を含む）を読む。`int` でない、または i64 に収まらなければ失敗（論点 11）。
+/// `PyLong_AsLongLong` は `int` でないオブジェクトにも `__index__` で暗黙に変換するので、先に型を確かめる。
 ///
 /// # Safety
 /// `h` は生存しているハンドル。
@@ -369,7 +386,19 @@ pub extern "C" fn wys_py_none() -> *mut Header {
 pub unsafe extern "C" fn wys_py_to_int(h: *const Header) -> i64 {
     // SAFETY: 関数の安全条件どおり。-1 は値か失敗のどちらかなので、例外の有無で見分ける。
     unsafe {
-        let v = PyLong_AsLongLong(inner(h));
+        let o = inner(h);
+        match PyObject_IsInstance(o, &raw mut PyLong_Type as *mut PyObject) {
+            1 => {}
+            0 => {
+                fail("TypeError", "expected an int");
+                return 0;
+            }
+            _ => {
+                capture_error();
+                return 0;
+            }
+        }
+        let v = PyLong_AsLongLong(o);
         if v == -1 && !PyErr_Occurred().is_null() {
             capture_error();
             return 0;
@@ -436,10 +465,12 @@ pub unsafe extern "C" fn wys_py_release(h: *mut Header) {
     if h.is_null() {
         return;
     }
-    // SAFETY: 関数の安全条件どおり。
+    // SAFETY: 関数の安全条件どおり。終了処理の後（生成コードからは起きない）は Python の参照に触れない。
     unsafe {
         if embed::release_last(h) {
-            Py_DecRef(inner(h));
+            if Py_IsInitialized() != 0 {
+                Py_DecRef(inner(h));
+            }
             wys_runtime::wys_free_object(h);
         }
     }
