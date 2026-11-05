@@ -768,6 +768,9 @@ pub unsafe extern "C" fn wys_py_release(h: *mut Header) {
     if h.is_null() {
         return;
     }
+    // 参照カウントの統計（`WYS_RC_STATS`）: ほかの型の release は生成コードが数えるが、ハンドルの release は
+    // ランタイムのこの関数なので、ここで数える（数えるだけなので、統計を取らないビルドでも害はない）
+    wys_runtime::wys_stat_releases.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // SAFETY: 関数の安全条件どおり。終了処理の後（生成コードからは起きない）は Python の参照に触れない。
     unsafe {
         if embed::release_last(h) {

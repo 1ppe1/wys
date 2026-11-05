@@ -38,6 +38,16 @@
 
 CI の `ubuntu-24.04` ジョブ（`actions/setup-python` の CPython 3.14.10、`WYS_REQUIRE_PYTHON=1`）で、同じ3つのテスト（往復と例外、AddressSanitizer、解放漏れの検出）が通った（2026-11-05、Actions run 41963090554）。`macos-15` ジョブも同じ版で通った。setup-python の Linux 版は共有ライブラリの `libpython3.14.so` なので、rpath（`LIBDIR`）が要る。時間は CI の共有マシンでは安定しないので記録しない。
 
+## 言語からの計測（M4 T8）
+
+`benches/programs/py_roundtrip.wys`（`math.gcd` の呼び出しと `int` への変換を 200,000 回、`?` で失敗を確かめる）を `benches/measure.sh` で計測した（Apple M5 Pro、macOS 26.4.1、Python 3.14.6、`--release`、3回の最小値）。絶対値だけを記録する。
+
+| 項目 | 値 |
+|---|---|
+| 実行時間（初期化を含む） | 43.7 ms |
+| 最大常駐メモリ | 15,504 KiB |
+| retain / release の回数 | 600,006 / 1,400,008（Python のハンドルの release を含む） |
+
 ## ADR-0018 への申し送り
 
 - 例外の整形（`PyObject_Str`、`PyType_GetName`）そのものが失敗することがある（`__str__` が例外を出すなど）。null を C API に渡すと落ちる（PR #45 のレビューで判明し、修正した）。整形の結果は必ず確かめ、2つ目の例外は消して代わりの文字列にする。
