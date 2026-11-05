@@ -623,6 +623,20 @@ fn structural_values_compare_by_content() {
 }
 
 #[test]
+fn modules_and_names_can_be_imported_under_aliases() {
+    scratch(
+        "alias_lib",
+        "pub def twice(n: int) -> int:\n    return n * 2\n\npub def name() -> str:\n    return \"lib\"\n",
+    );
+    let (code, stdout, stderr) = run(
+        "alias_main",
+        "import alias_lib as l\nfrom alias_lib import name as lib_name\n\ndef name() -> str:\n    return \"main\"\n\ndef main() -> None:\n    print(l.twice(21))\n    print(lib_name())\n    print(name())\n",
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "42\nlib\nmain\n");
+}
+
+#[test]
 fn structural_values_are_printed() {
     let (code, stdout, stderr) = run(
         "structural_print",

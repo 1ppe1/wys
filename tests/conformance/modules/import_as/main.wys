@@ -1,0 +1,18 @@
+# `import a.b as c` と `from a import f as g`（ADR-0016 論点 19）
+# expect-stdout: hi
+# expect-stdout: hey!
+# expect-stdout: Tag(name="t")
+# expect-stdout: local
+import util.text as t
+from util.text import shout as loud, Tag as Label, echo
+
+def shout(s: str) -> str:
+    # 別名を付ければ、同じ名前のローカルの定義と共存できる
+    return "local"
+
+def main() -> None:
+    print(t.echo("hi"))
+    print(loud("hey"))
+    l: t.Tag = Label(name="t")
+    print(l)
+    print(shout(echo("x")))

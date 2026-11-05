@@ -9,7 +9,8 @@
 
 (* ---------- プログラム ---------- *)
 module      = { NEWLINE | import | [ "pub" ] ( type_def | func_def ) } EOF ;
-import      = ( "import" dotted | "from" dotted "import" IDENT { "," IDENT } ) NEWLINE ;   (* ADR-0010 *)
+import      = ( "import" dotted [ "as" IDENT ] | "from" dotted "import" import_name { "," import_name } ) NEWLINE ;   (* ADR-0010、`as` は ADR-0016 *)
+import_name = IDENT [ "as" IDENT ] ;
 dotted      = IDENT { "." IDENT } ;                     (* a.b は エントリのディレクトリからの a/b.wys *)
 type_def    = "type" IDENT [ type_params ] "=" ( record_type | type ) NEWLINE ;   (* type は予約語ではない（トップレベルの `type 名前 =` のときだけ） *)
 record_type = "{" [ field_decl { "," field_decl } [ "," ] ] "}" ;
@@ -69,7 +70,7 @@ STRING      = '"' { char | escape } '"' | "'" { char | escape } "'" ;
 escape      = "\" ( "n" | "t" | "r" | "0" | "\" | '"' | "'" ) ;   (* その他は E0006 *)
 comment     = "#" { any character except newline } ;
 
-(* 予約語: def return if elif else while pass True False None and or not is match case pub import from for in
+(* 予約語: def return if elif else while pass True False None and or not is match case pub import from as for in
  * （match / case は Python と違いソフトキーワードではない。ユーザー決定、docs/plans/m2.md）
  *
  * レイアウト規則:

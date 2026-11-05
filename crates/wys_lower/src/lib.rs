@@ -188,7 +188,9 @@ impl Shared<'_> {
             .collect();
         let id = RecordId(self.records.len() as u32);
         self.records.push(fields);
+        // 表示名は定義に書いた名前（ほかのモジュールの型の内部名 `util.text.Tag` は `Tag`）
         let name = self.types.record_def(r).name.clone().unwrap_or_default();
+        let name = name.rsplit('.').next().unwrap_or_default().to_string();
         self.display.record_names.push(name);
         self.record_ids.insert(r, id);
         id

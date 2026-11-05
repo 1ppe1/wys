@@ -211,7 +211,10 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
             .iter()
             .map(|(k, d)| (k.clone(), d.internal.clone()))
             .collect();
-        let mut modules: HashSet<String> = HashSet::new();
+        // `import a.b` → `a.b.f`、`import a.b as c` → `c.f`（ADR-0016 論点 19）。修飾の接頭辞 → モジュール名
+        let mut modules: HashMap<String, String> = HashMap::new();
+        // import で導入した名前と、その場所（別の import との衝突を E0704 にする）
+        let mut bound: HashMap<String, Bound> = HashMap::new();
         for imp in &m.ast.imports {
             let target = imp.module_name();
             let Some(&ti) = index.get(&target) else {
@@ -219,25 +222,44 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
             };
             match &imp.names {
                 None => {
-                    modules.insert(target);
+                    let (local, span) = match &imp.alias {
+                        Some(a) => (a.name.clone(), a.span),
+                        None => (target.clone(), imp.span),
+                    };
+                    let b = Bound {
+                        span,
+                        module: target.clone(),
+                        identity: format!("module {target}"),
+                    };
+                    let own = if imp.alias.is_some() {
+                        &defs[mi]
+                    } else {
+                        &HashMap::new()
+                    };
+                    if !import_conflict(&local, &b, own, &bound, diags) {
+                        continue;
+                    }
+                    bound.insert(local.clone(), b);
+                    modules.insert(local, target);
                 }
                 Some(names) => {
                     for n in names {
-                        let Some(def) = lookup(&defs[ti], &target, &n.name, n.span, diags) else {
+                        let Some(def) =
+                            lookup(&defs[ti], &target, &n.name.name, n.name.span, diags)
+                        else {
                             continue;
                         };
-                        if let Some(local) = defs[mi].get(&n.name) {
-                            diags.push(
-                                Diagnostic::error(
-                                    "E0704",
-                                    format!("`{}` is imported from `{target}` but is also defined in this module", n.name),
-                                    n.span,
-                                )
-                                .with_related(wys_diagnostics::RelatedKind::Function, &n.name, Some(local.span)),
-                            );
+                        let local = n.local();
+                        let b = Bound {
+                            span: local.span,
+                            module: target.clone(),
+                            identity: def.clone(),
+                        };
+                        if !import_conflict(&local.name, &b, &defs[mi], &bound, diags) {
                             continue;
                         }
-                        scope.insert(n.name.clone(), def);
+                        bound.insert(local.name.clone(), b);
+                        scope.insert(local.name.clone(), def);
                     }
                 }
             }
@@ -277,6 +299,64 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
     out
 }
 
+/// import で導入する名前 `local` が、このモジュールの定義か、先に import した名前と衝突していれば E0704 を報告して
+/// `false` を返す（ADR-0010、ADR-0016 論点 19）。同じモジュールの同じ名前を二度 import するのは衝突ではない。
+fn import_conflict(
+    local: &str,
+    new: &Bound,
+    own: &HashMap<String, Def>,
+    bound: &HashMap<String, Bound>,
+    diags: &mut Vec<Diagnostic>,
+) -> bool {
+    let (span, target) = (new.span, new.module.as_str());
+    if let Some(def) = own.get(local) {
+        diags.push(
+            Diagnostic::error(
+                "E0704",
+                format!("`{local}` is imported from `{target}` but is also defined in this module"),
+                span,
+            )
+            .with_hint("rename it with `as`, e.g. `from m import f as m_f`")
+            .with_related(
+                wys_diagnostics::RelatedKind::Function,
+                local,
+                Some(def.span),
+            ),
+        );
+        return false;
+    }
+    if let Some(prev) = bound.get(local)
+        && prev.identity != new.identity
+    {
+        diags.push(
+            Diagnostic::error(
+                "E0704",
+                format!(
+                    "`{local}` is imported from `{target}` but was already imported from `{}`",
+                    prev.module
+                ),
+                span,
+            )
+            .with_hint("rename one of them with `as`")
+            .with_related(
+                wys_diagnostics::RelatedKind::Function,
+                local,
+                Some(prev.span),
+            ),
+        );
+        return false;
+    }
+    true
+}
+
+/// import で導入した名前（衝突の検査用）。
+struct Bound {
+    span: Span,
+    module: String,
+    /// 指すもの（モジュールなら `module a.b`、定義なら内部名）。同じものを指す import は衝突しない。
+    identity: String,
+}
+
 /// モジュール `target` の定義 `name` を探す。なければ E0705、公開されていなければ E0702。
 fn lookup(
     defs: &HashMap<String, Def>,
@@ -312,7 +392,7 @@ fn lookup(
 
 struct Resolver<'a> {
     scope: &'a HashMap<String, String>,
-    modules: &'a HashSet<String>,
+    modules: &'a HashMap<String, String>,
     defs: &'a [HashMap<String, Def>],
     index: &'a HashMap<String, usize>,
     diags: &'a mut Vec<Diagnostic>,
@@ -327,11 +407,28 @@ impl Resolver<'_> {
             return;
         }
         if let Some((prefix, last)) = name.rsplit_once('.') {
-            if self.modules.contains(prefix) {
-                let ti = self.index[prefix];
-                if let Some(internal) = lookup(&self.defs[ti], prefix, last, span, self.diags) {
+            if let Some(target) = self.modules.get(prefix) {
+                let ti = self.index[target.as_str()];
+                if let Some(internal) = lookup(&self.defs[ti], target, last, span, self.diags) {
                     *name = internal;
                 }
+            } else if self.index.contains_key(prefix) {
+                // 読み込まれたモジュールでも、このモジュールで import していなければ使えない（E0706）。
+                // 内部名と同じ綴りなので、ここで止めないと `pub` の検査（E0702）も素通りする
+                let alias = self
+                    .modules
+                    .iter()
+                    .find(|(_, t)| t.as_str() == prefix)
+                    .map(|(a, _)| a.clone());
+                let d = Diagnostic::error(
+                    "E0706",
+                    format!("module `{prefix}` is not imported in this module"),
+                    span,
+                );
+                self.diags.push(match alias {
+                    Some(a) => d.with_hint(format!("it is imported as `{a}`: write `{a}.{last}`")),
+                    None => d.with_hint(format!("add `import {prefix}` at the top of this file")),
+                });
             }
             return;
         }

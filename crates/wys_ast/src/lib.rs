@@ -39,12 +39,29 @@ pub enum TypeExprKind {
     Apply(String, Vec<TypeExpr>),
 }
 
-/// `import a.b`（`names` が `None`）または `from a.b import f, g`。
+/// `import a.b [as c]`（`names` が `None`）または `from a.b import f [as g], ...`。
 #[derive(Debug, Clone)]
 pub struct Import {
     pub module: Vec<Ident>,
-    pub names: Option<Vec<Ident>>,
+    /// `import a.b as c` の `c`（ADR-0016 論点 19）。`from ... import` では使わない。
+    pub alias: Option<Ident>,
+    /// `from a.b import f, g as h` の名前。`import a.b` なら `None`。
+    pub names: Option<Vec<ImportName>>,
     pub span: Span,
+}
+
+/// `from ... import` の名前1つ（`f` か `f as g`）。
+#[derive(Debug, Clone)]
+pub struct ImportName {
+    pub name: Ident,
+    pub alias: Option<Ident>,
+}
+
+impl ImportName {
+    /// このモジュールで使う名前（別名があれば別名）。
+    pub fn local(&self) -> &Ident {
+        self.alias.as_ref().unwrap_or(&self.name)
+    }
 }
 
 impl Import {

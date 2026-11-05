@@ -256,7 +256,7 @@ impl Parser<'_> {
         (imports, types, funcs)
     }
 
-    /// `import a.b` / `from a.b import f, g`
+    /// `import a.b [as c]` / `from a.b import f [as g], ...`
     fn import(&mut self) -> PResult<Import> {
         let start = self.span().start;
         let from = self.eat(&TokenKind::From);
@@ -267,23 +267,36 @@ impl Parser<'_> {
         while self.eat(&TokenKind::Dot) {
             module.push(self.ident("a module name")?);
         }
-        let names = if from {
+        let (alias, names) = if from {
             self.expect(&TokenKind::Import, "`import`")?;
-            let mut names = vec![self.ident("a name to import")?];
+            let mut names = vec![self.import_name()?];
             while self.eat(&TokenKind::Comma) {
-                names.push(self.ident("a name to import")?);
+                names.push(self.import_name()?);
             }
-            Some(names)
+            (None, Some(names))
+        } else if self.eat(&TokenKind::As) {
+            (Some(self.ident("a module alias")?), None)
         } else {
-            None
+            (None, None)
         };
         let end = self.prev_end();
         self.expect(&TokenKind::Newline, "end of line")?;
         Ok(Import {
             module,
+            alias,
             names,
             span: Span::new(start, end),
         })
+    }
+
+    fn import_name(&mut self) -> PResult<ImportName> {
+        let name = self.ident("a name to import")?;
+        let alias = if self.eat(&TokenKind::As) {
+            Some(self.ident("an alias")?)
+        } else {
+            None
+        };
+        Ok(ImportName { name, alias })
     }
 
     fn type_def(&mut self) -> PResult<TypeDef> {
