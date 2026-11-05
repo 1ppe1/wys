@@ -1,0 +1,10 @@
+# モジュールと同じ名前のローカル変数のメソッド呼び出しは、モジュールの参照ではない（E0706 にしない）
+# expect-stdout: 2
+# expect-stdout: 2
+import other
+
+def main() -> None:
+    lib = [1]
+    lib.append(other.h())
+    print(len(lib))
+    print(lib[1])

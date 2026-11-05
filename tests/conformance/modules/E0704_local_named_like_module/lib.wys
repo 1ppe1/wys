@@ -1,0 +1,2 @@
+pub def f() -> int:
+    return 1

@@ -271,6 +271,9 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
             index: &index,
             diags,
             hidden: HashSet::new(),
+            own_name: &m.name,
+            own: &defs[mi],
+            locals: HashSet::new(),
         };
         for t in &mut m.ast.types {
             t.name.name = defs[mi][&t.name.name].internal.clone();
@@ -287,6 +290,8 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
         for f in &mut m.ast.funcs {
             f.name.name = defs[mi][&f.name.name].internal.clone();
             r.hidden = f.type_params.iter().map(|p| p.name.clone()).collect();
+            r.locals = f.params.iter().map(|p| p.name.name.clone()).collect();
+            collect_locals(&f.body, &mut r.locals);
             for p in &mut f.params {
                 r.type_expr(&mut p.ty);
             }
@@ -309,6 +314,17 @@ fn import_conflict(
     diags: &mut Vec<Diagnostic>,
 ) -> bool {
     let (span, target) = (new.span, new.module.as_str());
+    if BUILTINS.contains(&local) {
+        diags.push(
+            Diagnostic::error(
+                "E0704",
+                format!("`{local}` is a built-in function and cannot be used as an import name"),
+                span,
+            )
+            .with_hint("choose another name with `as`"),
+        );
+        return false;
+    }
     if let Some(def) = own.get(local) {
         diags.push(
             Diagnostic::error(
@@ -332,8 +348,9 @@ fn import_conflict(
             Diagnostic::error(
                 "E0704",
                 format!(
-                    "`{local}` is imported from `{target}` but was already imported from `{}`",
-                    prev.module
+                    "`{local}` refers to {} but was already imported as {}",
+                    new.describe(),
+                    prev.describe()
                 ),
                 span,
             )
@@ -355,6 +372,19 @@ struct Bound {
     module: String,
     /// 指すもの（モジュールなら `module a.b`、定義なら内部名）。同じものを指す import は衝突しない。
     identity: String,
+}
+
+impl Bound {
+    fn describe(&self) -> String {
+        match self.identity.strip_prefix("module ") {
+            Some(m) => format!("module `{m}`"),
+            None => format!(
+                "`{}` from `{}`",
+                self.identity.rsplit('.').next().unwrap_or_default(),
+                self.module
+            ),
+        }
+    }
 }
 
 /// モジュール `target` の定義 `name` を探す。なければ E0705、公開されていなければ E0702。
@@ -390,6 +420,45 @@ fn lookup(
     Some(def.internal.clone())
 }
 
+/// 関数の本体で束縛する名前（代入先、`for` の変数、`case Ok(x)` の束縛）。スコープは区別しない。
+fn collect_locals(stmts: &[Stmt], out: &mut HashSet<String>) {
+    for s in stmts {
+        match &s.kind {
+            StmtKind::Assign { target, .. } => {
+                out.insert(target.name.clone());
+            }
+            StmtKind::For { var, body, .. } => {
+                out.insert(var.name.clone());
+                collect_locals(body, out);
+            }
+            StmtKind::If {
+                branches,
+                else_body,
+            } => {
+                for (_, b) in branches {
+                    collect_locals(b, out);
+                }
+                if let Some(b) = else_body {
+                    collect_locals(b, out);
+                }
+            }
+            StmtKind::While { body, .. } => collect_locals(body, out),
+            StmtKind::Match { arms, .. } => {
+                for a in arms {
+                    if let PatternKind::Bind(_, Some(v)) = &a.pattern.kind {
+                        out.insert(v.name.clone());
+                    }
+                    collect_locals(&a.body, out);
+                }
+            }
+            StmtKind::Expr(_)
+            | StmtKind::Return(_)
+            | StmtKind::IndexAssign { .. }
+            | StmtKind::Pass => {}
+        }
+    }
+}
+
 struct Resolver<'a> {
     scope: &'a HashMap<String, String>,
     modules: &'a HashMap<String, String>,
@@ -398,6 +467,11 @@ struct Resolver<'a> {
     diags: &'a mut Vec<Diagnostic>,
     /// 型パラメータの名前（付け替えない）
     hidden: HashSet<String>,
+    /// このモジュールの名前と定義（自分自身への修飾参照 `lib.f` を許す）
+    own_name: &'a str,
+    own: &'a HashMap<String, Def>,
+    /// いま解決している関数のローカル変数と引数。`xs.append(1)` はメソッド呼び出しで、モジュールの参照ではない
+    locals: HashSet<String>,
 }
 
 impl Resolver<'_> {
@@ -407,6 +481,12 @@ impl Resolver<'_> {
             return;
         }
         if let Some((prefix, last)) = name.rsplit_once('.') {
+            if prefix == self.own_name {
+                if let Some(d) = self.own.get(last) {
+                    *name = d.internal.clone();
+                }
+                return;
+            }
             if let Some(target) = self.modules.get(prefix) {
                 let ti = self.index[target.as_str()];
                 if let Some(internal) = lookup(&self.defs[ti], target, last, span, self.diags) {
@@ -415,11 +495,14 @@ impl Resolver<'_> {
             } else if self.index.contains_key(prefix) {
                 // 読み込まれたモジュールでも、このモジュールで import していなければ使えない（E0706）。
                 // 内部名と同じ綴りなので、ここで止めないと `pub` の検査（E0702）も素通りする
-                let alias = self
+                let mut aliases: Vec<&String> = self
                     .modules
                     .iter()
-                    .find(|(_, t)| t.as_str() == prefix)
-                    .map(|(a, _)| a.clone());
+                    .filter(|(_, t)| t.as_str() == prefix)
+                    .map(|(a, _)| a)
+                    .collect();
+                aliases.sort();
+                let alias = aliases.first().map(|a| a.to_string());
                 let d = Diagnostic::error(
                     "E0706",
                     format!("module `{prefix}` is not imported in this module"),
@@ -517,7 +600,29 @@ impl Resolver<'_> {
                 kwargs,
             } => {
                 let span = callee.span;
-                self.name(&mut callee.name, span);
+                // ローカル変数のメソッド呼び出し（`xs.append(1)`）は型検査が扱う。モジュールの参照ではない
+                let method = callee
+                    .name
+                    .split_once('.')
+                    .is_some_and(|(recv, _)| self.locals.contains(recv));
+                if !method {
+                    let written = callee.name.clone();
+                    self.name(&mut callee.name, span);
+                    // 解決した内部名（`lib.f`）の接頭辞がローカル変数と同じだと、型検査がメソッド呼び出しと区別できない
+                    if callee.name != written
+                        && let Some((recv, _)) = callee.name.rsplit_once('.')
+                        && self.locals.contains(recv)
+                    {
+                        self.diags.push(
+                            Diagnostic::error(
+                                "E0704",
+                                format!("local variable `{recv}` has the same name as module `{recv}`, which `{written}` refers to"),
+                                span,
+                            )
+                            .with_hint(format!("rename the variable `{recv}`")),
+                        );
+                    }
+                }
                 for a in args {
                     self.expr(a);
                 }

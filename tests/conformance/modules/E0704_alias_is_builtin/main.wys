@@ -1,0 +1,6 @@
+# 組み込み関数の名前は、import の別名にできない
+# expect-error: E0704 3:22
+from lib import f as len
+
+def main() -> None:
+    print(len([1]))
