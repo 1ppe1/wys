@@ -505,6 +505,11 @@ impl Types {
         self.tasks[k.0 as usize]
     }
 
+    /// `Task[T]` の型を 1 つでも作ったか（注釈だけで使った場合を含む）。
+    pub fn has_tasks(&self) -> bool {
+        !self.tasks.is_empty()
+    }
+
     /// `Result[ok, err]` の型を作る（同じ型引数なら同じ ID）。
     pub fn result(&mut self, ok: Ty, err: Ty) -> Ty {
         if ok == Ty::Error || err == Ty::Error {
@@ -3967,6 +3972,12 @@ impl<'a> FnCk<'a> {
             Ty::List(pl) => {
                 if let Ty::List(al) = actual {
                     let (pe, ae) = (self.cx.types.list_elem(pl), self.cx.types.list_elem(al));
+                    self.unify(pe, ae, own, map);
+                }
+            }
+            Ty::Task(pk) => {
+                if let Ty::Task(ak) = actual {
+                    let (pe, ae) = (self.cx.types.task_elem(pk), self.cx.types.task_elem(ak));
                     self.unify(pe, ae, own, map);
                 }
             }

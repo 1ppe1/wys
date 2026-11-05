@@ -140,8 +140,9 @@ fn run_frontend(
             names,
         );
     }
-    // `async`（ADR-0020）のコード生成は M4 T10c で入れる。`check` は受け付け、`build` / `run` はここで止める
-    if module.funcs.iter().any(|f| f.is_async) {
+    // `async`（ADR-0020）のコード生成は M4 T10c で入れる。`check` は受け付け、`build` / `run` はここで止める。
+    // `async def` がなくても、`Task` の型を注釈で使っていれば止める（lowering はすべての関数を登録する）
+    if module.funcs.iter().any(|f| f.is_async) || tc.types.has_tasks() {
         return (
             Frontend {
                 file,

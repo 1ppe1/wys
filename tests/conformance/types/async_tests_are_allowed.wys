@@ -33,3 +33,10 @@ async def test_await_and_try() -> None:
             assert(n == 3)
         case Err(_):
             assert(False)
+
+async def join[T](t: Task[T]) -> T:
+    return await t
+
+async def test_generic_join_infers_through_task() -> None:
+    n = await join(spawn(helper(5)))
+    assert(n == 10)

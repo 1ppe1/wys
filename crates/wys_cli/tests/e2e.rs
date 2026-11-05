@@ -797,4 +797,21 @@ fn async_programs_type_check_but_do_not_build_yet() {
     let out = cli(&["check", "--format", "json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stdout).contains("\"E1303\""));
+    // `async def` がなくても、`Task` の型を使っていればコード生成の前で止まる（パニックしない）
+    let path = scratch(
+        "task_annotation_only",
+        "def identity(t: Task[int]) -> Task[int]:\n    return t\n\ndef main() -> None:\n    print(1)\n",
+    );
+    let out = cli(&["check", path.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = cli(&["run", path.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("`async` cannot be compiled yet"),
+        "{stderr}"
+    );
 }
