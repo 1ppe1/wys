@@ -1,0 +1,7 @@
+# フィールドの値から型引数を `None` と推論したときも E0215（lowering が落ちていた）
+# expect-error: E0215 6:9
+type Pair[A, B] = {first: A, second: B}
+
+def main() -> None:
+    p = Pair(first=True, second=None)
+    print(p.first)

@@ -199,10 +199,12 @@ fn words(p: &Program, t: Ty) -> u32 {
         Ty::Int | Ty::Bool => 1,
         Ty::Str | Ty::List(_) | Ty::Dict(_) => 1,
         Ty::Union(u) => 1 + union_payload_words(p, u),
+        // フィールドのないレコードは埋め草の 1 バイト（`type_defs`）を持つので 1 語
         Ty::Record(r) => p.records[r.0 as usize]
             .iter()
             .map(|(_, ft)| words(p, *ft))
-            .sum(),
+            .sum::<u32>()
+            .max(1),
     }
 }
 
@@ -219,7 +221,12 @@ fn union_payload_words(p: &Program, u: UnionId) -> u32 {
 fn type_defs(p: &Program) -> String {
     let mut out = String::new();
     for (i, fields) in p.records.iter().enumerate() {
-        let fs: Vec<String> = fields.iter().map(|(_, t)| llty(*t)).collect();
+        let mut fs: Vec<String> = fields.iter().map(|(_, t)| llty(*t)).collect();
+        if fs.is_empty() {
+            // フィールドのないレコードも大きさを持たせる。大きさ 0 の型の load / store を
+            // AddressSanitizer が計装すると、実行時に落ちる（`list[E]` の要素など）
+            fs.push("i8".into());
+        }
         let _ = writeln!(out, "%record.{i} = type {{ {} }}", fs.join(", "));
     }
     for i in 0..p.unions.len() {

@@ -1,0 +1,7 @@
+# Generic な別名を通して `dict` の値が `None` になる場合も E0215
+# expect-error: E0215 6:8
+type Table[T] = dict[str, T]
+
+def main() -> None:
+    t: Table[None] = {}
+    print(len(t))
