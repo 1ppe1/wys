@@ -1,0 +1,7 @@
+# PyObject にないメソッド。`uses io` の関数でも、Effect の誤り（E1102）を重ねて出さない
+# expect-error: E0905 4:5
+def f(h: PyObject) -> None uses io:
+    h.nope()
+
+def main() -> None:
+    f(py_value(1))

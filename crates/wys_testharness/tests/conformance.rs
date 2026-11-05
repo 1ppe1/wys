@@ -16,20 +16,43 @@ fn repo_root() -> PathBuf {
         .unwrap()
 }
 
-fn runtime_lib() -> PathBuf {
+/// ランタイム（Python を含まないものと含むもの）。
+fn runtime_libs() -> (PathBuf, PathBuf) {
     let exe = std::env::current_exe().unwrap();
     // target/<profile>/deps/conformance-xxxx
     let profile_dir = exe.parent().unwrap().parent().unwrap().to_path_buf();
     let mut cmd = Command::new(env!("CARGO"));
-    cmd.args(["build", "-q", "-p", "wys_runtime"]);
+    cmd.args([
+        "build",
+        "-q",
+        "-p",
+        "wys_runtime",
+        "-p",
+        "wys_runtime_python",
+    ]);
     if profile_dir.ends_with("release") {
         cmd.arg("--release");
     }
     assert!(
         cmd.status().unwrap().success(),
-        "failed to build wys_runtime"
+        "failed to build the runtimes"
     );
-    profile_dir.join("libwys_runtime.a")
+    (
+        profile_dir.join("libwys_runtime.a"),
+        profile_dir.join("libwys_runtime_python.a"),
+    )
+}
+
+/// `python/` のケースを実行できるか（Python 3.14 がある）。なければ飛ばす。`WYS_REQUIRE_PYTHON=1`（CI）なら失敗させる。
+fn python_available() -> bool {
+    let ok = wys_driver::python_link_flags().is_ok();
+    if !ok {
+        assert!(
+            std::env::var_os("WYS_REQUIRE_PYTHON").is_none(),
+            "WYS_REQUIRE_PYTHON is set but Python 3.14 (WYS_PYTHON) was not found"
+        );
+    }
+    ok
 }
 
 fn rel(root: &Path, p: &Path) -> String {
@@ -42,21 +65,35 @@ fn conformance_suite() {
     let cases = collect_cases(&root.join("tests/conformance"));
     assert!(!cases.is_empty(), "no conformance cases found");
     // 最適化レベルとサニタイザは環境変数 WYS_OPT / WYS_SANITIZE で切り替える（CI が3つのモードで実行する）
+    let (rt, py) = runtime_libs();
     let opts = BuildOptions {
-        runtime_lib: Some(runtime_lib()),
+        runtime_lib: Some(rt),
+        python_runtime_lib: Some(py),
         ..BuildOptions::default()
     };
     let scratch = std::env::temp_dir().join(format!("wys-conformance-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).unwrap();
+    let python = python_available();
 
     let mut failures = Vec::new();
+    let mut skipped = 0;
     for case in &cases {
         let name = rel(&root, case);
+        // Python を使うケース（ADR-0018）は、Python 3.14 がなければ飛ばす
+        if name.starts_with("tests/conformance/python/") && !python {
+            skipped += 1;
+            continue;
+        }
         if let Err(e) = run_case(case, &name, &opts, &scratch) {
             failures.push(format!("--- {name}\n{e}"));
         }
     }
     let _ = std::fs::remove_dir_all(&scratch);
+    if skipped > 0 {
+        eprintln!(
+            "skipped {skipped} case(s) under python/: Python 3.14 was not found (set WYS_PYTHON)"
+        );
+    }
     assert!(
         failures.is_empty(),
         "{} of {} conformance cases failed:\n{}",

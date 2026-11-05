@@ -1,0 +1,4 @@
+# PyObject は `==` で比べられない（`__eq__` を動かすので。ADR-0018 論点 13）
+# expect-error: E1202 4:11
+def main() -> None:
+    print(py_value(1) == py_value(1))

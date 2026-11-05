@@ -132,6 +132,8 @@ pub struct Function {
 pub enum Effect {
     Io,
     Exit,
+    /// Python のコードの実行（ADR-0018 論点 12）
+    Python,
 }
 
 impl Effect {
@@ -139,6 +141,7 @@ impl Effect {
         match self {
             Effect::Io => "io",
             Effect::Exit => "exit",
+            Effect::Python => "python",
         }
     }
 }
@@ -250,6 +253,7 @@ pub enum Builtin {
     PyFromInt,
     PyFromBool,
     PyFromStr,
+    PyFromFloat,
     PyNone,
     PyToInt,
     PyToBool,
@@ -294,6 +298,7 @@ impl Builtin {
             Builtin::PyFromInt => "py_from_int",
             Builtin::PyFromBool => "py_from_bool",
             Builtin::PyFromStr => "py_from_str",
+            Builtin::PyFromFloat => "py_from_float",
             Builtin::PyNone => "py_none",
             Builtin::PyToInt => "py_to_int",
             Builtin::PyToBool => "py_to_bool",
@@ -322,6 +327,7 @@ impl Builtin {
                 | Builtin::PyFromInt
                 | Builtin::PyFromBool
                 | Builtin::PyFromStr
+                | Builtin::PyFromFloat
                 | Builtin::PyNone
                 | Builtin::PyToStr
                 | Builtin::PyErrKind
@@ -354,6 +360,7 @@ impl Builtin {
             | Builtin::PyFromInt
             | Builtin::PyFromBool
             | Builtin::PyFromStr
+            | Builtin::PyFromFloat
             | Builtin::PyNone => Some(Ty::Py),
             Builtin::PyToInt => Some(Ty::Int),
             Builtin::PyToBool | Builtin::PyIsNone | Builtin::PyFailed => Some(Ty::Bool),
@@ -389,6 +396,7 @@ impl Builtin {
             }
             Builtin::PyFromInt => &[Ty::Int],
             Builtin::PyFromBool => &[Ty::Bool],
+            Builtin::PyFromFloat => &[Ty::Float],
             Builtin::PyToInt | Builtin::PyToBool | Builtin::PyToStr | Builtin::PyIsNone => {
                 &[Ty::Py]
             }

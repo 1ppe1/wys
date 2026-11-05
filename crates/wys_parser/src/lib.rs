@@ -902,40 +902,16 @@ impl Parser<'_> {
             }
             let name = self.ident("a field name")?;
             let start = e.span.start;
-            // `x.f(...)`: 名前1つの後なら、メソッド呼び出し（名前解決がモジュールの参照と区別する。M4 T4）
-            if self.at(&TokenKind::LParen)
-                && let ExprKind::Name(recv) = &e.kind
-            {
-                let receiver = Ident {
-                    name: recv.clone(),
-                    span: e.span,
-                };
+            // `x.f(...)` / `a.b.f(...)` / `f().g(...)`: メソッド呼び出し。受け手が名前の並び（`m`、`a.b`）なら、
+            // 名前解決が、先頭がローカル変数でなければモジュールの修飾付きの呼び出しに直す（M4 T4・T6）。
+            // フィールドの値の受け手（`box.handle.to_int()`）はメソッド呼び出しのまま
+            if self.at(&TokenKind::LParen) {
                 self.bump();
                 let (args, kwargs) = self.call_args()?;
                 e = self.mk(
                     ExprKind::MethodCall {
-                        receiver,
+                        receiver: Box::new(e),
                         method: name,
-                        args,
-                        kwargs,
-                    },
-                    start,
-                );
-                continue;
-            }
-            // `a.b.f(...)`: 名前の並びの後に `(` が来たら、修飾付きの呼び出し（ADR-0010）
-            if self.at(&TokenKind::LParen)
-                && let Some(prefix) = dotted_name(&e)
-            {
-                self.bump();
-                let (args, kwargs) = self.call_args()?;
-                let callee = Ident {
-                    name: format!("{prefix}.{}", name.name),
-                    span: Span::new(start, name.span.end),
-                };
-                e = self.mk(
-                    ExprKind::Call {
-                        callee,
                         args,
                         kwargs,
                     },
@@ -1066,15 +1042,6 @@ impl Parser<'_> {
     }
 }
 
-/// `a` / `a.b` のように、名前とフィールド参照だけからなる式なら、その並び（`a.b`）を返す。
-fn dotted_name(e: &Expr) -> Option<String> {
-    match &e.kind {
-        ExprKind::Name(n) => Some(n.clone()),
-        ExprKind::Field { base, name } => dotted_name(base).map(|p| format!("{p}.{}", name.name)),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1113,8 +1080,8 @@ mod tests {
 
     #[test]
     fn method_calls_and_qualified_calls() {
-        // `x.f(...)` はメソッド呼び出し（名前解決がモジュールの参照と区別する）、`a.b.f(...)` は修飾付きの呼び出し
-        let m = ok("def main() -> None:\n    xs.append(1)\n    a.b.f(2)\n");
+        // `x.f(...)` / `a.b.f(...)` はメソッド呼び出し（名前解決がモジュールの参照と区別する）
+        let m = ok("def main() -> None:\n    xs.append(1)\n    a.b.f(2)\n    f(1).g()\n");
         let kinds: Vec<&ExprKind> = m.funcs[0]
             .body
             .iter()
@@ -1126,9 +1093,20 @@ mod tests {
         assert!(matches!(
             kinds[0],
             ExprKind::MethodCall { receiver, method, args, .. }
-                if receiver.name == "xs" && method.name == "append" && args.len() == 1
+                if receiver.as_name() == Some("xs") && method.name == "append" && args.len() == 1
         ));
-        assert!(matches!(kinds[1], ExprKind::Call { callee, .. } if callee.name == "a.b.f"));
+        // `a.b.f(...)` もパーサではメソッド呼び出し。名前解決が、`a` がローカル変数でなければ修飾付きの呼び出しに直す
+        assert!(matches!(
+            kinds[1],
+            ExprKind::MethodCall { receiver, method, .. }
+                if matches!(receiver.kind, ExprKind::Field { .. }) && method.name == "f"
+        ));
+        // 受け手は式でもよい（M4 T6）
+        assert!(matches!(
+            kinds[2],
+            ExprKind::MethodCall { receiver, method, .. }
+                if matches!(receiver.kind, ExprKind::Call { .. }) && method.name == "g"
+        ));
     }
 
     #[test]
@@ -1242,10 +1220,18 @@ mod tests {
         let StmtKind::Return(Some(e)) = &m.funcs[0].body[0].kind else {
             panic!()
         };
-        let ExprKind::Call { callee, args, .. } = &e.kind else {
+        // パーサではメソッド呼び出し（受け手 `util.text`）。修飾付きの呼び出しにするのは名前解決（M4 T6）
+        let ExprKind::MethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        } = &e.kind
+        else {
             panic!()
         };
-        assert_eq!(callee.name, "util.text.width");
+        assert!(matches!(receiver.kind, ExprKind::Field { .. }));
+        assert_eq!(method.name, "width");
         assert!(matches!(args[0].kind, ExprKind::Field { .. }));
     }
 

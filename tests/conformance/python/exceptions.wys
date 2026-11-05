@@ -1,0 +1,46 @@
+# Python の例外は `Err(PyError)` になり、プロセスは落ちない（AC-010、ADR-0018 論点 8）
+# expect-stdout: ModuleNotFoundError
+# expect-stdout: No module named 'wys_no_such_module'
+# expect-stdout: AttributeError
+# expect-stdout: ZeroDivisionError
+# expect-stdout: True
+# expect-stdout: TypeError
+# expect-stdout: ValueError
+def report(r: Result[PyObject, PyError]) -> None:
+    match r:
+        case Ok(_):
+            print("ok")
+        case Err(e):
+            print(e.kind)
+
+def floordiv(a: int, b: int) -> Result[PyObject, PyError]:
+    op = py_import("operator")?
+    f = op.attr("floordiv")?
+    return f.call([py_value(a), py_value(b)])
+
+def main() -> None:
+    match py_import("wys_no_such_module"):
+        case Ok(_):
+            print("ok")
+        case Err(e):
+            print(e.kind)
+            print(e.message)
+    match py_import("math"):
+        case Ok(m):
+            report(m.attr("nope"))
+        case Err(e):
+            print(e.kind)
+    match floordiv(1, 0):
+        case Ok(_):
+            print("ok")
+        case Err(e):
+            print(e.kind)
+            # トレースバックも取れる
+            print(len(e.traceback) > 0)
+    match py_value("x").to_int():
+        case Ok(n):
+            print(n)
+        case Err(e):
+            print(e.kind)
+    # 名前に NUL を含む文字列も、プロセスを止めずに失敗する
+    report(py_import("ma\0th"))

@@ -50,6 +50,7 @@ unsafe extern "C" {
     fn PyLong_FromLongLong(v: i64) -> *mut PyObject;
     fn PyLong_AsLongLong(o: *mut PyObject) -> i64;
     fn PyBool_FromLong(v: c_long) -> *mut PyObject;
+    fn PyFloat_FromDouble(v: f64) -> *mut PyObject;
     fn PyUnicode_FromStringAndSize(s: *const c_char, n: isize) -> *mut PyObject;
     fn PyUnicode_AsUTF8AndSize(o: *mut PyObject, size: *mut isize) -> *const c_char;
     fn PyErr_Occurred() -> *mut PyObject;
@@ -219,6 +220,16 @@ fn capture_error() {
     LAST.with(|l| *l.borrow_mut() = Some(f));
 }
 
+/// `py_value` の変換（失敗しない操作）の結果を包む。CPython が新しいオブジェクトを作れなかった（メモリ不足）なら、
+/// 失敗のハンドルを返さずに実行時エラーにする（`py_value` は `Result` を返さない。ADR-0018 論点 8）。
+fn wrap_value(o: *mut PyObject) -> *mut Header {
+    let h = wrap(o);
+    if h.is_null() {
+        embed::runtime_error("cannot create a Python object");
+    }
+    h
+}
+
 /// Python の参照（+1）をハンドルで包む。null なら例外を保存して null を返す。
 fn wrap(o: *mut PyObject) -> *mut Header {
     if o.is_null() {
@@ -341,7 +352,7 @@ pub unsafe extern "C" fn wys_py_call(h: *const Header, args: *const ListObj) -> 
 pub extern "C" fn wys_py_from_int(v: i64) -> *mut Header {
     ensure_init();
     // SAFETY: 初期化済み。
-    wrap(unsafe { PyLong_FromLongLong(v) })
+    wrap_value(unsafe { PyLong_FromLongLong(v) })
 }
 
 /// `bool` から Python の `bool`。
@@ -349,7 +360,15 @@ pub extern "C" fn wys_py_from_int(v: i64) -> *mut Header {
 pub extern "C" fn wys_py_from_bool(v: bool) -> *mut Header {
     ensure_init();
     // SAFETY: 初期化済み。
-    wrap(unsafe { PyBool_FromLong(v as c_long) })
+    wrap_value(unsafe { PyBool_FromLong(v as c_long) })
+}
+
+/// `float` から Python の `float`（ADR-0019）。
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_py_from_float(v: f64) -> *mut Header {
+    ensure_init();
+    // SAFETY: 初期化済み。
+    wrap_value(unsafe { PyFloat_FromDouble(v) })
 }
 
 /// 文字列から Python の `str`。
@@ -362,7 +381,9 @@ pub unsafe extern "C" fn wys_py_from_str(s: *const Header) -> *mut Header {
     // SAFETY: 関数の安全条件どおり。
     let b = unsafe { embed::bytes(s) };
     // SAFETY: 初期化済み。b は b.len() バイトの UTF-8。
-    wrap(unsafe { PyUnicode_FromStringAndSize(b.as_ptr() as *const c_char, b.len() as isize) })
+    wrap_value(unsafe {
+        PyUnicode_FromStringAndSize(b.as_ptr() as *const c_char, b.len() as isize)
+    })
 }
 
 /// Python の `None`。
@@ -373,7 +394,7 @@ pub extern "C" fn wys_py_none() -> *mut Header {
     unsafe {
         let n = Py_GetConstantBorrowed(PY_CONSTANT_NONE);
         Py_IncRef(n);
-        wrap(n)
+        wrap_value(n)
     }
 }
 

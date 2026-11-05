@@ -1,0 +1,9 @@
+# PyError も print できない（ADR-0018 論点 13）。フィールドは読める
+# expect-error: E1202 9:19
+def main() -> None:
+    match py_import("math"):
+        case Ok(_):
+            pass
+        case Err(e):
+            print(e.kind)
+            print(e)
