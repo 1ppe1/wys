@@ -27,6 +27,7 @@ int64_t wys_py_to_int(const Obj *h);
 _Bool wys_py_failed(void);
 Obj *wys_py_err_kind(void);
 void wys_py_release(Obj *h);
+void wys_py_finish(void);
 List *wys_list_new(int64_t elem_size, int64_t cap);
 void *wys_list_push_slot(List *l, int64_t elem_size);
 void wys_list_free(List *l, int64_t elem_size);
@@ -104,6 +105,7 @@ int main(int argc, char **argv) {
                         (void *)__asan_unpoison_memory_region);
 #endif
     wys_sched_run(async_main);
+    wys_py_finish();  // Python を終える（終えないと Linux の LeakSanitizer が Python の確保を報告する）
     wys_runtime_finish();
     return 0;
 }
