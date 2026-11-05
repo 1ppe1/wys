@@ -839,7 +839,14 @@ pub fn float_repr(v: f64) -> String {
         .chars()
         .filter(char::is_ascii_digit)
         .count();
-    let sci = format!("{:.*e}", n - 1, v.abs());
+    // ただし丸め直した表記が元の値に戻らないことがある（2 のべき乗は下側の間隔が半分。`2**-24` など）。
+    // そのときは `{:e}` の最短の表記を使う
+    let rounded = format!("{:.*e}", n - 1, v.abs());
+    let sci = if rounded.parse::<f64>().ok() == Some(v.abs()) {
+        rounded
+    } else {
+        shortest
+    };
     let (mantissa, exp) = sci.split_once('e').expect("{:e} has an exponent");
     let exp: i32 = exp.parse().expect("the exponent is an integer");
     let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
@@ -1227,6 +1234,10 @@ mod tests {
             // 同じ長さの候補が2つある（PR #83 のレビュー）: Python は正確な値に最も近い方、同点なら偶数
             (1e15 + 0.25, "1000000000000000.2"),
             (1e15 + 0.75, "1000000000000000.8"),
+            // 丸め直すと元の値に戻らない 2 のべき乗（同上のレビュー）
+            (5.960464477539063e-8, "5.960464477539063e-08"),
+            (5.684341886080802e-14, "5.684341886080802e-14"),
+            (7.120236347223045e-307, "7.120236347223045e-307"),
             (f64::INFINITY, "inf"),
             (f64::NEG_INFINITY, "-inf"),
             (f64::NAN, "nan"),

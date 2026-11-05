@@ -85,7 +85,7 @@ impl TokenKind {
         use TokenKind::*;
         let s = match self {
             Int(v) => return format!("integer `{v}`"),
-            Float(b) => return format!("float `{}`", f64::from_bits(*b)),
+            Float(b) => return format!("float `{:?}`", f64::from_bits(*b)),
             Str(_) => "string literal",
             Ident(n) => return format!("identifier `{n}`"),
             Def => "`def`",

@@ -65,7 +65,7 @@ impl Shared<'_> {
         }
     }
 
-    /// `Unknown` の実行時表現（ADR-0011）: `int | bool | str | None` の Union。
+    /// `Unknown` の実行時表現（ADR-0011）: `int | bool | str | float | None` の Union（`float` は ADR-0019）。
     fn unknown_union(&mut self) -> wys_typeck::UnionId {
         // `float` は ADR-0019 論点 7 で足した
         match self

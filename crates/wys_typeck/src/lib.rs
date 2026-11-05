@@ -34,7 +34,7 @@ pub enum Ty {
     Result(ResultId),
     /// `dict[K, V]`（ヒープ上の可変な辞書、参照を共有する。キーは `int` / `bool` / `str`。ADR-0015）
     Dict(DictId),
-    /// 未検証の外部値（ADR-0011）。`int` / `bool` / `str` / `None` のどれかだが、開いた型として扱い、
+    /// 未検証の外部値（ADR-0011）。`int` / `bool` / `str` / `float`（ADR-0019）/ `None` のどれかだが、開いた型として扱い、
     /// `match` で確かめるまで具体的な型として使えない。
     Unknown,
     None,
@@ -1269,7 +1269,7 @@ impl Ctx {
                 other => {
                     self.diags.push(
                         Diagnostic::error("E0203", format!("unknown type `{other}`"), t.span)
-                            .with_hint("supported types are `int`, `bool`, `str`, `None`, types defined with `type`, and unions of them (`A | B`)"),
+                            .with_hint("supported types are `int`, `bool`, `str`, `float`, `None`, types defined with `type`, and unions of them (`A | B`)"),
                     );
                     Ty::Error
                 }
@@ -3315,6 +3315,21 @@ impl<'a> FnCk<'a> {
             );
             return Ty::Error;
         }
+        if matches!(op, BinOp::FloorDiv | BinOp::Mod) && lt == Ty::Float && rt == Ty::Float {
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E0207",
+                    format!(
+                        "operator `{}` cannot be applied to `float` and `float`",
+                        op.symbol()
+                    ),
+                    span,
+                )
+                .with_cause("`//` and `%` work on `int` only (ADR-0019)")
+                .with_hint("use `/` for floats, or convert with `int(x)` first"),
+            );
+            return Ty::Error;
+        }
         if matches!((lt, rt), (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int)) {
             // int と float を混ぜた演算（ADR-0019 論点 3）
             self.cx.diags.push(
@@ -3399,7 +3414,7 @@ impl<'a> FnCk<'a> {
         if members.iter().all(printable) {
             return;
         }
-        const ACCEPTS: &str = "`print` accepts `int`, `bool`, `str`, records, `list`, `dict`, `Result`, and unions of them";
+        const ACCEPTS: &str = "`print` accepts `int`, `bool`, `str`, `float`, records, `list`, `dict`, `Result`, and unions of them";
         let found = self.cx.name(t);
         let d = if members.iter().all(|m| printable(m) || *m == Ty::None) {
             Diagnostic::error(

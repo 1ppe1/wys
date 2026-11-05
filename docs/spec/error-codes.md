@@ -99,6 +99,8 @@
 | integer overflow | `+` `-` `*` 単項 `-` `//` の結果が 64 ビットに収まらない |
 | integer division by zero | `//` の除数が 0 |
 | integer modulo by zero | `%` の除数が 0 |
+| float division by zero | `float` の `/` の除数が 0.0（`-0.0` を含む。ADR-0019） |
+| cannot convert <x> to int | `int(x)` の `x` が NaN・無限大・`int` の範囲外（ADR-0019） |
 | assertion failed at ファイル:行:列 | `assert(cond)` の条件が偽 |
 | <msg> at ファイル:行:列 | `panic(msg)` を呼んだ |
 | index out of range: index i, length n | リストの添字が範囲外（負の添字は末尾から数える） |
@@ -117,4 +119,6 @@
 | `assert(cond)` | `None` | `cond` が偽なら実行時エラーで終了する。文として書くと、以降は `cond` が真の場合として絞り込む（`assert(x is not None)`） |
 | `len(x)` | `int` | 文字列の長さ（文字数 = Unicode のコードポイント数。Python の `len` と同じ）、リストの要素数、または辞書のキーの数 |
 | `range(n)` / `range(a, b)` | — | `for` の中だけで使える整数の範囲 |
-| `parse_scalar(s)` | `Unknown` | 10進の整数 → `int`、`true` / `false` → `bool`、`null` → `None`、それ以外 → `str` |
+| `parse_scalar(s)` | `Unknown` | 10進の整数 → `int`、JSON の数値の文法で小数点か指数を含むもの（`1.5`、`-0.5`、`1e3`。無限大になるものは除く）→ `float`、`true` / `false` → `bool`、`null` → `None`、それ以外 → `str`（ADR-0019） |
+| `float(n)` | `float` | `int` を `float` にする（2^53 を超える値は最も近い値に丸める。ADR-0019） |
+| `int(x)` | `int` | `float` を 0 の方向に切り捨てて `int` にする。NaN・無限大・範囲外は実行時エラー（ADR-0019） |
