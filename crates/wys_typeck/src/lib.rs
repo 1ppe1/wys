@@ -662,6 +662,9 @@ pub struct TypeckResult {
     pub types: Types,
     /// Generic 関数の呼び出しごとの型引数（`FuncSig::type_params` の順）。呼び出し元の型パラメータを含むことがある。
     pub call_type_args: HashMap<ExprId, Vec<Ty>>,
+    /// `case` の型パターン（`case Id():` など）が表す型。パターンの位置（開始の位置）で引く。
+    /// lowering は型の別名を知らないので、型検査で解決したものを使う（M4 T0）
+    pub pattern_types: HashMap<u32, Ty>,
 }
 
 impl TypeckResult {
@@ -926,6 +929,7 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
         generics: HashMap::new(),
         type_scope: Vec::new(),
         call_type_args: HashMap::new(),
+        pattern_types: HashMap::new(),
     };
     // `PyError` を最初に登録する（同じフィールドの構造的な型より先に名前を付ける）
     cx.types.py_error();
@@ -1018,6 +1022,7 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
             funcs,
             types: cx.types,
             call_type_args: cx.call_type_args,
+            pattern_types: cx.pattern_types,
         },
         cx.diags,
     )
@@ -1158,6 +1163,7 @@ struct Ctx {
     /// 型パラメータの名前のスコープ（内側が後ろ）。
     type_scope: Vec<HashMap<String, Ty>>,
     call_type_args: HashMap<ExprId, Vec<Ty>>,
+    pattern_types: HashMap<u32, Ty>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1406,7 +1412,7 @@ impl Ctx {
                 let span = self.type_defs[idx].name.span;
                 self.diags.push(
                     Diagnostic::error("E0504", format!("type `{name}` refers to itself"), span)
-                        .with_cause("recursive types, including recursion through `list`, are not supported in M3 (ADR-0009, ADR-0016)"),
+                        .with_cause("recursive types, including recursion through `list`, are not supported yet; they will be decided with JSON and schema validation in M5 (ADR-0016 point 23)"),
                 );
                 self.aliases
                     .insert(name.to_string(), (idx, AliasState::Done(Ty::Error)));
@@ -2286,6 +2292,14 @@ impl<'a> FnCk<'a> {
     }
 
     fn pattern_type(&mut self, kind: &PatternKind, span: Span) -> Ty {
+        let t = self.pattern_type_inner(kind, span);
+        if matches!(kind, PatternKind::Type(_)) {
+            self.cx.pattern_types.insert(span.start, t);
+        }
+        t
+    }
+
+    fn pattern_type_inner(&mut self, kind: &PatternKind, span: Span) -> Ty {
         match kind {
             PatternKind::None => Ty::None,
             PatternKind::Wildcard | PatternKind::Bind(..) => Ty::Error,

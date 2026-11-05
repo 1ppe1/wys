@@ -785,7 +785,15 @@ impl<'s, 't> FnLower<'s, 't> {
                             .expect("type checking found a Result member"),
                         other => other,
                     },
-                    other => panic!("unknown pattern type `{other}` passed type checking"),
+                    // 型の別名（`type Id = int`、ほかのモジュールの `ids.Id` を含む）は、型検査で解決した型
+                    other => *self
+                        .sh
+                        .tc
+                        .pattern_types
+                        .get(&arm.pattern.span.start)
+                        .unwrap_or_else(|| {
+                            panic!("unknown pattern type `{other}` passed type checking")
+                        }),
                 }),
                 PatternKind::Bind(..) => {
                     panic!("binding pattern on a non-Result passed type checking")
