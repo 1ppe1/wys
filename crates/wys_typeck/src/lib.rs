@@ -3108,7 +3108,8 @@ impl<'a> FnCk<'a> {
         Ty::Error
     }
 
-    /// `print` の引数は `int` / `bool` / `str` とその Union。
+    /// `print` の引数は `int` / `bool` / `str`、レコード、`list`、`dict`、`Result` と、それらの Union（ADR-0016 論点 15）。
+    /// トップレベルの `None` は E0301、構造の中の `Unknown` は E0601、型パラメータは E0201。
     /// 検査のために Union 型を登録しない（使われない Union が IR に入らないようにする）。
     fn require_printable(&mut self, t: Ty, span: Span) {
         if t == Ty::Error {
