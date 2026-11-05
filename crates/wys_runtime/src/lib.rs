@@ -170,7 +170,14 @@ pub extern "C" fn wys_runtime_finish() {
         eprintln!("runtime error: {live} object(s) were not freed (this is a compiler bug)");
         std::process::exit(LEAK_EXIT_CODE);
     }
+    let stacks = task::TASK_STACKS_LIVE.load(Ordering::Relaxed);
+    if stacks != 0 {
+        eprintln!("runtime error: {stacks} task stack(s) were not freed (this is a compiler bug)");
+        std::process::exit(LEAK_EXIT_CODE);
+    }
 }
+
+pub mod task;
 
 // ---------------------------------------------------------------- 別のランタイム（Python、M4 PoC3）向け
 
@@ -1079,7 +1086,7 @@ mod tests {
     use std::sync::Mutex;
 
     /// 生存オブジェクト数（プロセス全体で共有）を使うテストは、並列に動かすと互いの確保を数えてしまうので順番に実行する。
-    static LIVE_LOCK: Mutex<()> = Mutex::new(());
+    pub(crate) static LIVE_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn dicts_keep_insertion_order_and_grow() {
