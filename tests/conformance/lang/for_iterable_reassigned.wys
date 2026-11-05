@@ -1,0 +1,25 @@
+# `for` の本体で反復の対象の変数に代入しても、元の list / dict を反復し続ける（M4 T3: 代入しないときだけ複製を省く）
+# expect-stdout: ab
+# expect-stdout: cd
+# expect-stdout: 2
+# expect-stdout: k1
+# expect-stdout: k2
+# expect-stdout: 5
+def main() -> None:
+    xs = ["a" + "b", "c" + "d"]
+    for x in xs:
+        xs = ["z" + "z"]
+        print(x)
+    print(len(["a", "b"]))
+    d = {"k" + "1": 1, "k" + "2": 2}
+    for k in d:
+        d = {"z": 0}
+        print(k)
+    # 代入しない場合（複製を省く）。本体で要素を足しても正しく動く
+    ys = ["p" + "q"]
+    n = 0
+    for y in ys:
+        n = n + len(y)
+        if n < 3:
+            ys.append(y + "!")
+    print(n)
