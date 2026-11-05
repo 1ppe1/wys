@@ -172,6 +172,48 @@ pub extern "C" fn wys_runtime_finish() {
     }
 }
 
+// ---------------------------------------------------------------- 別のランタイム（Python、M4 PoC3）向け
+
+/// ほかのランタイムのクレート（`wys_runtime_python`）が、このランタイムのヒープオブジェクトを作り・読むための関数。
+/// C ABI ではなく Rust の関数として公開する（同じ staticlib にまとめてリンクするため）。
+pub mod embed {
+    use super::Header;
+
+    /// 中身が `bytes` のオブジェクト（参照カウント 1、生存数に数える）を作る。
+    pub fn new_object(bytes: &[u8]) -> *mut Header {
+        let p = super::new_object(bytes.len());
+        // SAFETY: new_object が bytes.len() バイトの中身を確保している。
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), super::data(p), bytes.len()) };
+        p
+    }
+
+    /// オブジェクトの中身。
+    ///
+    /// # Safety
+    /// `p` は生存しているオブジェクトでなければならない。
+    pub unsafe fn bytes<'a>(p: *const Header) -> &'a [u8] {
+        // SAFETY: 関数の安全条件どおり。
+        unsafe { super::bytes(p) }
+    }
+
+    /// 参照カウントを1減らし、0 になったら `true` を返す（解放は呼び出し側が中身を片付けてから行う）。
+    ///
+    /// # Safety
+    /// `p` は生存している、不死でないオブジェクトでなければならない。
+    pub unsafe fn release_last(p: *mut Header) -> bool {
+        // SAFETY: 関数の安全条件どおり。
+        unsafe {
+            (*p).rc -= 1;
+            (*p).rc == 0
+        }
+    }
+
+    /// 実行時エラーで終了する（終了コード 101）。
+    pub fn runtime_error(msg: &str) -> ! {
+        super::runtime_error(msg)
+    }
+}
+
 // ---------------------------------------------------------------- strings (M3 T2b)
 
 /// 連結した新しい文字列オブジェクト（参照カウント 1）を返す。

@@ -20,6 +20,14 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Show C compiler
         run: clang --version
+      # M4 PoC3: CPython の埋め込み。Python 3.14（GIL あり）に固定し、見つからなければ失敗させる
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: "3.14"
       - uses: Swatinem/rust-cache@v2
       - name: Run CI checks
         run: ./scripts/ci.sh
+        env:
+          WYS_PYTHON: ${{ steps.python.outputs.python-path }}
+          WYS_REQUIRE_PYTHON: "1"

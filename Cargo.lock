@@ -1032,6 +1032,13 @@ name = "wys_runtime"
 version = "0.0.0"
 
 [[package]]
+name = "wys_runtime_python"
+version = "0.0.0"
+dependencies = [
+ "wys_runtime",
+]
+
+[[package]]
 name = "wys_span"
 version = "0.0.0"
 

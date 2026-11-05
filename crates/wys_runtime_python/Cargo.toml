@@ -1,0 +1,20 @@
+[package]
+name = "wys_runtime_python"
+description = "Python を埋め込むランタイム（M4 PoC3）。wys_runtime を含む staticlib"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+# CPython の記号は実行ファイルをリンクするときに `libpython` から解決する。単体テストのバイナリは作らない
+test = false
+doctest = false
+
+[dependencies]
+wys_runtime = { path = "../wys_runtime" }
