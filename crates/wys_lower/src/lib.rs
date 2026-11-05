@@ -1531,10 +1531,17 @@ impl<'s, 't> FnLower<'s, 't> {
                 panic!("for over a non-list passed type checking")
             };
             elem_ty = self.sh.types.list_elem(l);
-            let v = self.expr(iter).expect("lists have values");
-            let lt = self.temp_ty(v);
-            let ls = self.hidden_local(lt);
-            self.emit(Inst::Store { dst: ls, src: v });
+            let ls = match self.iterated_local(iter, body) {
+                // ローカル変数をそのまま反復する（複製すると retain と release が1組増える。M4 T3）
+                Some(slot) => slot,
+                None => {
+                    let v = self.expr(iter).expect("lists have values");
+                    let lt = self.temp_ty(v);
+                    let ls = self.hidden_local(lt);
+                    self.emit(Inst::Store { dst: ls, src: v });
+                    ls
+                }
+            };
             let z = self.konst(Const::Int(0), Ty::Int);
             self.emit(Inst::Store { dst: pos, src: z });
             list_slot = Some(ls);
@@ -1646,17 +1653,26 @@ impl<'s, 't> FnLower<'s, 't> {
     /// `d.get(k)`: キーがあれば値、なければ `None` の `V | None`（ADR-0015）。
     fn dict_get(&mut self, recv: &str, key: &ast::Expr, e: &ast::Expr) -> TempId {
         let (u, out) = self.result_union(e);
-        let (dv, dt, _) = self.receiver(recv, |t| matches!(t, TTy::Dict(_)));
+        let (dv, dt, direct) = self.receiver(recv, |t| matches!(t, TTy::Dict(_)));
         let TTy::Dict(d) = dt else {
             unreachable!("receiver returns the requested type")
         };
         let (kt, vt) = self.sh.types.dict_args(d);
         let dty = self.temp_ty(dv);
-        let d_slot = self.hidden_local(dty);
-        self.emit(Inst::Store {
-            dst: d_slot,
-            src: dv,
-        });
+        // 受け手が素のローカル変数なら、そのスロットを後のブロックで読み直す（複製すると、反復ごとに retain と
+        // release が1組増える。キーの評価の間にローカル変数は変わらない: 代入の式はなく、呼ばれた関数からは届かない。
+        // M4 T3 の Move 最適化）。絞り込んだ Union の中身は一時値なので、これまでどおり隠しスロットに置く
+        let d_slot = match direct {
+            Some(slot) => slot,
+            None => {
+                let d_slot = self.hidden_local(dty);
+                self.emit(Inst::Store {
+                    dst: d_slot,
+                    src: dv,
+                });
+                d_slot
+            }
+        };
         let k = self.expr(key);
         let it = self.ty(key);
         let k = self.coerce(k, it, kt).expect("keys have values");
@@ -1719,6 +1735,36 @@ impl<'s, 't> FnLower<'s, 't> {
     }
 
     /// `for k in d:` キーを挿入順に反復する。開始時のキーの数を覚えておき、変わればランタイムがパニックにする（ADR-0015）。
+    /// `for x in xs:` の `xs` が、型を絞り込まずに使うローカル変数で、ループの本体（入れ子を含む）で代入しないなら、
+    /// そのスロット（反復の対象を複製しなくてよい）。本体で代入するなら、Python と同じく元のコンテナを反復し続ける
+    /// ために複製する。呼ばれた関数はローカル変数に届かないので、本体の代入文だけを調べればよい。
+    fn iterated_local(&mut self, iter: &ast::Expr, body: &[ast::Stmt]) -> Option<LocalId> {
+        fn assigns(stmts: &[ast::Stmt], name: &str) -> bool {
+            stmts.iter().any(|s| match &s.kind {
+                StmtKind::Assign { target, .. } => target.name == name,
+                StmtKind::For { var, body, .. } => var.name == name || assigns(body, name),
+                StmtKind::If {
+                    branches,
+                    else_body,
+                } => {
+                    branches.iter().any(|(_, b)| assigns(b, name))
+                        || else_body.as_ref().is_some_and(|b| assigns(b, name))
+                }
+                StmtKind::While { body, .. } => assigns(body, name),
+                StmtKind::Match { arms, .. } => arms.iter().any(|a| {
+                    matches!(&a.pattern.kind, PatternKind::Bind(_, Some(v)) if v.name == name)
+                        || assigns(&a.body, name)
+                }),
+                _ => false,
+            })
+        }
+        let name = iter.as_name()?;
+        let slot = *self.local_ids.get(name)?;
+        // 絞り込んだ値（`list[int] | None` の中身など）は、スロットの型と違うので複製する
+        let it = self.ty(iter);
+        (self.local_decl.get(name) == Some(&it) && !assigns(body, name)).then_some(slot)
+    }
+
     fn dict_for(&mut self, var: &ast::Ident, iter: &ast::Expr, body: &[ast::Stmt]) {
         let var_slot = self.local_ids[&var.name];
         let var_decl = self.local_decl[&var.name];
@@ -1726,13 +1772,20 @@ impl<'s, 't> FnLower<'s, 't> {
             unreachable!("checked by the caller")
         };
         let (kt, _) = self.sh.types.dict_args(d);
-        let dv = self.expr(iter).expect("dicts have values");
-        let dty = self.temp_ty(dv);
-        let d_slot = self.hidden_local(dty);
-        self.emit(Inst::Store {
-            dst: d_slot,
-            src: dv,
-        });
+        let dty = Ty::Dict(self.sh.ir_dict(d));
+        let d_slot = match self.iterated_local(iter, body) {
+            // ローカル変数をそのまま反復する（M4 T3）
+            Some(slot) => slot,
+            None => {
+                let dv = self.expr(iter).expect("dicts have values");
+                let d_slot = self.hidden_local(dty);
+                self.emit(Inst::Store {
+                    dst: d_slot,
+                    src: dv,
+                });
+                d_slot
+            }
+        };
         let (pos, len0, cur) = (
             self.hidden_local(Ty::Int),
             self.hidden_local(Ty::Int),
