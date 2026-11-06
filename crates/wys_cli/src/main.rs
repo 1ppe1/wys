@@ -5,6 +5,8 @@
 //! 終了コード: 0 = 成功、1 = ソースに診断エラーがある、2 = 使い方・入出力・ツールのエラー。
 //! `run` はプログラム自身の終了コードを返す。
 
+mod llm_proxy;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use wys_driver::{BuildError, BuildOptions, Frontend};
@@ -20,6 +22,8 @@ usage:
   wys dump-llvm <file>                    print the generated LLVM IR
   wys explain <file | CODE>               explain a program (types, narrowing, ARC operations) or
                                           an error code such as E0201, as JSON
+  wys llm-proxy                           (experimental) serve LLM requests as JSON lines on stdin/stdout
+                                          using the Anthropic API (ANTHROPIC_API_KEY)
 ";
 
 fn main() -> ExitCode {
@@ -44,6 +48,10 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
         eprint!("{USAGE}");
         return Ok(ExitCode::from(2));
     };
+    if cmd == "llm-proxy" {
+        llm_proxy::run()?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let mut format_arg: Option<Format> = None;
     let mut check_only = false;
     let mut release = false;
