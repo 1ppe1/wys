@@ -114,8 +114,12 @@ fn ac004_hello_world_builds_a_standalone_executable() {
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "Hello, world!\n");
     assert_eq!(run.status.code(), Some(0));
 
-    // 外部インタプリタやランタイムの共有ライブラリに依存しない（OS 標準のライブラリだけ）
-    for lib in dynamic_dependencies(&exe) {
+    assert_only_system_libraries(&exe);
+}
+
+/// 外部インタプリタやランタイムの共有ライブラリに依存しない（OS 標準のライブラリだけ。AC-004）
+fn assert_only_system_libraries(exe: &std::path::Path) {
+    for lib in dynamic_dependencies(exe) {
         let system = if cfg!(target_os = "macos") {
             lib.starts_with("/usr/lib/") || lib.starts_with("/System/")
         } else {
@@ -1611,4 +1615,46 @@ async def main() -> None uses io, llm:
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(reqs.len(), 1);
+}
+
+#[test]
+fn agent_demo_runs_with_the_mock_provider() {
+    let demo = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/agent_demo.wys");
+    let trail =
+        "0 llm_called\n1 tool_called char_count\n2 llm_called\n3 approval_requested save_note\n";
+    let out = cli_env(&["run", demo], &[("WYS_APPROVAL", "deny")]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        stdout,
+        format!("notes: 25 chars, saved=false\n{trail}4 approval_denied save_note\n5 llm_called\n")
+    );
+    let out = cli_env(&["run", demo], &[("WYS_APPROVAL", "allow")]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        stdout,
+        format!(
+            "saved notes\nnotes: 25 chars, saved=false\n{trail}4 approval_granted save_note\n5 tool_called save_note\n6 llm_called\n"
+        )
+    );
+    // LLM とツールを使うプログラムも、HTTPS は proxy の側にあるので OS 標準のライブラリだけに依存する（ADR-0023 論点 1）
+    let exe = scratch("agent_demo", "").with_extension("bin");
+    let out = cli(&["build", demo, "-o", exe.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_only_system_libraries(&exe);
 }

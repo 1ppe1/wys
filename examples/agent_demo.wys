@@ -1,0 +1,33 @@
+# AI SDK の核（M5、ADR-0022 / ADR-0023）: 型付きの出力、ツールの実行、承認、予算、監査
+# 既定のプロバイダはランタイム内のモックで、llm_mock_push で積んだ応答を順に返す。
+# WYS_LLM_PROVIDER=anthropic にすると wys llm-proxy を通して実際の API を呼ぶ（モックの応答は使われない）
+type Summary = {title: str, chars: int, saved: bool}
+
+@tool(description="Count the characters in a text.")
+def char_count(text: str) -> int uses pure:
+    return len(text)
+
+@tool(description="Save a note to disk.", approval="required")
+def save_note(title: str) -> None uses io:
+    print("saved " + title)
+
+@agent(tools=[char_count, save_note], capabilities=["io", "llm"], max_llm_calls=4, max_tool_calls=4, timeout_ms=60000)
+async def summarizer(text: str) -> Result[Summary, LlmError] uses io, llm:
+    req = LlmRequest(model="", system="Summarize the text. Use the tools.", messages=[Message(role="user", content=text)], max_tokens=1024)
+    return await llm_generate[Summary](req)
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="char_count", args_json="{\"text\": \"typed output from a model\"}")], input_tokens=20, output_tokens=5, latency_ms=0))
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="save_note", args_json="{\"title\": \"notes\"}")], input_tokens=30, output_tokens=5, latency_ms=0))
+    llm_mock_push(MockResponse(text="{\"title\": \"notes\", \"chars\": 25, \"saved\": false}", tool_calls=[], input_tokens=40, output_tokens=10, latency_ms=0))
+    match await summarizer("typed output from a model"):
+        case Ok(s):
+            print(s.title + ": " + to_json(s.chars) + " chars, saved=" + to_json(s.saved))
+        case Err(e):
+            print("error " + e.kind + ": " + e.message)
+    for ev in audit_events():
+        match ev.tool:
+            case str():
+                print(to_json(ev.seq) + " " + ev.kind + " " + ev.tool)
+            case None:
+                print(to_json(ev.seq) + " " + ev.kind)

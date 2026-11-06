@@ -55,3 +55,5 @@ scripts/llm-smoke.sh           # 1 往復（費用がかかる。モデルは WY
 （追記 2026-11-06）試作の C のプログラムとそのテスト（`ai_poc.c` / `ai_proxy_poc.c` / `ai_poc.rs`）は、M5 T8 で ABI を ADR-0023 の形に書き直したときに削除し、検査は `tests/conformance/ai/` に移した。
 
 （追記 2026-11-06）M5 T11 で、実プロバイダをランタイムから起動する形（`WYS_LLM_PROVIDER=anthropic`）につないだ。`scripts/llm-smoke.sh` は本言語のプログラムを使う形に書き直した（手順は上と同じ）。新しい形での実 API との往復の結果は、ユーザーが手元で実行した後に追記する。
+
+（追記 2026-11-06）M5 T12 で、`validate` の時間を `benches/programs/validate_json.wys` で測った（Apple M5 Pro、macOS 25.4、コミット 63b8cba に T12 の変更を足したもの。`wys build --release`、5 回の最速値）。950,745 バイトの JSON（12,316 要素の配列、各要素が 5 フィールドのレコード `Row`）を 10 回 `parse_json` して `validate[list[Row]]` するプログラムは全体で 880.8 ms、反復を 0 回にした版（文字列の組み立てだけ）は 752.4 ms で、差から `parse_json` + `validate` は 1 回あたり約 12.8 ms。文字列の組み立ては `+` を 1 要素ごとに繰り返すので、全体の大半を占める。最大常駐メモリは 47,280 KiB。
