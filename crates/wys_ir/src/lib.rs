@@ -88,6 +88,10 @@ pub struct RecordId(pub u32);
 pub struct ToolAttr {
     pub description: String,
     pub approval: bool,
+    /// トランポリン（`__wys_tool_entry_<名前>`、lowering が合成する。ADR-0022 論点 15）
+    pub entry: Option<FuncId>,
+    /// 引数を 1 つのレコードとみなした型（JSON Schema と検証に使う）
+    pub arg_record: Option<RecordId>,
 }
 
 /// `@agent` の属性（ADR-0022 論点 14）。`tools` は関数の名前（IR の関数名）。予算の `0` は上限なし。
@@ -426,6 +430,13 @@ pub enum Builtin {
     LlmMockPush,
     /// `audit_events` の本体: 監査イベントの JSON の配列
     AuditJson,
+    /// `@agent` の本体に入る・出る（関数の `agent` の属性を、バックエンドが定数にして渡す。ADR-0023 論点 9）
+    AgentEnter,
+    AgentExit,
+    /// トランポリン: ツールが `Err` を返した（結果は失敗として LLM に返す）
+    ToolErr,
+    /// トランポリン: 引数が検証を通らなかった（引数は `bool`: 偽なら JSON として壊れていた、真なら型に合わなかった）
+    ToolArgsRejected,
 }
 
 impl Builtin {
@@ -492,6 +503,10 @@ impl Builtin {
             Builtin::LlmSchemaRejected => "llm_schema_rejected",
             Builtin::LlmMockPush => "llm_mock_push",
             Builtin::AuditJson => "audit_json",
+            Builtin::AgentEnter => "agent_enter",
+            Builtin::AgentExit => "agent_exit",
+            Builtin::ToolErr => "tool_err",
+            Builtin::ToolArgsRejected => "tool_args_rejected",
         }
     }
 
@@ -594,6 +609,10 @@ impl Builtin {
             | Builtin::AuditJson => Some(Ty::Str),
             Builtin::LlmFailed => Some(Ty::Bool),
             Builtin::LlmMockPush => None,
+            Builtin::AgentEnter
+            | Builtin::AgentExit
+            | Builtin::ToolErr
+            | Builtin::ToolArgsRejected => None,
         }
     }
 
@@ -653,6 +672,8 @@ impl Builtin {
             | Builtin::LlmJsonRejected
             | Builtin::LlmSchemaRejected
             | Builtin::AuditJson => &[],
+            Builtin::AgentEnter | Builtin::AgentExit | Builtin::ToolErr => &[],
+            Builtin::ToolArgsRejected => &[Ty::Bool],
         }
     }
 }

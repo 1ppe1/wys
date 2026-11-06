@@ -1,0 +1,30 @@
+# 一覧にないツールの要求は、本体を動かさずに拒否し、監査イベントを残す（AC-007、ADR-0023 論点 10）
+# expect-stdout: denied
+# expect-stdout: tool_denied secret
+@tool(description="Add.")
+def add(a: int, b: int) -> int uses pure:
+    return a + b
+
+@tool(description="Not for this agent.")
+def secret() -> None uses io:
+    print("ran secret")
+
+@agent(tools=[add], capabilities=["io", "llm"])
+async def planner() -> Result[str, LlmError] uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="secret", args_json="{}")], input_tokens=1, output_tokens=1, latency_ms=0))
+    match await planner():
+        case Ok(t):
+            print(t)
+        case Err(e):
+            print(e.kind)
+    for ev in audit_events():
+        match ev.tool:
+            case str():
+                if ev.kind != "llm_called":
+                    print(ev.kind + " " + ev.tool)
+            case None:
+                pass

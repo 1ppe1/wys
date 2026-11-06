@@ -1,0 +1,11 @@
+# 配備時に python の Capability を外すと、py_import は入口で拒否され Err(PyError) になる（ADR-0023 論点 11・17）
+# expect-env: WYS_CAPABILITIES=io
+# expect-stdout: CapabilityError
+# expect-stdout: capability python is not granted
+def main() -> None uses io, python:
+    match py_import("math"):
+        case Ok(_m):
+            print("imported")
+        case Err(e):
+            print(e.kind)
+            print(e.message)

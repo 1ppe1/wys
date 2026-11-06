@@ -211,6 +211,11 @@ declare ptr @wys_llm_err_message()
 declare ptr @wys_llm_json_rejected()
 declare ptr @wys_llm_schema_rejected()
 declare void @wys_llm_mock_push(ptr)
+declare void @wys_tools_register(ptr, i64)
+declare void @wys_agent_enter(ptr)
+declare void @wys_agent_exit()
+declare void @wys_tool_err()
+declare void @wys_tool_args_rejected(i1 zeroext)
 declare ptr @wys_audit_json()
 declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
@@ -444,12 +449,113 @@ fn emit_module(p: &Program, sanitize_address: bool) -> String {
     } else {
         format!("  call void {}()\n", fn_symbol(&entry.name))
     };
+    let register = emit_ai_tables(&mut out, p);
     let _ = write!(
         out,
-        "\ndefine i32 @main(i32 %argc, ptr %argv) {{\n  call void @wys_runtime_init(i32 %argc, ptr %argv)\n{run}{}  call void @wys_runtime_finish()\n  ret i32 0\n}}\n",
+        "\ndefine i32 @main(i32 %argc, ptr %argv) {{\n  call void @wys_runtime_init(i32 %argc, ptr %argv)\n{register}{run}{}  call void @wys_runtime_finish()\n  ret i32 0\n}}\n",
         finish
     );
     out
+}
+
+/// Effect のビット（ランタイムの `wys_runtime::ai::CAP_*` と同じ。ADR-0023 論点 7）
+fn effect_bit(e: Effect) -> u64 {
+    match e {
+        Effect::Io => 1,
+        Effect::Exit => 2,
+        Effect::Python => 4,
+        Effect::Llm => 8,
+    }
+}
+
+/// NUL 終端の C 文字列の定数。
+fn c_string(out: &mut String, name: &str, text: &str) {
+    let mut bytes = escape_bytes(text);
+    bytes.push_str("\\00");
+    let _ = writeln!(
+        out,
+        "{name} = private unnamed_addr constant [{} x i8] c\"{bytes}\"",
+        text.len() + 1
+    );
+}
+
+/// ツール表（`@wys_tools`、ランタイムの `ToolDesc` の配列）と、`@agent` ごとの設定（`AgentCfg`）を書く
+/// （ADR-0022 論点 15、ADR-0023 論点 9）。ツール表を登録する `@main` の命令を返す（ツールがなければ空）。
+fn emit_ai_tables(out: &mut String, p: &Program) -> String {
+    let tools: Vec<usize> = p
+        .funcs
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.tool.as_ref().is_some_and(|t| t.entry.is_some()))
+        .map(|(i, _)| i)
+        .collect();
+    let mut rows = Vec::new();
+    for (k, &i) in tools.iter().enumerate() {
+        let f = &p.funcs[i];
+        let t = f.tool.as_ref().expect("filtered");
+        let base = f.name.rsplit('.').next().unwrap_or_default();
+        c_string(out, &format!("@.tool.name.{k}"), base);
+        c_string(out, &format!("@.tool.desc.{k}"), &t.description);
+        let schema = t
+            .arg_record
+            .map(|r| json_schema(p, Ty::Record(r)))
+            .unwrap_or_else(|| "{}".into());
+        c_string(out, &format!("@.tool.schema.{k}"), &schema);
+        let effects: u64 = f.effects.iter().flatten().map(|e| effect_bit(*e)).sum();
+        let entry = &p.funcs[t.entry.expect("filtered").0 as usize];
+        rows.push(format!(
+            "{{ ptr, ptr, ptr, i64, i64, ptr }} {{ ptr @.tool.name.{k}, ptr @.tool.desc.{k}, ptr @.tool.schema.{k}, i64 {effects}, i64 {}, ptr {} }}",
+            t.approval as i64,
+            fn_symbol(&entry.name)
+        ));
+    }
+    if !rows.is_empty() {
+        let _ = writeln!(
+            out,
+            "@wys_tools = private constant [{} x {{ ptr, ptr, ptr, i64, i64, ptr }}] [{}]",
+            rows.len(),
+            rows.join(", ")
+        );
+    }
+    for (i, f) in p.funcs.iter().enumerate() {
+        let Some(a) = &f.agent else { continue };
+        c_string(out, &format!("@.agent.name.{i}"), &f.name);
+        let idx: Vec<String> = a
+            .tools
+            .iter()
+            .filter_map(|n| tools.iter().position(|&ti| p.funcs[ti].name == *n))
+            .map(|k| format!("i64 {k}"))
+            .collect();
+        let tools_ptr = if idx.is_empty() {
+            "null".to_string()
+        } else {
+            let _ = writeln!(
+                out,
+                "@.agent.tools.{i} = private constant [{} x i64] [{}]",
+                idx.len(),
+                idx.join(", ")
+            );
+            format!("@.agent.tools.{i}")
+        };
+        let caps: u64 = a.capabilities.iter().map(|e| effect_bit(*e)).sum();
+        let _ = writeln!(
+            out,
+            "@.agent.{i} = private constant {{ ptr, ptr, i64, i64, i64, i64, i64, i64 }} {{ ptr @.agent.name.{i}, ptr {tools_ptr}, i64 {}, i64 {caps}, i64 {}, i64 {}, i64 {}, i64 {} }}",
+            idx.len(),
+            a.max_llm_calls,
+            a.max_tool_calls,
+            a.max_tokens,
+            a.timeout_ms
+        );
+    }
+    if rows.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "  call void @wys_tools_register(ptr @wys_tools, i64 {})\n",
+            rows.len()
+        )
+    }
 }
 
 /// Python のランタイム（`wys_runtime_python`）の関数の宣言。
@@ -1982,6 +2088,27 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                             "  {d} = call ptr @wys_llm_generate(ptr {}, ptr {})",
                             t(args[0]),
                             t(args[1])
+                        );
+                    }
+                    Callee::Builtin(Builtin::AgentEnter) => {
+                        let i = p
+                            .funcs
+                            .iter()
+                            .position(|g| std::ptr::eq(g, f))
+                            .expect("the function is in the program");
+                        let _ = writeln!(out, "  call void @wys_agent_enter(ptr @.agent.{i})");
+                    }
+                    Callee::Builtin(Builtin::AgentExit) => {
+                        out.push_str("  call void @wys_agent_exit()\n");
+                    }
+                    Callee::Builtin(Builtin::ToolErr) => {
+                        out.push_str("  call void @wys_tool_err()\n");
+                    }
+                    Callee::Builtin(Builtin::ToolArgsRejected) => {
+                        let _ = writeln!(
+                            out,
+                            "  call void @wys_tool_args_rejected(i1 zeroext {})",
+                            t(args[0])
                         );
                     }
                     Callee::Builtin(Builtin::LlmMockPush) => {

@@ -326,6 +326,11 @@ pub extern "C" fn wys_py_err_traceback() -> *mut Header {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_import(name: *const Header) -> *mut Header {
     wys_runtime::task::on_main_stack(|| {
+        // 入口の再検査（ADR-0023 論点 11）: `python` はサンドボックスではないので、配備時に外せる
+        if !wys_runtime::ai::capability_granted(wys_runtime::ai::CAP_PYTHON, "py_import") {
+            fail("CapabilityError", "capability python is not granted");
+            return std::ptr::null_mut();
+        }
         ensure_init();
         let Some(n) = c_name(name) else {
             return std::ptr::null_mut();

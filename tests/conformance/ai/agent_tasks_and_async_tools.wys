@@ -1,0 +1,43 @@
+# agent コンテキストはタスクごと（ADR-0023 の訂正）。async のツールは sleep_ms で切り替わっても、それぞれの agent で数える
+# expect-stdout: ok a
+# expect-stdout: ok b
+# expect-stdout: tool_called a wait
+# expect-stdout: tool_called b wait
+@tool(description="Waits.")
+async def wait() -> None uses pure:
+    await sleep_ms(10)
+
+@agent(tools=[wait], capabilities=["llm"])
+async def a() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="a")], max_tokens=0)
+    return await llm_generate[str](req)
+
+@agent(tools=[wait], capabilities=["llm"])
+async def b() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="b")], max_tokens=0)
+    return await llm_generate[str](req)
+
+async def main() -> None uses io, llm:
+    call = MockToolCall(name="wait", args_json="{}")
+    llm_mock_push(MockResponse(text="", tool_calls=[call], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="", tool_calls=[call], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="a", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="b", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    ta = spawn(a())
+    tb = spawn(b())
+    match await ta:
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind)
+    match await tb:
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind)
+    for ev in audit_events():
+        match ev.tool:
+            case str():
+                print(ev.kind + " " + ev.agent + " " + ev.tool)
+            case None:
+                pass

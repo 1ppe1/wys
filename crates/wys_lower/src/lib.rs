@@ -304,6 +304,22 @@ pub fn lower_with(
         .into_iter()
         .map(|f| f.expect("every instance is lowered"))
         .collect();
+    // `@tool` の関数ごとにトランポリンを合成する（ADR-0022 論点 15）。ツールは Generic でない（E1403）
+    for (i, sig) in tc.sigs.iter().enumerate() {
+        if sig.tool.is_none() {
+            continue;
+        }
+        let Some(&tool_id) = sh.instances.get(&(i, Vec::new())) else {
+            continue;
+        };
+        let entry = FuncId(funcs.len() as u32);
+        let (f, arg_record) = tool_trampoline(&mut sh, &module.funcs[i], i, tool_id);
+        funcs.push(f);
+        if let Some(t) = funcs[tool_id.0 as usize].tool.as_mut() {
+            t.entry = Some(entry);
+            t.arg_record = Some(arg_record);
+        }
+    }
     let entry = if opts.tests.is_empty() {
         sh.instances[&(sh.func_index["main"], Vec::new())]
     } else {
@@ -332,6 +348,222 @@ pub fn lower_with(
 }
 
 /// `wys test` のエントリ: 環境変数 `WYS_TEST_INDEX` の番号のテスト関数を1つだけ呼ぶ。
+/// ツールのトランポリン `__wys_tool_entry_<名前>(args: str) -> str`（ADR-0022 論点 15）: JSON の引数を
+/// `parse_json` → `validate[引数のレコード]` で型付きにしてツールを呼び、戻り値を `to_json` で返す。
+/// 引数が検証を通らなければ `tool_args_rejected` を呼んで空の文字列を返す（ランタイムが `Err(schema)` にする）。
+/// 戻り値が `Result` の `Err` なら `tool_err` を呼ぶ（LLM には失敗として返す）。ツールが `async def` なら
+/// トランポリンも `async`（ランタイムはタスクのスタックの上で呼ぶので、ツールの中で中断してよい）
+fn tool_trampoline(
+    sh: &mut Shared<'_>,
+    f: &ast::FuncDef,
+    index: usize,
+    tool: FuncId,
+) -> (Function, RecordId) {
+    let sig = sh.tc.sigs[index].clone();
+    let fields: Vec<(String, TTy)> = f
+        .params
+        .iter()
+        .zip(&sig.params)
+        .map(|(p, t)| (p.name.name.clone(), *t))
+        .collect();
+    let TTy::Record(rid) = sh.types.record(fields, None) else {
+        unreachable!("records are records")
+    };
+    let arg_record = sh.ir_record(rid);
+    let mut l = FnLower {
+        sh,
+        subst: Subst::new(),
+        ret: TTy::Str,
+        locals: vec![Ty::Str],
+        local_ids: HashMap::new(),
+        local_decl: HashMap::new(),
+        temps: Vec::new(),
+        blocks: vec![Bb {
+            insts: Vec::new(),
+            term: None,
+        }],
+        cur: 0,
+        agent: false,
+    };
+    let reject = |l: &mut FnLower, schema: bool| {
+        let c = l.konst(Const::Bool(schema), Ty::Bool);
+        l.emit(Inst::Call {
+            dst: None,
+            callee: Callee::Builtin(Builtin::ToolArgsRejected),
+            args: vec![c],
+        });
+        let e = l.string_const("");
+        l.terminate(Terminator::Return(Some(e)));
+    };
+    // 引数の JSON → Unknown
+    let a = l.temp(Ty::Str);
+    l.emit(Inst::Load {
+        dst: a,
+        src: LocalId(0),
+    });
+    let u = l.temp(Ty::Unknown);
+    l.emit(Inst::Call {
+        dst: Some(u),
+        callee: Callee::Builtin(Builtin::JsonParse),
+        args: vec![a],
+    });
+    let u_slot = l.hidden_local(Ty::Unknown);
+    l.emit(Inst::Store {
+        dst: u_slot,
+        src: u,
+    });
+    let jf = l.builtin(Builtin::JsonFailed, vec![]);
+    let (parsed, bad_json) = (l.new_block(), l.new_block());
+    l.terminate(Terminator::Branch {
+        cond: jf,
+        then_block: bad_json,
+        else_block: parsed,
+    });
+    l.switch_to(bad_json);
+    reject(&mut l, false);
+    // Unknown → 引数のレコード
+    l.switch_to(parsed);
+    let lu = l.temp(Ty::Unknown);
+    l.emit(Inst::Load {
+        dst: lu,
+        src: u_slot,
+    });
+    let rv = l.temp(Ty::Record(arg_record));
+    l.emit(Inst::Call {
+        dst: Some(rv),
+        callee: Callee::Builtin(Builtin::Validate),
+        args: vec![lu],
+    });
+    let r_slot = l.hidden_local(Ty::Record(arg_record));
+    l.emit(Inst::Store {
+        dst: r_slot,
+        src: rv,
+    });
+    let sf = l.builtin(Builtin::SchemaFailed, vec![]);
+    let (valid, bad_args) = (l.new_block(), l.new_block());
+    l.terminate(Terminator::Branch {
+        cond: sf,
+        then_block: bad_args,
+        else_block: valid,
+    });
+    l.switch_to(bad_args);
+    reject(&mut l, true);
+    // ツールを呼ぶ（引数はレコードのフィールド。フィールドは名前の順に並ぶので、名前で引く）
+    l.switch_to(valid);
+    let rec = l.temp(Ty::Record(arg_record));
+    l.emit(Inst::Load {
+        dst: rec,
+        src: r_slot,
+    });
+    let mut args = Vec::new();
+    for (p, &pt) in f.params.iter().zip(&sig.params) {
+        let (k, _) =
+            l.sh.types
+                .record_def(rid)
+                .field(&p.name.name)
+                .expect("the record has every parameter");
+        let ir = l.sh.ir_ty(pt).expect("tool arguments have values");
+        let d = l.temp(ir);
+        l.emit(Inst::Field {
+            dst: d,
+            src: rec,
+            index: k as u32,
+        });
+        args.push(d);
+    }
+    let ret_ir = l.sh.ir_ty(sig.ret);
+    let rv = ret_ir.map(|t| l.temp(t));
+    l.emit(Inst::Call {
+        dst: rv,
+        callee: Callee::Func(tool),
+        args,
+    });
+    match (sig.ret, rv) {
+        (TTy::Result(r), Some(v)) => {
+            let (ok_t, err_t) = l.sh.types.result_args(r);
+            let res_slot = l.hidden_local(ret_ir.expect("results have values"));
+            l.emit(Inst::Store {
+                dst: res_slot,
+                src: v,
+            });
+            let lv = l.temp(ret_ir.expect("results have values"));
+            l.emit(Inst::Load {
+                dst: lv,
+                src: res_slot,
+            });
+            let is_err = l.temp(Ty::Bool);
+            l.emit(Inst::UnionIs {
+                dst: is_err,
+                src: lv,
+                variant: 1,
+            });
+            let (ok_b, err_b) = (l.new_block(), l.new_block());
+            l.terminate(Terminator::Branch {
+                cond: is_err,
+                then_block: err_b,
+                else_block: ok_b,
+            });
+            for (blk, t, variant, err) in [(ok_b, ok_t, 0, false), (err_b, err_t, 1, true)] {
+                l.switch_to(blk);
+                if err {
+                    l.emit(Inst::Call {
+                        dst: None,
+                        callee: Callee::Builtin(Builtin::ToolErr),
+                        args: vec![],
+                    });
+                }
+                let j = match l.sh.ir_ty(t) {
+                    None => l.string_const("null"),
+                    Some(pt) => {
+                        let lv = l.temp(ret_ir.expect("results have values"));
+                        l.emit(Inst::Load {
+                            dst: lv,
+                            src: res_slot,
+                        });
+                        let p = l.temp(pt);
+                        l.emit(Inst::UnionPayload {
+                            dst: p,
+                            src: lv,
+                            variant,
+                        });
+                        l.builtin(Builtin::ToJson, vec![p])
+                    }
+                };
+                l.terminate(Terminator::Return(Some(j)));
+            }
+        }
+        (_, Some(v)) => {
+            let j = l.builtin(Builtin::ToJson, vec![v]);
+            l.terminate(Terminator::Return(Some(j)));
+        }
+        (_, None) => {
+            let j = l.string_const("null");
+            l.terminate(Terminator::Return(Some(j)));
+        }
+    }
+    let func = Function {
+        name: format!("__wys_tool_entry_{}", f.name.name.replace('.', "_")),
+        param_count: 1,
+        locals: l.locals,
+        ret: Some(Ty::Str),
+        temps: l.temps,
+        blocks: l
+            .blocks
+            .into_iter()
+            .map(|b| Block {
+                insts: b.insts,
+                term: b.term.unwrap_or(Terminator::Unreachable),
+            })
+            .collect(),
+        elided_rc: Vec::new(),
+        is_async: sig.is_async,
+        effects: None,
+        tool: None,
+        agent: None,
+    };
+    (func, arg_record)
+}
+
 fn test_dispatcher(tests: &[FuncId], is_async: bool) -> Function {
     let mut temps = vec![Ty::Int];
     let mut blocks = vec![Block {
@@ -424,9 +656,23 @@ struct FnLower<'s, 't> {
     temps: Vec<Ty>,
     blocks: Vec<Bb>,
     cur: usize,
+    /// `@agent` の関数（入口で agent コンテキストに入り、すべての `return` の前で出る。ADR-0022 論点 14）
+    agent: bool,
 }
 
 impl<'s, 't> FnLower<'s, 't> {
+    /// 関数から戻る。`@agent` の関数なら、先に agent コンテキストを出る
+    fn return_(&mut self, v: Option<TempId>) {
+        if self.agent {
+            self.emit(Inst::Call {
+                dst: None,
+                callee: Callee::Builtin(Builtin::AgentExit),
+                args: vec![],
+            });
+        }
+        self.terminate(Terminator::Return(v));
+    }
+
     fn run(
         f: &ast::FuncDef,
         index: usize,
@@ -463,7 +709,15 @@ impl<'s, 't> FnLower<'s, 't> {
                 term: None,
             }],
             cur: 0,
+            agent: sig.agent.is_some(),
         };
+        if l.agent {
+            l.emit(Inst::Call {
+                dst: None,
+                callee: Callee::Builtin(Builtin::AgentEnter),
+                args: vec![],
+            });
+        }
         for (lname, ty) in &info.locals {
             let lid = LocalId(l.locals.len() as u32);
             let decl = l.sh.types.subst(*ty, &l.subst);
@@ -475,6 +729,18 @@ impl<'s, 't> FnLower<'s, 't> {
         }
         l.stmts(&f.body);
         let ret = l.sh.ir_ty(l.ret);
+        // 本体の終わりに落ちる経路（`-> None` の関数）も、agent コンテキストを出る
+        if l.agent && ret.is_none() {
+            for b in &mut l.blocks {
+                if b.term.is_none() {
+                    b.insts.push(Inst::Call {
+                        dst: None,
+                        callee: Callee::Builtin(Builtin::AgentExit),
+                        args: vec![],
+                    });
+                }
+            }
+        }
         let blocks = l
             .blocks
             .into_iter()
@@ -511,6 +777,8 @@ impl<'s, 't> FnLower<'s, 't> {
             tool: sig.tool.as_ref().map(|t| wys_ir::ToolAttr {
                 description: t.description.clone(),
                 approval: t.approval,
+                entry: None,
+                arg_record: None,
             }),
             agent: sig.agent.as_ref().map(|a| wys_ir::AgentAttr {
                 tools: a.tools.clone(),
@@ -684,7 +952,7 @@ impl<'s, 't> FnLower<'s, 't> {
                         self.coerce(v, vt, ret)
                     }
                 });
-                self.terminate(Terminator::Return(v));
+                self.return_(v);
             }
             StmtKind::If {
                 branches,
@@ -934,7 +1202,7 @@ impl<'s, 't> FnLower<'s, 't> {
             variant: 1,
             payload: e,
         });
-        self.terminate(Terminator::Return(Some(out)));
+        self.return_(Some(out));
         // Ok: 中身を取り出す
         self.switch_to(ok_b);
         let oty = self.sh.ir_ty(ok)?;

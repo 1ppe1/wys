@@ -121,6 +121,8 @@
 | index out of range: index i, length n | リストの添字が範囲外（負の添字は末尾から数える） |
 | key not found: キー | `d[k]` / `d.pop(k)` のキーがない（`str` のキーは引用符付きで表示する） |
 | dict changed size during iteration | `for k in d:` の途中で `d` のキーの数が変わった |
+| capability exit is not granted | `exit()` を呼んだが、Capability `exit` が今の agent コンテキストにない（入口の再検査、ADR-0023 論点 11。監査 `capability_denied`） |
+| agent context mismatch (this is a compiler bug) | agent の本体の出口と入口が対応しない（コンパイラの誤り。利用者のコードでは起きない） |
 
 プログラムの終了時に解放されていないオブジェクトが残っていた場合は、`runtime error: N object(s) were not freed (this is a compiler bug)` を出して終了コード 102 で終わる（ARC の誤りを検出するための検査、ADR-0012）。
 

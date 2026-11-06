@@ -567,6 +567,7 @@ extern "C" fn task_main(id: usize) {
     };
     // SAFETY: 生成コードの入口。obj はスケジューラが参照を持つタスクのオブジェクト。
     unsafe { entry(obj) };
+    crate::ai::task_finished(id);
     let release = {
         let s = sched();
         let c = cb(s, id);
@@ -653,6 +654,8 @@ pub unsafe extern "C" fn wys_task_start(t: *mut Header) {
     unsafe { super::wys_retain(t) };
     s.unfinished += 1;
     s.run.push_back(id);
+    // 子タスクは親の agent コンテキストを引き継ぐ（ADR-0023 の訂正）
+    crate::ai::task_spawned(s.cur, id);
 }
 
 /// タスクが終わるまで現在のタスクを止める（`await t`）。終わっていれば切り替えない。
@@ -797,4 +800,9 @@ mod tests;
 /// `WYS_VIRTUAL_TIME=1` か（PoC4: agent のタイムアウトもモックの遅延だけで進める）。
 pub fn virtual_time_enabled() -> bool {
     std::env::var("WYS_VIRTUAL_TIME").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// いま動いているタスクの番号（スケジューラの外なら 0 = `main`）。agent コンテキストのスタックを引く（ADR-0023 の訂正）。
+pub fn current_task() -> usize {
+    if running() { sched().cur } else { 0 }
 }

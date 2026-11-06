@@ -1,0 +1,35 @@
+# ツールの引数が型に合わなければ Err(schema)。Err を返すツールと何も返さないツールは、結果を LLM に返して続ける
+# expect-stdout: schema: tool `add`: a: expected int, found str
+# expect-stdout: noted
+# expect-stdout: done
+@tool(description="Add.")
+def add(a: int, b: int) -> int uses pure:
+    return a + b
+
+@tool(description="Fails.")
+def fails() -> Result[int, str] uses pure:
+    return Err("boom")
+
+@tool(description="Notes.")
+def note() -> None uses io:
+    print("noted")
+
+@agent(tools=[add, fails, note], capabilities=["io", "llm"])
+async def planner() -> Result[str, LlmError] uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+async def show() -> None uses io, llm:
+    match await planner():
+        case Ok(t):
+            print(t)
+        case Err(e):
+            print(e.kind + ": " + e.message)
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="add", args_json="{\"a\": \"x\", \"b\": 1}")], input_tokens=1, output_tokens=1, latency_ms=0))
+    await show()
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="fails", args_json="{}")], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="note", args_json="{}")], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="done", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    await show()
