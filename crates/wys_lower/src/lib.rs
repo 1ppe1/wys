@@ -2250,7 +2250,12 @@ impl<'s, 't> FnLower<'s, 't> {
         let vt = self.sh.ir_ty(ok_t).expect("schema values exist");
         let union = self.sh.ir_result(r);
         let out = self.hidden_local(Ty::Union(union));
-        let u = self.expr(arg).expect("the argument has a value");
+        // 引数は `Unknown` に置ける値（絞り込んだ `Unknown`、`int | None` など）。`Unknown` に広げてから渡す
+        let u = self.expr(arg);
+        let at = self.ty(arg);
+        let u = self
+            .coerce(u, at, TTy::Unknown)
+            .expect("Unknown values exist");
         let v = self.temp(vt);
         self.emit(Inst::Call {
             dst: Some(v),

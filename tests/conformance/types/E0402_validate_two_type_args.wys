@@ -1,0 +1,3 @@
+# expect-error: E0402 3:18
+def main() -> None:
+    r = validate[int, str](parse_scalar("1"))

@@ -4228,12 +4228,18 @@ impl<'a> FnCk<'a> {
                 ),
                 span,
             ));
-            return None;
+            return self.erroneous_type_args(callee, n);
         }
         if tys.contains(&Ty::Error) {
-            return None;
+            return self.erroneous_type_args(callee, n);
         }
         Some(tys)
+    }
+
+    /// 型引数の誤りを報告した後の値。組み込みの Generic（`validate`）は推論で補えないので、`Error` の型引数にして
+    /// 「型引数がない」（E0403）を重ねて出さない。利用者の Generic は従来どおり推論に任せる
+    fn erroneous_type_args(&self, callee: &Ident, n: usize) -> Option<Vec<Ty>> {
+        (callee.name == "validate").then(|| vec![Ty::Error; n])
     }
 
     /// 推論できなかった型パラメータを報告し、`Error` で埋める。
