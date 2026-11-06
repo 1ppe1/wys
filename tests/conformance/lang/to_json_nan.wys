@@ -1,0 +1,6 @@
+# to_json は NaN と無限大を JSON にできない（実行時エラー、ADR-0022 論点 7）
+# expect-exit: 101
+# expect-stderr-contains: cannot encode NaN or infinity as JSON
+def main() -> None:
+    inf = 1e308 * 10.0
+    print(to_json([1.0, inf]))

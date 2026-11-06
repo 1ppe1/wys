@@ -63,7 +63,7 @@
 - フィールドがすべてスキーマ型のレコード（Generic なレコードは具体化した型引数がスキーマ型であること）
 - `Unknown`（「任意の JSON」。再帰的なスキーマはここで逃がす。ADR-0021 論点 10）
 
-`Result` / `Task` / `PyObject` / `PyError` / 型パラメータ / キーが `str` でない `dict` は E1501。例外として `@tool` の戻り値の**最上位**だけ `Result[T, E]`（`T`・`E` はスキーマ型）を認める（6.2）。
+`Result` / `Task` / `PyObject` / `PyError` / 型パラメータを含む型 / キーが `str` でない `dict` / 一番外側の `None` は E1501。例外として `@tool` の戻り値の**最上位**だけ `Result[T, E]`（`T`・`E` はスキーマ型）を認める（6.2）。
 
 ### 4.2 JSON Schema の生成
 
@@ -75,7 +75,7 @@
 | Union | `{"anyOf":[...]}`（構成要素の順。`T \| None` は `null` を最後に） |
 | `list[T]` | `{"type":"array","items":S(T)}` |
 | `dict[str, T]` | `{"type":"object","additionalProperties":S(T)}` |
-| レコード | `{"type":"object","properties":{...定義の順},"required":[全フィールド],"additionalProperties":false}`。入れ子は展開する（`$ref` は使わない。再帰は E0504 で存在しない） |
+| レコード | `{"type":"object","properties":{...名前の順},"required":[全フィールド],"additionalProperties":false}`（フィールドの順は名前の順。ADR-0022 の訂正）。入れ子は展開する（`$ref` は使わない。再帰は E0504 で存在しない） |
 | `Unknown` | `{}` |
 
 生成しないもの: 数値の範囲（`minimum` など）、文字列の長さ・パターン、配列の要素数、`enum`、`title` / `description`。本言語の型にそれらの情報がなく、Anthropic の構造化出力もこれらを受け付けない。**Anthropic の部分集合に乗らないのは `dict[str, T]`（`additionalProperties` が `false` でない）と `Unknown`（`{}`）**で、これらを `llm_generate[T]` の `T` や `@tool` の引数に使うと、`anthropic` のプロバイダは `Err(kind="provider")` を返し得る（モックと `cmd:` は影響しない）。型検査では止めない（プロバイダに依存する制限はコンパイラに持ち込まない）。ADR-0022 論点 5。
@@ -93,11 +93,11 @@
 | オブジェクト | レコード（宣言したフィールドをすべて要求する。**宣言にないキーは無視する**（幅部分型、ADR-0007））、`dict[str, T]`（値を順に検証） |
 | 何でも | `Unknown`（木をそのまま共有する。ADR-0021 論点 4） |
 
-Union は構成要素の順に試し、最初に合ったものにする（`int | float` に `3` は `int`）。失敗は最初の不一致 1 つを `SchemaError` で返す: `path` は根からの経路（`""`、`title`、`steps[2].name`、`dict` は `.key`）、`expected` は本言語の型の表記（`str`、`int | None`、`list[int]`、レコードはその名前）、`found` は JSON の種類（`null` / `bool` / `int` / `float` / `str` / `list` / `dict`）か `missing`（フィールドがない）。途中で失敗したときは作りかけの値をすべて release する（3 つのモードで生存数 0 を検査する）。
+Union は構成要素の順（型検査がそろえた順: `int`、`bool`、`str`、`float`、レコード、`list`、`dict`、`Unknown`、`None`）に試し、最初に合ったものにする（`int | float` に `3` は `int`）。構成要素の内側の失敗は Union の段の失敗として報告する。失敗は最初の不一致 1 つを `SchemaError` で返す: `path` は根からの経路（`""`、`title`、`steps[2].name`、`dict` は `.key`）、`expected` は本言語の型の表記（`str`、`int | None`、`list[int]`、レコードはその名前。Generic なレコードは型引数なし）、`found` は JSON の種類（`null` / `bool` / `int` / `float` / `str` / `list` / `dict`）か `missing`（フィールドがない）。途中で失敗したときは作りかけの値をすべて release する（3 つのモードで生存数 0 を検査する）。
 
 ### 4.4 `to_json`
 
-スキーマ型の値を RFC 8259 の文字列にする。空白なし。レコードは定義の順、`dict` は挿入順、`float` は ADR-0019 の表示（JSON の数値の文法に収まる）、`None` は `null`、`Unknown` は木のまま。NaN / 無限大は実行時エラー（101、`cannot encode NaN or infinity as JSON`）。`validate` → `to_json` → `parse_json` → `validate` は同じ値に戻る（`lang/json_roundtrip.wys`）。
+スキーマ型の値を RFC 8259 の文字列にする。空白なし。レコードはフィールドの名前の順（ADR-0022 の訂正）、`dict` は挿入順、`float` は ADR-0019 の表示（JSON の数値の文法に収まる）、`None` は `null`、`Unknown` は木のまま。NaN / 無限大は実行時エラー（101、`cannot encode NaN or infinity as JSON`）。`validate` → `to_json` → `parse_json` → `validate` は同じ値に戻る（`lang/json_roundtrip.wys`）。
 
 ## 5. `llm_generate` の動作（AI-001 / AI-002、AC-006）
 

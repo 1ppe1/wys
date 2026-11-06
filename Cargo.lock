@@ -1200,6 +1200,7 @@ dependencies = [
 name = "wys_backend"
 version = "0.0.0"
 dependencies = [
+ "serde_json",
  "wys_ir",
 ]
 

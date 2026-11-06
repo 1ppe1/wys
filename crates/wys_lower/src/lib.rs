@@ -1370,7 +1370,7 @@ impl<'s, 't> FnLower<'s, 't> {
             ExprKind::Call { callee, args, .. }
                 if matches!(
                     callee.name.as_str(),
-                    "arg_count" | "arg" | "parse_scalar" | "parse_json"
+                    "arg_count" | "arg" | "parse_scalar" | "parse_json" | "validate" | "to_json"
                 ) =>
             {
                 Some(match callee.name.as_str() {
@@ -1385,6 +1385,11 @@ impl<'s, 't> FnLower<'s, 't> {
                     }
                     "arg" => self.lower_arg(&args[0], e),
                     "parse_json" => self.lower_parse_json(&args[0], e),
+                    "validate" => self.lower_validate(&args[0], e),
+                    "to_json" => {
+                        let v = self.expr(&args[0]).expect("schema values exist");
+                        self.builtin(Builtin::ToJson, vec![v])
+                    }
                     _ => self.lower_parse_scalar(&args[0], e),
                 })
             }
@@ -2236,6 +2241,77 @@ impl<'s, 't> FnLower<'s, 't> {
         d
     }
 
+    /// `validate[T](u)`（ADR-0022 論点 6）: 型ごとの glue が木を検証する。失敗したら `SchemaError` の `Err`。
+    fn lower_validate(&mut self, arg: &ast::Expr, e: &ast::Expr) -> TempId {
+        let TTy::Result(r) = self.ty(e) else {
+            panic!("validate returns a Result")
+        };
+        let (ok_t, err) = self.sh.types.result_args(r);
+        let vt = self.sh.ir_ty(ok_t).expect("schema values exist");
+        let union = self.sh.ir_result(r);
+        let out = self.hidden_local(Ty::Union(union));
+        let u = self.expr(arg).expect("the argument has a value");
+        let v = self.temp(vt);
+        self.emit(Inst::Call {
+            dst: Some(v),
+            callee: Callee::Builtin(Builtin::Validate),
+            args: vec![u],
+        });
+        // 失敗したときの値はゼロ（解放しても何もしない）
+        let slot = self.hidden_local(vt);
+        self.emit(Inst::Store { dst: slot, src: v });
+        let failed = self.builtin(Builtin::SchemaFailed, vec![]);
+        let (ok_b, err_b, join) = (self.new_block(), self.new_block(), self.new_block());
+        self.terminate(Terminator::Branch {
+            cond: failed,
+            then_block: err_b,
+            else_block: ok_b,
+        });
+        self.switch_to(ok_b);
+        let lv = self.temp(vt);
+        self.emit(Inst::Load { dst: lv, src: slot });
+        let okv = self.temp(Ty::Union(union));
+        self.emit(Inst::MakeUnion {
+            dst: okv,
+            union,
+            variant: 0,
+            payload: Some(lv),
+        });
+        self.emit(Inst::Store { dst: out, src: okv });
+        self.terminate(Terminator::Jump(join));
+        self.switch_to(err_b);
+        let TTy::Record(rid) = err else {
+            panic!("SchemaError is a record")
+        };
+        let record = self.sh.ir_record(rid);
+        // フィールドは名前の順（expected, found, path）
+        let expected = self.builtin(Builtin::SchemaErrExpected, vec![]);
+        let found = self.builtin(Builtin::SchemaErrFound, vec![]);
+        let path = self.builtin(Builtin::SchemaErrPath, vec![]);
+        let ev = self.temp(Ty::Record(record));
+        self.emit(Inst::MakeRecord {
+            dst: ev,
+            record,
+            fields: vec![expected, found, path],
+        });
+        let errv = self.temp(Ty::Union(union));
+        self.emit(Inst::MakeUnion {
+            dst: errv,
+            union,
+            variant: 1,
+            payload: Some(ev),
+        });
+        self.emit(Inst::Store {
+            dst: out,
+            src: errv,
+        });
+        self.terminate(Terminator::Jump(join));
+        self.switch_to(join);
+        let d = self.temp(Ty::Union(union));
+        self.emit(Inst::Load { dst: d, src: out });
+        d
+    }
+
     /// `parse_json(s)`（ADR-0021 論点 5）: ランタイムが木を作る。失敗したら `JsonError` の `Err`。
     fn lower_parse_json(&mut self, text: &ast::Expr, e: &ast::Expr) -> TempId {
         let TTy::Result(r) = self.ty(e) else {
@@ -2455,6 +2531,8 @@ impl<'s, 't> FnLower<'s, 't> {
                     | "arg"
                     | "parse_scalar"
                     | "parse_json"
+                    | "validate"
+                    | "to_json"
                     | "assert"
                     | "Ok"
                     | "Err"

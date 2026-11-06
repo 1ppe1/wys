@@ -1,0 +1,6 @@
+# expect-error: E1501 3:9
+def f[T](u: Unknown) -> None:
+    r = validate[list[T]](u)
+
+def main() -> None:
+    pass

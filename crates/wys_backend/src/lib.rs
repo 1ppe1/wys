@@ -3,6 +3,9 @@
 //! `LlvmTextBackend` は LLVM IR をテキストで生成し、`clang -c` でオブジェクトファイルにする。
 //! LLVM のライブラリには直接リンクしない（ADR-0004 で比較・決定する）。
 
+mod schema;
+pub use schema::json_schema;
+
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
@@ -184,6 +187,23 @@ declare void @wys_json_parse(ptr, ptr)
 declare zeroext i1 @wys_json_failed()
 declare ptr @wys_json_err_message()
 declare i64 @wys_json_err_offset()
+declare void @wys_schema_fail(ptr, i64, i64)
+declare void @wys_schema_path_index(i64)
+declare void @wys_schema_path_field(ptr, i64)
+declare void @wys_schema_path_key(ptr)
+declare void @wys_schema_finish(i1 zeroext)
+declare zeroext i1 @wys_schema_failed()
+declare ptr @wys_schema_err_path()
+declare ptr @wys_schema_err_expected()
+declare ptr @wys_schema_err_found()
+declare void @wys_json_begin()
+declare void @wys_json_bytes(ptr, i64)
+declare void @wys_json_int(i64)
+declare void @wys_json_bool(i1 zeroext)
+declare void @wys_json_float(double)
+declare void @wys_json_str(ptr)
+declare void @wys_json_unknown(ptr)
+declare ptr @wys_json_end()
 declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
@@ -1116,6 +1136,7 @@ fn emit_glue(out: &mut String, p: &Program, drops: &DropInfo) {
     emit_eq_glue(out, p);
     emit_show_glue(out, p);
     emit_pyconv_glue(out, p);
+    schema::emit_schema_glue(out, p, drops);
     // リストの release: 参照カウントが 0 になったら、要素を release してからバッファを返す
     for (i, elem) in p.lists.iter().enumerate() {
         let size = elem_size(p, *elem);
@@ -1227,6 +1248,12 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                     callee: Callee::Builtin(Builtin::JsonParse),
                     ..
                 } => (*dst, Ty::Unknown),
+                // `validate` の glue は結果を出力ポインタに書く
+                Inst::Call {
+                    dst: Some(dst),
+                    callee: Callee::Builtin(Builtin::Validate),
+                    ..
+                } => (*dst, f.temps[dst.0 as usize]),
                 Inst::UnionIs { dst, src, .. } | Inst::UnionPayload { dst, src, .. } => {
                     (*dst, f.temps[src.0 as usize])
                 }
@@ -1866,6 +1893,41 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                             }
                         }
                     }
+                    Callee::Builtin(Builtin::Validate) => {
+                        let d = t(dst.expect("validate returns a value"));
+                        let rt = f.temps[dst.expect("checked").0 as usize];
+                        let _ = writeln!(
+                            out,
+                            "  {d}.ok = call i1 {}(%unknown {}, ptr {d}.slot)\n  call void @wys_schema_finish(i1 zeroext {d}.ok)\n  {d} = load {}, ptr {d}.slot",
+                            schema::validate_fn(rt),
+                            t(args[0]),
+                            llty(rt)
+                        );
+                    }
+                    Callee::Builtin(Builtin::ToJson) => {
+                        let d = t(dst.expect("to_json returns a value"));
+                        let at = f.temps[args[0].0 as usize];
+                        let _ = writeln!(
+                            out,
+                            "  call void @wys_json_begin()\n{}\n  {d} = call ptr @wys_json_end()",
+                            schema::to_json_inst(at, &t(args[0]))
+                        );
+                    }
+                    Callee::Builtin(
+                        b @ (Builtin::SchemaFailed
+                        | Builtin::SchemaErrPath
+                        | Builtin::SchemaErrExpected
+                        | Builtin::SchemaErrFound),
+                    ) => {
+                        let d = t(dst.expect("schema builtins return a value"));
+                        let (ret, sym) = match b {
+                            Builtin::SchemaFailed => ("zeroext i1", "@wys_schema_failed"),
+                            Builtin::SchemaErrPath => ("ptr", "@wys_schema_err_path"),
+                            Builtin::SchemaErrExpected => ("ptr", "@wys_schema_err_expected"),
+                            _ => ("ptr", "@wys_schema_err_found"),
+                        };
+                        let _ = writeln!(out, "  {d} = call {ret} {sym}()");
+                    }
                     Callee::Builtin(Builtin::JsonParse) => {
                         let d = t(dst.expect("json_parse returns a value"));
                         let _ = writeln!(
@@ -1952,6 +2014,39 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn json_schemas_follow_adr_0022() {
+        let mut p = Program {
+            strings: vec![],
+            unions: vec![],
+            records: vec![],
+            lists: vec![],
+            dicts: vec![],
+            tasks: vec![],
+            unknown: None,
+            display: Default::default(),
+            entry: FuncId(0),
+            funcs: vec![],
+        };
+        p.records = vec![vec![
+            ("n".into(), Ty::Int),
+            ("tags".into(), Ty::List(ListId(0))),
+        ]];
+        p.display.record_names = vec!["Step".into()];
+        p.lists = vec![Ty::Str];
+        p.dicts = vec![(Ty::Str, Ty::Float)];
+        p.unions = vec![vec![Some(Ty::Record(RecordId(0))), None]];
+        assert_eq!(
+            json_schema(&p, Ty::Union(UnionId(0))),
+            r#"{"anyOf":[{"additionalProperties":false,"properties":{"n":{"type":"integer"},"tags":{"items":{"type":"string"},"type":"array"}},"required":["n","tags"],"type":"object"},{"type":"null"}]}"#
+        );
+        assert_eq!(
+            json_schema(&p, Ty::Dict(DictId(0))),
+            r#"{"additionalProperties":{"type":"number"},"type":"object"}"#
+        );
+        assert_eq!(json_schema(&p, Ty::Unknown), "{}");
+    }
     use super::*;
 
     #[test]

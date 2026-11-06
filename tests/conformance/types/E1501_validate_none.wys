@@ -1,0 +1,3 @@
+# expect-error: E1501 3:9
+def main() -> None:
+    r = validate[None](parse_scalar("1"))

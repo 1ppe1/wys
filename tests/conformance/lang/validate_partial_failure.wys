@@ -1,0 +1,45 @@
+# 途中で失敗した validate は作りかけの値をすべて解放する（生存数 0、3 つのモード）。成功も繰り返す
+# expect-stdout: 1000
+# expect-stdout: 1000
+type Step = {name: str, tags: list[str]}
+
+type Plan = {title: str, steps: list[Step], meta: dict[str, Step]}
+
+def j(s: str) -> Unknown:
+    match parse_json(s):
+        case Ok(v):
+            return v
+        case Err(_e):
+            return "parse error"
+
+def main() -> None:
+    bad = j("{\"title\": \"t\", \"steps\": [{\"name\": \"a\", \"tags\": [\"x\"]}, {\"name\": \"b\", \"tags\": [\"y\", 1]}], \"meta\": {}}")
+    bad2 = j("{\"title\": \"t\", \"steps\": [], \"meta\": {\"a\": {\"name\": \"a\", \"tags\": []}, \"b\": {\"name\": 2, \"tags\": []}}}")
+    good = j("{\"title\": \"t\", \"steps\": [{\"name\": \"a\", \"tags\": [\"x\"]}], \"meta\": {\"a\": {\"name\": \"a\", \"tags\": [\"z\"]}}}")
+    failures = 0
+    successes = 0
+    i = 0
+    while i < 1000:
+        match validate[Plan](bad):
+            case Ok(_p):
+                pass
+            case Err(_e):
+                failures = failures + 1
+        match validate[Plan](bad2):
+            case Ok(_p):
+                failures = failures - 1
+            case Err(_e):
+                pass
+        match validate[Plan | None](bad):
+            case Ok(_p):
+                failures = failures - 1
+            case Err(_e):
+                pass
+        match validate[Plan](good):
+            case Ok(_p):
+                successes = successes + 1
+            case Err(_e):
+                pass
+        i = i + 1
+    print(failures)
+    print(successes)

@@ -90,6 +90,7 @@
 | E1302 | async | `await` の被演算子が `Task` でも `async def` の関数の呼び出しでもない（同期の関数の呼び出しなら「`await` を外す」） |
 | E1303 | async | `async def` の関数（`sleep_ms` を含む）の呼び出しを、`await` の直下か `spawn` の引数以外（式文、代入、引数、演算）に書いている（ヒント: `await f(...)` か `spawn(f(...))`） |
 | E1304 | async | `spawn` の引数が `async def` の関数の呼び出し 1 つではない（`spawn(t)`、同期の関数の呼び出し、`spawn(await f())`、`spawn(sleep_ms(n))`（組み込みの中断点はタスクにできない）、引数が 1 つでない） |
+| E1501 | JSON・スキーマ | スキーマ型でない型（`Result` / `Task` / `PyObject` / `PyError` / 型パラメータを含む型 / キーが `str` でない `dict` / 一番外側の `None`）を `validate` の型引数か `to_json` の引数に使っている（ADR-0022 論点 4 と訂正。`@tool` の引数と戻り値は T7 から） |
 | E1502 | JSON・スキーマ | Generic でない関数・組み込み・レコードに型引数を書いている（`double[int](1)`、`len[int](xs)`、`Point[int](x=1)`。ADR-0021 論点 9）。ヒントで型引数を外す修正を示す |
 | E1503 | JSON・スキーマ | 要素（`dict` は値）の型が `Unknown` を含む `list` / `dict` を書き換えている（`append` / `pop` / 添字への代入）。`Unknown` から届く値は変更のできない木で、循環参照を作れない（ADR-0021 論点 4）。Generic な関数の本体は型パラメータのまま検査するので、`T = Unknown` で具体化して書き換える場合は具体化のとき（lowering）に報告する |
 | W0201 | 未使用（警告） | 代入されたが一度も読まれないローカル変数（`for` の変数、`case Ok(x)` の束縛を含む。ADR-0016）。`_` で始まる名前と引数は対象外。読まれたかは関数の中の名前で判定する。エラーのある関数（署名のエラーを含む）では出さない。同じ関数のほかの警告とは位置の順に並ぶ |
@@ -129,6 +130,8 @@
 | `range(n)` / `range(a, b)` | — | `for` の中だけで使える整数の範囲 |
 | `parse_scalar(s)` | `Unknown` | 10進の整数 → `int`、JSON の数値の文法で小数点か指数を含むもの（`1.5`、`-0.5`、`1e3`。無限大になるものは除く）→ `float`、`true` / `false` → `bool`、`null` → `None`、それ以外 → `str`（ADR-0019） |
 | `parse_json(s)` | `Result[Unknown, JsonError]` | JSON（RFC 8259）を `Unknown` の木にする。数値は、小数点も指数もなく `i64` に収まれば `int`（`-0` も）、ほかは `float`。`float` で表せない数値（`1e400`）・重複したキー・深さ 129 以上・先頭の BOM は `Err`。`JsonError` は `{message: str, offset: int}` で、`offset` は誤りを見つけた UTF-8 のバイト位置（入力の途中で終わったら入力の長さ）。`Unknown` の `list` / `dict` は `case list():` / `case dict():` で絞り込み、読み取り専用（ADR-0021） |
+| `validate[T](u)` | `Result[T, SchemaError]` | `Unknown` の木を型 `T`（スキーマ型）として検証する。整数は `float` にも受け付け、レコードは宣言したフィールドをすべて要求し、宣言にないキーは無視する。Union は型検査がそろえた順に試す。失敗は最初の不一致 1 つを `SchemaError = {path, expected, found}` で返す（`path` は `steps[2].name`、`found` は JSON の種類か `missing`）。型引数は必須（E0403）。ADR-0022 論点 6 と訂正 |
+| `to_json(v)` | `str` | スキーマ型の値を JSON にする（空白なし、レコードはフィールドの名前の順、`dict` は挿入順、`float` は `print` と同じ表記）。NaN / 無限大は実行時エラー（`cannot encode NaN or infinity as JSON`）。ADR-0022 論点 7 と訂正 |
 | `py_import(name)` | `Result[PyObject, PyError]` | Python のモジュールを import する。Effect `python`（ADR-0018） |
 | `py_value(x)` | `PyObject` | `int` / `bool` / `str` / `float` / `None`、それらの `list` / `dict`（挿入順）と Union を、新しい Python のオブジェクトにコピーする（`PyObject` はそのまま）。Effect `python` |
 | `h.attr(name)` / `h.call(args)` / `h.call_kw(args, kwargs)` | `Result[PyObject, PyError]` | 属性の参照と呼び出し（`args` は `list[PyObject]`、`kwargs` は `dict[str, PyObject]`）。Effect `python` |

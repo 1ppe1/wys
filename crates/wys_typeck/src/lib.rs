@@ -457,6 +457,45 @@ impl Types {
         )
     }
 
+    /// `validate` の失敗を表す組み込みのレコード `SchemaError`（ADR-0022 論点 6）。フィールドは名前順に並ぶ
+    /// （`expected`、`found`、`path`）。
+    pub fn schema_error(&mut self) -> Ty {
+        self.record_named(
+            vec![
+                ("path".into(), Ty::Str),
+                ("expected".into(), Ty::Str),
+                ("found".into(), Ty::Str),
+            ],
+            Some("SchemaError".into()),
+            vec![],
+        )
+    }
+
+    /// スキーマ型か（ADR-0022 論点 4 と訂正）。`top` なら一番外側（`None` だけの型は使えない）。
+    pub fn is_schema_type(&self, t: Ty, top: bool) -> bool {
+        match t {
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Unknown | Ty::Error => true,
+            Ty::None => !top,
+            Ty::List(l) => self.is_schema_type(self.list_elem(l), false),
+            Ty::Dict(d) => {
+                let (k, v) = self.dict_args(d);
+                k == Ty::Str && self.is_schema_type(v, false)
+            }
+            Ty::Union(_) => self
+                .members(t)
+                .into_iter()
+                .all(|m| self.is_schema_type(m, false)),
+            Ty::Record(r) => {
+                self.py_error_id != Some(r)
+                    && self.records[r.0 as usize]
+                        .fields
+                        .iter()
+                        .all(|(_, ft)| self.is_schema_type(*ft, false))
+            }
+            _ => false,
+        }
+    }
+
     pub fn contains_unknown(&self, t: Ty) -> bool {
         match t {
             Ty::Unknown => true,
@@ -991,6 +1030,7 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
     // `PyError` を最初に登録する（同じフィールドの構造的な型より先に名前を付ける）
     cx.types.py_error();
     cx.types.json_error();
+    cx.types.schema_error();
     declare_types(&mut cx, module);
     for f in &module.funcs {
         let type_params: Vec<ParamId> = f
@@ -1431,6 +1471,7 @@ impl Ctx {
                 "PyObject" => Ty::PyObject,
                 "PyError" => self.types.py_error(),
                 "JsonError" => self.types.json_error(),
+                "SchemaError" => self.types.schema_error(),
                 other if self.aliases.contains_key(other) => self.resolve_alias(other),
                 other => {
                     self.diags.push(
@@ -3670,6 +3711,24 @@ impl<'a> FnCk<'a> {
 
     /// `py_value` に渡せる型（ADR-0018 論点 10）: `int` / `bool` / `str` / `float` / `None` / `PyObject` と、
     /// それらを要素に持つ `list` / `dict`、構成要素がすべて渡せる Union（M4 T7）。
+    /// スキーマ型でなければ E1501（ADR-0022 論点 4 と訂正）。型パラメータを含む型も E1501。
+    fn require_schema_type(&mut self, t: Ty, span: Span, what: &str) {
+        let has_param = self.cx.types.contains_param(t);
+        if !has_param && self.cx.types.is_schema_type(t, true) {
+            return;
+        }
+        let found = self.cx.name(t);
+        self.cx.diags.push(
+            Diagnostic::error(
+                "E1501",
+                format!("`{found}` is not a schema type, so it cannot be {what}"),
+                span,
+            )
+            .with_cause("schema types are `int`, `float`, `bool`, `str`, `Unknown`, and `list`, `dict[str, ..]`, records and unions of them (`None` only inside a union); a type parameter is not allowed (ADR-0022)")
+            .with_hint("declare the JSON shape as a record, or use `Unknown` for parts whose shape is open"),
+        );
+    }
+
     fn require_py_convertible(&mut self, t: Ty, span: Span) {
         fn ok(ts: &Types, t: Ty) -> bool {
             match t {
@@ -4133,6 +4192,9 @@ impl<'a> FnCk<'a> {
         );
         let expected = if let Some((params, _)) = self.cx.generics.get(&callee.name) {
             Some(params.len())
+        } else if callee.name == "validate" {
+            // 組み込みの Generic（ADR-0022 論点 6）
+            Some(1)
         } else if self.cx.aliases.contains_key(&callee.name) {
             None
         } else {
@@ -4535,6 +4597,55 @@ impl<'a> FnCk<'a> {
                 }
                 let err = self.cx.types.py_error();
                 return self.cx.types.result(Ty::PyObject, err);
+            }
+            "validate" => {
+                // validate[T](u: Unknown) -> Result[T, SchemaError]（ADR-0022 論点 6）
+                let err = self.cx.types.schema_error();
+                let Some(&[t]) = explicit else {
+                    if explicit.is_none() {
+                        self.cx.diags.push(
+                            Diagnostic::error(
+                                "E0403",
+                                "cannot infer the type parameter of `validate`",
+                                span,
+                            )
+                            .with_hint(
+                                "write the type to validate against, e.g. `validate[Plan](u)`",
+                            ),
+                        );
+                    }
+                    return Ty::Error;
+                };
+                if args.len() != 1 {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!("`validate` takes 1 argument but {} were given", args.len()),
+                        span,
+                    ));
+                } else {
+                    self.cx.require(
+                        arg_tys[0],
+                        Ty::Unknown,
+                        args[0].span,
+                        "argument of `validate`",
+                        None,
+                    );
+                }
+                self.require_schema_type(t, span, "the type argument of `validate`");
+                self.cx.call_type_args.insert(id, vec![t]);
+                return self.cx.types.result(t, err);
+            }
+            "to_json" => {
+                if args.len() != 1 {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!("`to_json` takes 1 argument but {} were given", args.len()),
+                        span,
+                    ));
+                } else {
+                    self.require_schema_type(arg_tys[0], args[0].span, "the argument of `to_json`");
+                }
+                return Ty::Str;
             }
             "py_value" => {
                 if args.len() != 1 {

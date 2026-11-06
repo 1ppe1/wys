@@ -874,3 +874,20 @@ fn parse_json_builds_an_unknown_tree() {
     assert!(ir.contains("call @json_parse("), "{ir}");
     assert!(ir.contains("make_unknown int("), "{ir}");
 }
+
+#[test]
+fn validate_and_to_json_follow_the_declared_type() {
+    // validate[T] と to_json（ADR-0022 論点 6・7）。dump-ir には validate / to_json の組み込みが出る
+    let src = "type Step = {name: str, n: int}\n\ndef main() -> None:\n    match parse_json(\"{\\\"name\\\": \\\"a\\\", \\\"n\\\": \\\"x\\\"}\"):\n        case Ok(u):\n            match validate[Step](u):\n                case Ok(s):\n                    print(to_json(s))\n                case Err(e):\n                    print(e.path + \": expected \" + e.expected + \", found \" + e.found)\n        case Err(e):\n            print(e.message)\n    print(to_json(Step(name=\"b\", n=2)))\n";
+    let (code, out, err) = run("validate", src);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "n: expected int, found str\n{\"n\":2,\"name\":\"b\"}\n"),
+        "{err}"
+    );
+    let path = scratch("validate_ir.wys", src);
+    let ir = cli(&["dump-ir", path.to_str().unwrap()]);
+    let ir = String::from_utf8_lossy(&ir.stdout);
+    assert!(ir.contains("call @validate("), "{ir}");
+    assert!(ir.contains("call @to_json("), "{ir}");
+}

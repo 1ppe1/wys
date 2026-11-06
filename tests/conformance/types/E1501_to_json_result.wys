@@ -1,0 +1,4 @@
+# expect-error: E1501 4:19
+def main() -> None:
+    r: Result[int, str] = Ok(1)
+    print(to_json(r))

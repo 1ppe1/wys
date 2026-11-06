@@ -1,0 +1,76 @@
+# validate[T] の失敗は SchemaError（path / expected / found、ADR-0022 論点 6 と訂正）。最初の不一致 1 つ
+# expect-stdout: |int|float
+# expect-stdout: |int|bool
+# expect-stdout: |bool|int
+# expect-stdout: |str|null
+# expect-stdout: title|str|int
+# expect-stdout: steps[1].n|int|str
+# expect-stdout: name|str|missing
+# expect-stdout: meta.k|float|str
+# expect-stdout: [2]|int|list
+# expect-stdout: |int | str|list
+type Step = {name: str, n: int}
+
+type Plan = {title: str, steps: list[Step], meta: dict[str, float]}
+
+def j(s: str) -> Unknown:
+    match parse_json(s):
+        case Ok(v):
+            return v
+        case Err(_e):
+            return "parse error"
+
+def show(e: SchemaError) -> None:
+    print(e.path + "|" + e.expected + "|" + e.found)
+
+def main() -> None:
+    match validate[int](j("1.5")):
+        case Ok(_n):
+            print("ok")
+        case Err(e):
+            show(e)
+    match validate[int](j("true")):
+        case Ok(_n):
+            print("ok")
+        case Err(e):
+            show(e)
+    match validate[bool](j("1")):
+        case Ok(_b):
+            print("ok")
+        case Err(e):
+            show(e)
+    match validate[str](j("null")):
+        case Ok(_s):
+            print("ok")
+        case Err(e):
+            show(e)
+    match validate[Plan](j("{\"title\": 1, \"steps\": [], \"meta\": {}}")):
+        case Ok(_p):
+            print("ok")
+        case Err(e):
+            show(e)
+    match validate[Plan](j("{\"title\": \"t\", \"steps\": [{\"name\": \"a\", \"n\": 1}, {\"name\": \"b\", \"n\": \"x\"}], \"meta\": {}}")):
+        case Ok(_p):
+            print("ok")
+        case Err(e):
+            show(e)
+    match validate[Step](j("{\"n\": 1}")):
+        case Ok(_s):
+            print("ok")
+        case Err(e):
+            show(e)
+    match validate[Plan](j("{\"title\": \"t\", \"steps\": [], \"meta\": {\"k\": \"x\"}}")):
+        case Ok(_p):
+            print("ok")
+        case Err(e):
+            show(e)
+    match validate[list[int]](j("[1, 2, [3]]")):
+        case Ok(_xs):
+            print("ok")
+        case Err(e):
+            show(e)
+    match validate[int | str](j("[]")):
+        case Ok(_v):
+            print("ok")
+        case Err(e):
+            show(e)
