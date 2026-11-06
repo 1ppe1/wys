@@ -16,7 +16,7 @@
 | [spec/error-codes.md](spec/error-codes.md) | PoC1 | 診断のエラーコード一覧と実行時エラー |
 | [design/ir.md](design/ir.md) | 草案 | 共通IRの構造・値のルール・テキスト形式 |
 | [design/memory-model.md](design/memory-model.md) | 草案 | メモリモデル（ARC + Move）、保証範囲、Union の値表現 |
-| [design/ai-sdk.md](design/ai-sdk.md) | 草案 | AI SDK の設計（M5）: 組み込みの型と関数、スキーマ型と JSON Schema、`llm_generate`、`@tool` / `@agent`、ランタイムの強制、プロバイダ、監査 |
+| [design/ai-sdk.md](design/ai-sdk.md) | 確定 | AI SDK の設計（M5）: 組み込みの型と関数、スキーマ型と JSON Schema、`llm_generate`、`@tool` / `@agent`、ランタイムの強制、プロバイダ、監査 |
 | [poc/poc3-results.md](poc/poc3-results.md) | 成功 | PoC3: CPython の埋め込み（M4 T1、INTEROP-001 / 002 の試作） |
 | [poc/poc4-results.md](poc/poc4-results.md) | 成功 | PoC4: AI 安全性のランタイム（M5 T1、ツール表・agent のコンテキスト・予算・監査・実プロバイダの proxy） |
 | [poc/poc5-results.md](poc/poc5-results.md) | 準備済み・未計測 | PoC5: AI 修正ループの成功率（DX-005） |

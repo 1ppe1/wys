@@ -35,8 +35,8 @@
 | [0019](0019-float.md) | `float`（IEEE 754 の倍精度、暗黙の変換なし） | Accepted | 2026-11-05 |
 | [0020](0020-async-model.md) | `async` のモデル（ランタイムのスタックフル・コルーチン、単一スレッド、協調的） | Accepted | 2026-11-05 |
 | [0021](0021-json-and-unknown-containers.md) | JSON と `Unknown` のコンテナ、呼び出しの型引数の明示（再帰レコードと `weak` は入れない） | Accepted | 2026-11-05 |
-| [0022](0022-ai-sdk-surface.md) | AI SDK の形と表面の API（標準添付、スキーマ型、`llm_generate[T]`、属性としての `@tool` / `@agent`） | Proposed | 2026-11-06 |
-| [0023](0023-ai-runtime.md) | AI Runtime（`wys llm-proxy`、Capability・承認・予算の強制、監査とプライバシー） | Proposed | 2026-11-06 |
+| [0022](0022-ai-sdk-surface.md) | AI SDK の形と表面の API（標準添付、スキーマ型、`llm_generate[T]`、属性としての `@tool` / `@agent`） | Accepted | 2026-11-06 |
+| [0023](0023-ai-runtime.md) | AI Runtime（`wys llm-proxy`、Capability・承認・予算の強制、監査とプライバシー） | Accepted | 2026-11-06 |
 
 ## 未決定事項との対応
 
@@ -52,7 +52,7 @@
 | 6 | Runtimeの構成（静的リンク、動的リンク、最小バイナリ） | Phase 1 | COMP-002, AC-004 | [0008](0008-runtime-static-linking.md) |
 | 7 | MVPの対象OS/CPU、初期標準ライブラリ範囲 | Phase 1 | NFR-006 | [0003](0003-mvp-target-platform.md)（OS/CPU のみ） |
 | 8 | Python連携方式と対応バージョン、GIL/スレッド境界 | Phase 2 | INTEROP-001〜003 | [0018](0018-cpython-ffi-embedding.md) |
-| 9 | AI SDKを標準添付するか別パッケージとするか | Phase 2 | AI-001〜010 | [0022](0022-ai-sdk-surface.md)（Proposed） |
-| 10 | モデルプロバイダ抽象化、費用上限の算定方式、秘密情報保管、トレースのプライバシー方針 | Phase 2 | AI-006, AI-007, NFR-005 | [0023](0023-ai-runtime.md)（Proposed） |
+| 9 | AI SDKを標準添付するか別パッケージとするか | Phase 2 | AI-001〜010 | [0022](0022-ai-sdk-surface.md) |
+| 10 | モデルプロバイダ抽象化、費用上限の算定方式、秘密情報保管、トレースのプライバシー方針 | Phase 2 | AI-006, AI-007, NFR-005 | [0023](0023-ai-runtime.md) |
 | 11 | ライセンス、ガバナンス、パッケージレジストリ運用 | 公開前 | INTEROP-004 | — |
 | 12 | 具体的な性能SLOとサポート期間 | ベンチマーク・利用者検証後 | NFR-002 | — |
