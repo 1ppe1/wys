@@ -17,6 +17,7 @@
 | [design/ir.md](design/ir.md) | 草案 | 共通IRの構造・値のルール・テキスト形式 |
 | [design/memory-model.md](design/memory-model.md) | 草案 | メモリモデル（ARC + Move）、保証範囲、Union の値表現 |
 | [poc/poc3-results.md](poc/poc3-results.md) | 成功 | PoC3: CPython の埋め込み（M4 T1、INTEROP-001 / 002 の試作） |
+| [poc/poc4-results.md](poc/poc4-results.md) | 判定待ち | PoC4: AI 安全性のランタイム（M5 T1、ツール表・agent のコンテキスト・予算・監査・実プロバイダの proxy） |
 | [poc/poc5-results.md](poc/poc5-results.md) | 準備済み・未計測 | PoC5: AI 修正ループの成功率（DX-005） |
 | [glossary.md](glossary.md) | Draft | 用語集。文書間で表記を揃えるための基準 |
 | [adr/README.md](adr/README.md) | 運用中 | ADRの書き方、一覧、未決定事項との対応 |

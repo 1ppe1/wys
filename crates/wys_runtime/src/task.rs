@@ -793,3 +793,8 @@ fn approx_sp() -> usize {
 
 #[cfg(test)]
 mod tests;
+
+/// `WYS_VIRTUAL_TIME=1` か（PoC4: agent のタイムアウトもモックの遅延だけで進める）。
+pub fn virtual_time_enabled() -> bool {
+    std::env::var("WYS_VIRTUAL_TIME").is_ok_and(|v| !v.is_empty() && v != "0")
+}

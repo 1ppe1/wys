@@ -177,6 +177,7 @@ pub extern "C" fn wys_runtime_finish() {
     }
 }
 
+pub mod ai;
 pub mod json;
 pub mod task;
 

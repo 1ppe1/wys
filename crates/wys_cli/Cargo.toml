@@ -15,6 +15,9 @@ wys_driver = { path = "../wys_driver" }
 wys_backend = { path = "../wys_backend" }
 wys_fmt = { path = "../wys_fmt" }
 wys_explain = { path = "../wys_explain" }
+# `wys llm-proxy`（PoC4、M5 T1）: 実プロバイダへの HTTPS。生成した実行ファイルは依存しない（AC-004）
+ureq = "2"
+serde_json = "1"
 
 [dev-dependencies]
 serde_json = "1"
