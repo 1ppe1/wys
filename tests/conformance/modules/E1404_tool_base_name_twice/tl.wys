@@ -1,0 +1,3 @@
+@tool(description="Add.")
+pub def add(a: int, b: int) -> int uses pure:
+    return a + b

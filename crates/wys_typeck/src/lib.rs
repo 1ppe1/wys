@@ -1569,6 +1569,24 @@ fn check_decorators(cx: &mut Ctx, module: &Module) {
                 ));
                 continue;
             }
+            // LLM はツールを基底名で呼ぶ（ツール表の名前）ので、モジュールが違っても基底名の重複は区別できない
+            let base = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+            if let Some(other) = attr.tools.iter().find(|t| base(t) == base(&n)) {
+                cx.diags.push(
+                    Diagnostic::error(
+                        "E1404",
+                        format!(
+                            "tools `{other}` and `{n}` have the same name `{}`",
+                            base(&n)
+                        ),
+                        sp,
+                    )
+                    .with_hint(
+                        "the model calls tools by name; list only one of them in this agent",
+                    ),
+                );
+                continue;
+            }
             // ツールの `uses` ⊆ agent の `capabilities`（E1405、ADR-0022 論点 14）
             let tool_effects = cx.sigs[ti].effects.unwrap_or_default();
             let missing = tool_effects.missing_from(attr.capabilities);

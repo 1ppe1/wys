@@ -326,9 +326,7 @@ pub extern "C" fn wys_py_err_traceback() -> *mut Header {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_import(name: *const Header) -> *mut Header {
     wys_runtime::task::on_main_stack(|| {
-        // 入口の再検査（ADR-0023 論点 11）: `python` はサンドボックスではないので、配備時に外せる
-        if !wys_runtime::ai::capability_granted(wys_runtime::ai::CAP_PYTHON, "py_import") {
-            fail("CapabilityError", "capability python is not granted");
+        if denied("py_import") {
             return std::ptr::null_mut();
         }
         ensure_init();
@@ -340,6 +338,18 @@ pub unsafe extern "C" fn wys_py_import(name: *const Header) -> *mut Header {
     })
 }
 
+/// 入口の再検査（ADR-0023 論点 11）: `python` はサンドボックスではないので、配備時にも agent でも外せる。
+/// Python のコードが動き得る入口（import・属性の取得・呼び出し）で、今の agent コンテキストに `python` が
+/// なければ `CapabilityError` を失敗として残して真を返す。agent の外で import したオブジェクトを渡しても、
+/// agent の中では使えない。値の変換や解放は Python のコードを動かさないので検査しない。
+fn denied(entry: &str) -> bool {
+    if wys_runtime::ai::capability_granted(wys_runtime::ai::CAP_PYTHON, entry) {
+        return false;
+    }
+    fail("CapabilityError", "capability python is not granted");
+    true
+}
+
 /// `h.name`。
 ///
 /// # Safety
@@ -347,6 +357,9 @@ pub unsafe extern "C" fn wys_py_import(name: *const Header) -> *mut Header {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_getattr(h: *const Header, name: *const Header) -> *mut Header {
     wys_runtime::task::on_main_stack(|| {
+        if denied("py_getattr") {
+            return std::ptr::null_mut();
+        }
         let Some(n) = c_name(name) else {
             return std::ptr::null_mut();
         };
@@ -362,6 +375,9 @@ pub unsafe extern "C" fn wys_py_getattr(h: *const Header, name: *const Header) -
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wys_py_call(h: *const Header, args: *const ListObj) -> *mut Header {
     wys_runtime::task::on_main_stack(|| {
+        if denied("py_call") {
+            return std::ptr::null_mut();
+        }
         // SAFETY: 関数の安全条件どおり。PyTuple_SetItem は参照を盗むので、先に Py_IncRef する。
         unsafe {
             let items = embed::list_words(args);
@@ -705,6 +721,9 @@ pub unsafe extern "C" fn wys_py_call_kw(
     kwargs: *const DictObj,
 ) -> *mut Header {
     wys_runtime::task::on_main_stack(|| {
+        if denied("py_call_kw") {
+            return std::ptr::null_mut();
+        }
         // SAFETY: 関数の安全条件どおり。
         unsafe {
             let items = embed::list_words(args);

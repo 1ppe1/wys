@@ -546,7 +546,9 @@ pub unsafe extern "C" fn wys_llm_generate(
             let result = unsafe { text(out) };
             // SAFETY: 同上。
             unsafe { release_str(out) };
-            if let Some(schema_mismatch) = TOOL_ARGS_REJECTED.with(Cell::get) {
+            // 印は読んだ瞬間に落とす（トランポリンが立ててから、ここで読むまでに中断はない）。落とさないと、
+            // ツールの中の llm_generate や別のタスクのツールの印が、後で読むツールの結果に持ち越す（Fable のレビュー）
+            if let Some(schema_mismatch) = TOOL_ARGS_REJECTED.with(Cell::take) {
                 let why = if schema_mismatch {
                     crate::schema::last_failure_message()
                 } else {
@@ -559,7 +561,7 @@ pub unsafe extern "C" fn wys_llm_generate(
                     fail(&mut s, "schema", msg)
                 });
             }
-            let is_error = TOOL_ERR.with(Cell::get);
+            let is_error = TOOL_ERR.with(|c| c.replace(false));
             messages.push(serde_json::json!({
                 "role": "tool", "id": id, "content": result, "is_error": is_error
             }));
