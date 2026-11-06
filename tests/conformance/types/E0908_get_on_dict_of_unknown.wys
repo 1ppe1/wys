@@ -1,0 +1,6 @@
+# expect-error: E0908 3:9
+def f(d: dict[str, Unknown]) -> None:
+    w = d.get("k")
+
+def main() -> None:
+    pass

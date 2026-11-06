@@ -47,6 +47,7 @@ pub const BUILTINS: &[&str] = &[
     "arg_count",
     "arg",
     "parse_scalar",
+    "parse_json",
     "assert",
     "len",
     "range",

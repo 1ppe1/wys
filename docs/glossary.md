@@ -46,12 +46,13 @@
 | 単相化 | Generics を、使われる型ごとに具体化したコードとして生成する実装方式 | ADR-0006 |
 | 幅部分型 | 構造的なレコード型で、必要なフィールドをすべて持っていれば互換とみなす規則 | ADR-0007 |
 | 平坦化（Union） | `(A \| B) \| B` を `A \| B` にする正規化。単相化で型パラメータを置き換えた後にもやり直す | ADR-0006 |
-| 開いた型 | 取りうる値の種類が将来増える型。`Unknown` は開いた型なので、`match` には `case _:` が必須。M4 で `float` が加わった（ADR-0019） | ADR-0011 |
+| 開いた型 | 取りうる値の種類が将来増える型。`Unknown` は開いた型なので、`match` には `case _:` が必須。M4 で `float` が、M5 で `list` / `dict`（JSON）が加わった（ADR-0019、ADR-0021） | ADR-0011 |
 | 内部名 | モジュールの定義に付ける、プログラム全体で一意な名前（`util/text.wys` の `f` は `util.text.f`）。エントリファイルの定義は元の名前のまま | ADR-0010 |
 | ソースマップ | 複数のソースファイルを1本の通し番号の位置で扱う仕組み（`wys_span::SourceMap`）。診断の `span.file` はここから引く | ADR-0010 |
 | 警告 | ビルドを止めない診断（`W` で始まるコード）。`check` は警告だけなら終了コード 0 | `docs/spec/error-codes.md` |
 | 埋め込み（Python） | 本言語の実行ファイルが CPython を初期化して使う連携の方式。Python を使うプログラムだけが `libpython` をリンクする | ADR-0018 |
 | `PyObject` | Python のオブジェクトを包んだハンドルの型（名目的）。本言語の参照カウントで管理し、最後の release で Python の参照を手放す。表示・比較・`dict` のキーには使えない（E1202） | ADR-0018 |
+| `JsonError` | `parse_json` の失敗を表す組み込みのレコード `{message, offset}`。`offset` は UTF-8 のバイト位置 | ADR-0021 |
 | `PyError` | Python の例外を表す組み込みのレコード `{kind, message, traceback}`。Python の操作は `Result[.., PyError]` を返す。構造的なので、同じフィールドを持つレコードと同じ型になる | ADR-0018 |
 | ADR | Architecture Decision Record。設計判断とその理由を記録する文書 | docs/adr/ |
 | タスク | `spawn` が作る、並行に進む処理の単位（`Task[T]`）。単一スレッドの上で協調的に切り替わる | ADR-0020 |

@@ -1,0 +1,44 @@
+# parse_json の失敗は Err(JsonError)（ADR-0021 論点 5）: 重複したキー、深さの上限 128、BOM、末尾のゴミ、空、値の欠け
+# expect-stdout: duplicate key "a"
+# expect-stdout: ok 128
+# expect-stdout: nesting too deep
+# expect-stdout: expected value
+# expect-stdout: 0
+# expect-stdout: trailing characters
+# expect-stdout: 2
+# expect-stdout: EOF while parsing a value
+# expect-stdout: expected value
+# expect-stdout: 5
+def fail(s: str, offset: bool) -> None:
+    match parse_json(s):
+        case Ok(_v):
+            print("ok")
+        case Err(e):
+            print(e.message)
+            if offset:
+                print(e.offset)
+
+def nested(n: int) -> str:
+    s = ""
+    i = 0
+    while i < n:
+        s = s + "["
+        i = i + 1
+    i = 0
+    while i < n:
+        s = s + "]"
+        i = i + 1
+    return s
+
+def main() -> None:
+    fail("{\"a\":1,\"a\":2}", False)
+    match parse_json(nested(128)):
+        case Ok(_v):
+            print("ok 128")
+        case Err(e):
+            print(e.message)
+    fail(nested(129), False)
+    fail("﻿1", True)
+    fail("1 2", True)
+    fail("", False)
+    fail("{\"a\":}", True)

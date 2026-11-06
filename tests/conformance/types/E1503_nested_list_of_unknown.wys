@@ -1,0 +1,7 @@
+# expect-error: E1503 4:5
+def f(v: Unknown) -> None:
+    yss: list[list[Unknown]] = [[v]]
+    yss.append([])
+
+def main() -> None:
+    pass

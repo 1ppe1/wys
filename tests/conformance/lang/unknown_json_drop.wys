@@ -1,0 +1,40 @@
+# Unknown の木は ARC で解放される（関数の戻り値、レコードのフィールド、list[Unknown] のリテラルでの共有、Task の結果）
+# expect-stdout: 1000
+# expect-stdout: 3
+# expect-stdout: 2
+type Doc = {root: Unknown}
+
+def load(s: str) -> Unknown:
+    match parse_json(s):
+        case Ok(v):
+            return v
+        case Err(_e):
+            return None
+
+async def load_later(s: str) -> Unknown:
+    await sleep_ms(1)
+    return load(s)
+
+def size(u: Unknown) -> int:
+    match u:
+        case list():
+            return len(u)
+        case dict():
+            return len(u)
+        case _:
+            return 0
+
+async def main() -> None:
+    n = 0
+    i = 0
+    while i < 1000:
+        d = Doc(root=load("{\"a\": [1, \"x\", {\"b\": null}], \"c\": \"y\"}"))
+        if size(d.root) == 2:
+            n = n + 1
+        i = i + 1
+    print(n)
+    v = load("[1, [2], {\"k\": \"v\"}]")
+    xs: list[Unknown] = [v, v]
+    print(size(xs[0]))
+    t = spawn(load_later("[\"p\", \"q\"]"))
+    print(size(await t))

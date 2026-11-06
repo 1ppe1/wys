@@ -1030,6 +1030,10 @@ dependencies = [
 [[package]]
 name = "wys_runtime"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "wys_runtime_python"

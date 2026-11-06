@@ -448,6 +448,15 @@ impl Types {
         t
     }
 
+    /// `parse_json` の失敗を表す組み込みのレコード `JsonError`（ADR-0021 論点 5）。`offset` は UTF-8 のバイト位置。
+    pub fn json_error(&mut self) -> Ty {
+        self.record_named(
+            vec![("message".into(), Ty::Str), ("offset".into(), Ty::Int)],
+            Some("JsonError".into()),
+            vec![],
+        )
+    }
+
     pub fn contains_unknown(&self, t: Ty) -> bool {
         match t {
             Ty::Unknown => true,
@@ -981,6 +990,7 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
     };
     // `PyError` を最初に登録する（同じフィールドの構造的な型より先に名前を付ける）
     cx.types.py_error();
+    cx.types.json_error();
     declare_types(&mut cx, module);
     for f in &module.funcs {
         let type_params: Vec<ParamId> = f
@@ -1420,6 +1430,7 @@ impl Ctx {
                 "Unknown" => Ty::Unknown,
                 "PyObject" => Ty::PyObject,
                 "PyError" => self.types.py_error(),
+                "JsonError" => self.types.json_error(),
                 other if self.aliases.contains_key(other) => self.resolve_alias(other),
                 other => {
                     self.diags.push(
@@ -1912,6 +1923,7 @@ impl<'a> FnCk<'a> {
                     unreachable!("the parser only builds IndexAssign from an index expression")
                 };
                 let bt = self.expr(base, env);
+                self.check_mutable(bt, target.span);
                 if let Ty::Dict(d) = bt {
                     // `d[k] = v`: 追加または置き換え（ADR-0015）
                     let (k, v) = self.cx.types.dict_args(d);
@@ -1974,9 +1986,21 @@ impl<'a> FnCk<'a> {
         let subject_var = subject_path.map(|(k, _)| k);
         // Unknown は int / bool / str / float / None に加えて「将来増える種類」を持つ開いた型（float は ADR-0019）。
         // 最後の Unknown は `case _:` だけが網羅できる（ADR-0011）。
+        // コンテナの種類 `list[Unknown]` / `dict[str, Unknown]` は ADR-0021 論点 1・2
         let members = (st != Ty::Error).then(|| {
             if st == Ty::Unknown {
-                vec![Ty::Int, Ty::Bool, Ty::Str, Ty::Float, Ty::None, Ty::Unknown]
+                let l = self.cx.types.list(Ty::Unknown);
+                let d = self.cx.types.dict(Ty::Str, Ty::Unknown);
+                vec![
+                    Ty::Int,
+                    Ty::Bool,
+                    Ty::Str,
+                    Ty::Float,
+                    Ty::None,
+                    l,
+                    d,
+                    Ty::Unknown,
+                ]
             } else {
                 self.cx.types.members(st)
             }
@@ -2035,6 +2059,34 @@ impl<'a> FnCk<'a> {
                                     }
                                     Ty::Error
                                 }
+                            }
+                        }
+                        // `case list():` / `case dict():` は `Unknown` の被検査値にだけ書ける（ADR-0021 論点 2）
+                        PatternKind::Type(n)
+                            if matches!(n.as_str(), "list" | "dict")
+                                && !self.cx.aliases.contains_key(n) =>
+                        {
+                            if st == Ty::Unknown {
+                                let t = if n == "list" {
+                                    self.cx.types.list(Ty::Unknown)
+                                } else {
+                                    self.cx.types.dict(Ty::Str, Ty::Unknown)
+                                };
+                                self.cx.pattern_types.insert(arm.pattern.span.start, t);
+                                t
+                            } else {
+                                if st != Ty::Error {
+                                    self.cx.diags.push(
+                                        Diagnostic::error(
+                                            "E0203",
+                                            format!("a `{n}()` pattern can only match an `Unknown` value"),
+                                            arm.pattern.span,
+                                        )
+                                        .with_cause("`list()` / `dict()` patterns read JSON data held in `Unknown` (ADR-0021)")
+                                        .with_hint("check `is None` or use `case _:` for a value whose type is already known"),
+                                    );
+                                }
+                                Ty::Error
                             }
                         }
                         _ => self.pattern_type(kind, arm.pattern.span),
@@ -2103,7 +2155,12 @@ impl<'a> FnCk<'a> {
             if let Some(n) = &subject_var
                 && !covered.is_empty()
             {
-                let narrowed = self.cx.types.union(covered.iter().copied());
+                // `case _:` が `Unknown` を網羅したら、絞り込んだ型も `Unknown` のまま
+                let narrowed = if covered.contains(&Ty::Unknown) {
+                    Ty::Unknown
+                } else {
+                    self.cx.types.union(covered.iter().copied())
+                };
                 b.insert(n.clone(), narrowed);
             }
             if let Some(n) = &error_binding {
@@ -2419,7 +2476,7 @@ impl<'a> FnCk<'a> {
                 other => {
                     self.cx.diags.push(
                         Diagnostic::error("E0203", format!("unknown type `{other}` in pattern"), span)
-                            .with_hint("type patterns are `int()`, `bool()`, `str()` and `float()`; use `None` or `_` for the others"),
+                            .with_hint("type patterns are `int()`, `bool()`, `str()` and `float()` (and `list()` / `dict()` on `Unknown`); use `None` or `_` for the others"),
                     );
                     Ty::Error
                 }
@@ -2828,6 +2885,27 @@ impl<'a> FnCk<'a> {
         }
     }
 
+    /// 要素（`dict` は値）の型が `Unknown` を含む `list` / `dict` は読み取り専用（E1503、ADR-0021 論点 4）。
+    /// `Unknown` から届く値は変更のできない木なので、循環参照を作れない。
+    fn check_mutable(&mut self, t: Ty, span: Span) {
+        let inner = match t {
+            Ty::List(l) => self.cx.types.list_elem(l),
+            Ty::Dict(d) => self.cx.types.dict_args(d).1,
+            _ => return,
+        };
+        if self.cx.types.contains_unknown(inner) {
+            let msg = format!(
+                "cannot modify `{}`: a list or dict whose elements are `Unknown` is read-only",
+                self.cx.name(t)
+            );
+            self.cx.diags.push(
+                Diagnostic::error("E1503", msg, span)
+                    .with_cause("data reached from `Unknown` is an immutable tree, so it cannot form a reference cycle (ADR-0021 point 4)")
+                    .with_hint("build a new list, or validate the data into a concrete type before changing it"),
+            );
+        }
+    }
+
     /// `xs.append(v)`（ローカル変数のリストへのメソッド呼び出し）。
     fn method_call(
         &mut self,
@@ -2842,6 +2920,9 @@ impl<'a> FnCk<'a> {
             Some(t) => *t,
             None => self.vars[recv].ty,
         };
+        if matches!(method, "append" | "pop") {
+            self.check_mutable(rt, span);
+        }
         match (rt, method) {
             (Ty::List(l), "append") => {
                 let elem = self.cx.types.list_elem(l);
@@ -2896,7 +2977,8 @@ impl<'a> FnCk<'a> {
                 let kt = self.expr_hint(&args[0], env, Some(k));
                 self.cx
                     .require(kt, k, args[0].span, "a key of the dict", None);
-                if self.cx.types.contains_none(v) {
+                // `Unknown` は JSON の `null` を持つので、`None` を含む値と同じ扱い（ADR-0021 論点 7）
+                if self.cx.types.contains_none(v) || v == Ty::Unknown {
                     let msg = format!(
                         "`get` cannot be used on `{}`, whose values may be `None`",
                         self.cx.name(rt)
@@ -4478,7 +4560,8 @@ impl<'a> FnCk<'a> {
                 }
                 return Ty::None;
             }
-            "arg_count" | "arg" | "parse_scalar" | "len" | "float" | "int" | "sleep_ms" => {
+            "arg_count" | "arg" | "parse_scalar" | "parse_json" | "len" | "float" | "int"
+            | "sleep_ms" => {
                 // 外部入力の入口（ADR-0011）、文字列の長さ（M3 T2b）、数値の変換（ADR-0019 論点 3）
                 let (params, ret): (&[Ty], Ty) = match callee.name.as_str() {
                     "arg_count" => (&[], Ty::Int),
@@ -4488,6 +4571,11 @@ impl<'a> FnCk<'a> {
                     // ADR-0020 論点 10
                     "sleep_ms" => (&[Ty::Int], Ty::None),
                     "arg" => (&[Ty::Int], self.cx.types.union([Ty::Str, Ty::None])),
+                    // ADR-0021 論点 5
+                    "parse_json" => {
+                        let e = self.cx.types.json_error();
+                        (&[Ty::Str], self.cx.types.result(Ty::Unknown, e))
+                    }
                     _ => (&[Ty::Str], Ty::Unknown),
                 };
                 if args.len() != params.len() {

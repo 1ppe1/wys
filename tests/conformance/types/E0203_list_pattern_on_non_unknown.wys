@@ -1,0 +1,10 @@
+# expect-error: E0203 4:14
+def f(x: list[int] | None) -> None:
+    match x:
+        case list():
+            pass
+        case _:
+            pass
+
+def main() -> None:
+    pass

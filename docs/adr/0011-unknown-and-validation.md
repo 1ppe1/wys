@@ -1,6 +1,7 @@
 # ADR-0011: `Unknown` の実行時表現と検証 API
 
 - **状態:** Accepted
+- **見直し:** `list` / `dict` の種類と JSON の入力は ADR-0021 で決めた（2026-11-05、本文は Accepted のときのまま）
 - **日付:** 2026-11-04
 - **関連:** LANG-006、AC-003、P-02（境界での検証）、ADR-0006（`Unknown` の命名）、ADR-0009（ランタイム ABI はスカラーのみ）、`docs/plans/m2.md` T5
 

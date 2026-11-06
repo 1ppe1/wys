@@ -69,7 +69,11 @@ bb0:
 
 ## `Unknown`（M2 T5、ADR-0011）
 
-- IR には `Unknown` 型はない。lowering が `int | bool | str | float | None` の Union に置き換える（`float` は ADR-0019 で足した）。
+- IR の独自の型 `unknown`（ADR-0021 論点 3。M5 T5 までは `int | bool | str | float | None` の Union に置き換えていた）。値はタグ 1 バイト + 1 語で、LLVM では `%unknown = type { i8, [1 x i64] }`（今までの Union と同じ配置）。
+- 種類（タグ）は `wys_ir::UNKNOWN_KINDS` の順: 0 `int`、1 `bool`、2 `str`、3 `float`、4 `None`、5 `list`、6 `dict`。`list` / `dict` の種類は `Program.unknown` の `list[unknown]` / `dict[str, unknown]` を指す（`dump-ir` の `unknown = ... | listN | dictM` の行）。
+- 命令: `make_unknown 種類(t)`（`make_union` と同じ所有の規則）。`union_is` / `union_payload` は `unknown` にも使える。
+- 解放処理: `@wys_retain_unknown` / `@wys_release_unknown` がタグで分岐する。`list` の種類の解放は `@wys_release_listN` から要素の `@wys_release_unknown` に戻る（相互再帰）。`needs_drop` は定数で真（型を辿らない）。
+- `parse_json` は `json_parse`（木を出力ポインタに書く。失敗なら `None` の種類）、`json_failed`、`json_err_message`、`json_err_offset` の組み合わせ。ランタイムは `wys_runtime::json`。
 - 外部入力は組み込み関数（`arg_count`、`arg_exists`、`arg_str`、`scalar_kind`、`scalar_int`、`scalar_bool`）を lowering が組み合わせて作る。ランタイムとの境界はスカラーとポインタだけ。
 
 ## `wys test`（M2 T7）

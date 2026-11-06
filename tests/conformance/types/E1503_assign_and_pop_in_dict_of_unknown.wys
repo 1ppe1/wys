@@ -1,0 +1,10 @@
+# expect-error: E1503 5:5
+# expect-error: E1503 6:5
+# expect-error: E1503 7:5
+def f(d: dict[str, Unknown], xs: list[Unknown]) -> None:
+    d["k"] = parse_scalar("1")
+    d.pop("k")
+    xs[0] = parse_scalar("2")
+
+def main() -> None:
+    pass

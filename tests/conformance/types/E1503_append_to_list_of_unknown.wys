@@ -1,0 +1,8 @@
+# expect-error: E1503 6:13
+def main() -> None:
+    v = parse_scalar("1")
+    match v:
+        case list():
+            v.append(parse_scalar("1"))
+        case _:
+            pass

@@ -1,0 +1,53 @@
+# parse_json の木を match で読む（ADR-0021 論点 1・2）。list() / dict() に絞ると要素は Unknown のまま
+# expect-stdout: dict
+# expect-stdout: 1
+# expect-stdout: list
+# expect-stdout: 6
+# expect-stdout: int
+# expect-stdout: 1
+# expect-stdout: float
+# expect-stdout: 2.5
+# expect-stdout: str
+# expect-stdout: s
+# expect-stdout: bool
+# expect-stdout: True
+# expect-stdout: null
+# expect-stdout: dict
+# expect-stdout: 1
+# expect-stdout: list
+# expect-stdout: 0
+def show(u: Unknown) -> None:
+    match u:
+        case int():
+            print("int")
+            print(u)
+        case float():
+            print("float")
+            print(u)
+        case str():
+            print("str")
+            print(u)
+        case bool():
+            print("bool")
+            print(u)
+        case None:
+            print("null")
+        case list():
+            print("list")
+            print(len(u))
+            for x in u:
+                show(x)
+        case dict():
+            print("dict")
+            print(len(u))
+            if "k" in u:
+                show(u["k"])
+        case _:
+            print("other")
+
+def main() -> None:
+    match parse_json("{\"k\": [1, 2.5, \"s\", true, null, {\"k\": []}]}"):
+        case Ok(v):
+            show(v)
+        case Err(e):
+            print(e.message)

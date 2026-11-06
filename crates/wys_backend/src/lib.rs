@@ -180,6 +180,10 @@ declare zeroext i1 @wys_scalar_bool(ptr)
 declare i64 @wys_test_index()
 declare void @wys_assert_fail(ptr) noreturn
 declare void @wys_panic(ptr, ptr) noreturn
+declare void @wys_json_parse(ptr, ptr)
+declare zeroext i1 @wys_json_failed()
+declare ptr @wys_json_err_message()
+declare i64 @wys_json_err_offset()
 declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
@@ -195,6 +199,8 @@ fn llty(t: Ty) -> String {
         Ty::Union(u) => format!("%union.{}", u.0),
         Ty::Record(r) => format!("%record.{}", r.0),
         Ty::List(_) | Ty::Dict(_) | Ty::Py | Ty::Task(_) => "ptr".into(),
+        // タグ 1 バイト + 1 語（ADR-0021 論点 3。今までの 5 種類の Union と同じ配置）
+        Ty::Unknown => "%unknown".into(),
     }
 }
 
@@ -205,6 +211,7 @@ fn words(p: &Program, t: Ty) -> u32 {
         Ty::Int | Ty::Bool | Ty::Float => 1,
         Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py | Ty::Task(_) => 1,
         Ty::Union(u) => 1 + union_payload_words(p, u),
+        Ty::Unknown => 2,
         // フィールドのないレコードは埋め草の 1 バイト（`type_defs`）を持つので 1 語
         Ty::Record(r) => p.records[r.0 as usize]
             .iter()
@@ -238,6 +245,9 @@ fn type_defs(p: &Program) -> String {
     for i in 0..p.unions.len() {
         let w = union_payload_words(p, UnionId(i as u32));
         let _ = writeln!(out, "%union.{i} = type {{ i8, [{w} x i64] }}");
+    }
+    if p.unknown.is_some() {
+        out.push_str("%unknown = type { i8, [1 x i64] }\n");
     }
     out
 }
@@ -424,6 +434,7 @@ fn glue(kind: &str, t: Ty) -> String {
         Ty::Dict(_) if kind == "retain" => "@wys_rc_retain".to_string(),
         Ty::Dict(d) => format!("@wys_release_dict{}", d.0),
         Ty::Union(u) => format!("@wys_{kind}_u{}", u.0),
+        Ty::Unknown => format!("@wys_{kind}_unknown"),
         Ty::Record(r) => format!("@wys_{kind}_r{}", r.0),
         // Python のハンドル: retain は参照カウントだけ、最後の release が Python の参照を手放す（ADR-0018 論点 6）
         Ty::Py if kind == "retain" => "@wys_rc_retain".to_string(),
@@ -560,6 +571,7 @@ fn eq_inst(t: Ty, dst: &str, a: &str, b: &str) -> String {
         Ty::Str => format!("  {dst} = call zeroext i1 @wys_str_eq(ptr {a}, ptr {b})"),
         Ty::Py => unreachable!("Python handles cannot be compared (E1202)"),
         Ty::Task(_) => unreachable!("tasks cannot be compared (E0207)"),
+        Ty::Unknown => unreachable!("unchecked values cannot be compared (E0601)"),
         Ty::List(l) => format!("  {dst} = call i1 @wys_eq_list{}(ptr {a}, ptr {b})", l.0),
         Ty::Dict(d) => format!("  {dst} = call i1 @wys_eq_dict{}(ptr {a}, ptr {b})", d.0),
         Ty::Union(u) => format!(
@@ -603,7 +615,7 @@ fn eq_types(p: &Program) -> Vec<Ty> {
             Ty::Dict(d) => work.push(p.dicts[d.0 as usize].1),
             Ty::Union(u) => work.extend(p.unions[u.0 as usize].iter().flatten()),
             Ty::Record(r) => work.extend(p.records[r.0 as usize].iter().map(|(_, t)| *t)),
-            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py | Ty::Task(_) => {}
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py | Ty::Task(_) | Ty::Unknown => {}
         }
     }
     seen
@@ -681,7 +693,7 @@ fn emit_eq_glue(out: &mut String, p: &Program) {
                 }
                 let _ = writeln!(out, "  ret i1 {acc}\n}}");
             }
-            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py | Ty::Task(_) => {}
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py | Ty::Task(_) | Ty::Unknown => {}
         }
     }
 }
@@ -717,7 +729,7 @@ fn show_types(p: &Program) -> Vec<Ty> {
             }
             Ty::Union(u) => work.extend(p.unions[u.0 as usize].iter().flatten()),
             Ty::Record(r) => work.extend(p.records[r.0 as usize].iter().map(|(_, t)| *t)),
-            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py | Ty::Task(_) => {}
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py | Ty::Task(_) | Ty::Unknown => {}
         }
     }
     seen
@@ -764,6 +776,7 @@ fn show_inst(t: Ty, v: &str) -> String {
         Ty::Str => format!("  call void @wys_write_str(ptr {v})"),
         Ty::Py => unreachable!("Python handles cannot be printed (E1202)"),
         Ty::Task(_) => unreachable!("tasks cannot be printed (E0201)"),
+        Ty::Unknown => unreachable!("unchecked values cannot be printed (E0601)"),
         Ty::List(l) => format!("  call void @wys_show_list{}(ptr {v})", l.0),
         Ty::Dict(d) => format!("  call void @wys_show_dict{}(ptr {v})", d.0),
         Ty::Union(u) => format!("  call void @wys_show_u{}({} {v})", u.0, llty(t)),
@@ -870,7 +883,7 @@ fn emit_show_glue(out: &mut String, p: &Program) {
                 }
                 let _ = writeln!(out, "{}\n  ret void\n}}", texts.write(")"));
             }
-            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py | Ty::Task(_) => {}
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py | Ty::Task(_) | Ty::Unknown => {}
         }
     }
     texts.emit(out);
@@ -892,6 +905,7 @@ fn pyconv_inst(t: Ty, dst: &str, v: &str) -> String {
         Ty::Union(u) => format!("  {dst} = call ptr @wys_pyconv_u{}({} {v})", u.0, llty(t)),
         Ty::Record(_) => unreachable!("records cannot be converted to Python (E1201)"),
         Ty::Task(_) => unreachable!("tasks cannot be converted to Python (E1201)"),
+        Ty::Unknown => unreachable!("unchecked values cannot be converted to Python (E1201)"),
     }
 }
 
@@ -1122,9 +1136,20 @@ fn emit_glue(out: &mut String, p: &Program, drops: &DropInfo) {
             "  %i2 = add i64 %i, 1\n  br label %loop\nfin:\n  call void @wys_list_free(ptr %p, i64 {size})\n  br label %done\ndone:\n  ret void\n}}"
         );
     }
+    // Union と `Unknown`（ADR-0021 論点 3）は同じ形の関数: タグで分岐して、参照型の構成要素だけを操作する。
+    // `Unknown` の `list` / `dict` の種類の解放は `@wys_release_list{l}` を経由して要素の `Unknown` に戻る（相互再帰）
+    let mut sums: Vec<(Ty, Vec<Member>)> = p
+        .unions
+        .iter()
+        .enumerate()
+        .map(|(i, ms)| (Ty::Union(UnionId(i as u32)), ms.clone()))
+        .collect();
+    if p.unknown.is_some() {
+        sums.push((Ty::Unknown, p.unknown_members().to_vec()));
+    }
     for kind in ["retain", "release"] {
-        for (i, members) in p.unions.iter().enumerate() {
-            let uty = Ty::Union(UnionId(i as u32));
+        for (uty, members) in &sums {
+            let uty = *uty;
             if !drops.get(uty) {
                 continue;
             }
@@ -1195,6 +1220,13 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
         for inst in &b.insts {
             let (dst, ty) = match inst {
                 Inst::MakeUnion { dst, union, .. } => (*dst, Ty::Union(*union)),
+                Inst::MakeUnknown { dst, .. } => (*dst, Ty::Unknown),
+                // `parse_json` はランタイムが木を出力ポインタに書く
+                Inst::Call {
+                    dst: Some(dst),
+                    callee: Callee::Builtin(Builtin::JsonParse),
+                    ..
+                } => (*dst, Ty::Unknown),
                 Inst::UnionIs { dst, src, .. } | Inst::UnionPayload { dst, src, .. } => {
                     (*dst, f.temps[src.0 as usize])
                 }
@@ -1267,12 +1299,28 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                 }
                 Inst::MakeUnion {
                     dst,
-                    union,
-                    variant,
-                    payload,
+                    union: _,
+                    variant: _,
+                    payload: _,
+                }
+                | Inst::MakeUnknown {
+                    dst,
+                    kind: _,
+                    payload: _,
                 } => {
+                    let (uty, variant, payload) = match inst {
+                        Inst::MakeUnion {
+                            union,
+                            variant,
+                            payload,
+                            ..
+                        } => (llty(Ty::Union(*union)), *variant, payload),
+                        Inst::MakeUnknown { kind, payload, .. } => {
+                            (llty(Ty::Unknown), *kind, payload)
+                        }
+                        _ => unreachable!(),
+                    };
                     let d = t(*dst);
-                    let uty = llty(Ty::Union(*union));
                     let _ = writeln!(
                         out,
                         "  {d}.tag = getelementptr inbounds {uty}, ptr {d}.slot, i32 0, i32 0\n  store i8 {variant}, ptr {d}.tag"
@@ -1818,6 +1866,26 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                             }
                         }
                     }
+                    Callee::Builtin(Builtin::JsonParse) => {
+                        let d = t(dst.expect("json_parse returns a value"));
+                        let _ = writeln!(
+                            out,
+                            "  call void @wys_json_parse(ptr {}, ptr {d}.slot)\n  {d} = load %unknown, ptr {d}.slot",
+                            t(args[0])
+                        );
+                    }
+                    Callee::Builtin(
+                        b
+                        @ (Builtin::JsonFailed | Builtin::JsonErrMessage | Builtin::JsonErrOffset),
+                    ) => {
+                        let d = t(dst.expect("json builtins return a value"));
+                        let (ret, sym) = match b {
+                            Builtin::JsonFailed => ("zeroext i1", "@wys_json_failed"),
+                            Builtin::JsonErrMessage => ("ptr", "@wys_json_err_message"),
+                            _ => ("i64", "@wys_json_err_offset"),
+                        };
+                        let _ = writeln!(out, "  {d} = call {ret} {sym}()");
+                    }
                     Callee::Builtin(b) => {
                         let (sym, arg_ty) = match b {
                             Builtin::PrintInt => ("@wys_print_int", "i64"),
@@ -1901,6 +1969,7 @@ mod tests {
             lists: vec![],
             dicts: vec![],
             tasks: vec![],
+            unknown: None,
             display: Default::default(),
             entry: FuncId(0),
             funcs: vec![Function {
@@ -1940,6 +2009,7 @@ mod tests {
             lists: vec![],
             dicts: vec![],
             tasks: vec![],
+            unknown: None,
             display: Default::default(),
             entry: FuncId(0),
             funcs: vec![Function {

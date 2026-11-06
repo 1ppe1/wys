@@ -1,0 +1,10 @@
+# expect-error: E0101 4:18
+def f(v: Unknown) -> None:
+    match v:
+        case list[int]():
+            pass
+        case _:
+            pass
+
+def main() -> None:
+    pass

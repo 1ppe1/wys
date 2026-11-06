@@ -857,3 +857,20 @@ fn explicit_type_arguments_select_the_instance() {
     assert!(ir.contains("fn f1 empty__"), "{ir}");
     assert!(ir.contains("size__") && ir.contains("(l0: list"), "{ir}");
 }
+
+#[test]
+fn parse_json_builds_an_unknown_tree() {
+    // `parse_json` と `case list():` / `case dict():`（ADR-0021）。`dump-ir` には `Unknown` の型と `make_unknown` が出る
+    let src = "def size(u: Unknown) -> int:\n    match u:\n        case list():\n            return len(u)\n        case dict():\n            return len(u)\n        case _:\n            return -1\n\ndef main() -> None:\n    match parse_json(\"{\\\"a\\\": [1, 2, 3]}\"):\n        case Ok(v):\n            match v:\n                case dict():\n                    if \"a\" in v:\n                        print(size(v[\"a\"]))\n                case _:\n                    pass\n        case Err(e):\n            print(e.message)\n    print(size(parse_scalar(\"7\")))\n    match parse_json(\"[1,\"):\n        case Ok(_v):\n            pass\n        case Err(e):\n            print(e.offset)\n";
+    let (code, out, err) = run("parse_json", src);
+    assert_eq!((code, out.as_str()), (0, "3\n-1\n3\n"), "{err}");
+    let path = scratch("parse_json_ir.wys", src);
+    let ir = cli(&["dump-ir", path.to_str().unwrap()]);
+    let ir = String::from_utf8_lossy(&ir.stdout);
+    assert!(
+        ir.contains("unknown = int | bool | str | float | None | list"),
+        "{ir}"
+    );
+    assert!(ir.contains("call @json_parse("), "{ir}");
+    assert!(ir.contains("make_unknown int("), "{ir}");
+}

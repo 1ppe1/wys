@@ -1,0 +1,12 @@
+# expect-error: E0201 4:18
+# expect-error: E0201 7:26
+def f(v: Unknown) -> None:
+    u: Unknown = [1]
+    match v:
+        case list():
+            w: Unknown = v
+        case _:
+            pass
+
+def main() -> None:
+    pass

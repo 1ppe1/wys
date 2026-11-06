@@ -38,7 +38,7 @@ if_stmt     = "if" expr ":" block { "elif" expr ":" block } [ "else" ":" block ]
 while_stmt  = "while" expr ":" block ;
 match_stmt  = "match" expr ":" NEWLINE INDENT case_clause { case_clause } DEDENT ;
 case_clause = "case" pattern ":" block ;
-pattern     = IDENT "(" ")"                             (* 型パターン: int() / bool() / str() / Result() *)
+pattern     = IDENT "(" ")"                             (* 型パターン: int() / bool() / str() / Result()。Unknown には list() / dict() も（ADR-0021 論点 2） *)
             | IDENT "(" ( IDENT | "_" ) ")"             (* 束縛パターン: Ok(x) / Err(e) / Ok(_)（ADR-0013）。
                                                            束縛変数のスコープは case の本体だけ *)
             | "None"
