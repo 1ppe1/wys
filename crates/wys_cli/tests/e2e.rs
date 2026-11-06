@@ -44,8 +44,24 @@ fn scratch(name: &str, src: &str) -> PathBuf {
     path
 }
 
+/// `wys` のコマンド。開発者のシェルの AI Runtime の設定（ADR-0023）は外す（テストの結果を変えないように）
+fn wys() -> Command {
+    let mut cmd = Command::new(CLI);
+    for (k, _) in std::env::vars() {
+        if k.starts_with("WYS_LLM_")
+            || matches!(
+                k.as_str(),
+                "WYS_CAPABILITIES" | "WYS_APPROVAL" | "WYS_AUDIT"
+            )
+        {
+            cmd.env_remove(k);
+        }
+    }
+    cmd
+}
+
 fn cli(args: &[&str]) -> Output {
-    Command::new(CLI)
+    wys()
         .args(args)
         .env("WYS_RUNTIME_LIB", runtime_lib())
         .env("WYS_RUNTIME_PYTHON_LIB", python_runtime_lib())
@@ -58,7 +74,7 @@ fn python_runtime_lib() -> PathBuf {
 }
 
 fn cli_env(args: &[&str], envs: &[(&str, &str)]) -> Output {
-    Command::new(CLI)
+    wys()
         .args(args)
         .env("WYS_RUNTIME_LIB", runtime_lib())
         .env("WYS_RUNTIME_PYTHON_LIB", python_runtime_lib())
@@ -911,4 +927,39 @@ fn decorators_appear_in_dump_ir() {
         ),
         "{ir}"
     );
+}
+
+#[test]
+fn llm_output_is_validated_against_the_declared_type() {
+    // llm_generate[T]（ADR-0022 論点 8、AC-006）: モックの本文は T として検証され、合わなければ Err(schema)。
+    // dump-ir には llm_generate と出力スキーマの定数が出る。WYS_AUDIT は監査イベントを JSON 行で書く
+    let src = "type Plan = {title: str, steps: int}\n\ndef req() -> LlmRequest uses pure:\n    return LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n\nasync def main() -> None uses io, llm:\n    llm_mock_push(MockResponse(text=\"{\\\"title\\\": \\\"t\\\", \\\"steps\\\": 2}\", tool_calls=[], input_tokens=3, output_tokens=4, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"{\\\"title\\\": \\\"t\\\"}\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    i = 0\n    while i < 2:\n        match await llm_generate[Plan](req()):\n            case Ok(p):\n                print(p.steps)\n            case Err(e):\n                print(e.kind + \": \" + e.message)\n        i = i + 1\n";
+    let path = scratch("llm_validated.wys", src);
+    let audit = path.with_extension("audit.jsonl");
+    let _ = std::fs::remove_file(&audit);
+    let out = cli_env(
+        &["run", path.to_str().unwrap()],
+        &[
+            ("WYS_AUDIT", audit.to_str().unwrap()),
+            ("WYS_VIRTUAL_TIME", "1"),
+        ],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "2\nschema: steps: expected int, found missing\n",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(&audit)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let kinds: Vec<&str> = lines.iter().map(|l| l["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["llm_called", "llm_called", "schema_rejected"]);
+    assert_eq!(lines[0]["detail"], "tokens=7");
+    let ir = cli(&["dump-ir", path.to_str().unwrap()]);
+    let ir = String::from_utf8_lossy(&ir.stdout);
+    assert!(ir.contains("call @llm_generate("), "{ir}");
+    assert!(ir.contains("const schema r"), "{ir}");
 }

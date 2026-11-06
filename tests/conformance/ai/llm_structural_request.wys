@@ -1,0 +1,14 @@
+# 組み込みのレコードは構造的: 同じフィールドの利用者のレコードをそのまま渡せる（ADR-0022 論点 3）
+# expect-stdout: ok
+type Msg = {role: str, content: str}
+
+type Req = {model: str, system: str, messages: list[Msg], max_tokens: int}
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="ok", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    r = Req(model="m", system="s", messages=[Msg(role="user", content="x")], max_tokens=5)
+    match await llm_generate[str](r):
+        case Ok(t):
+            print(t)
+        case Err(e):
+            print(e.kind)

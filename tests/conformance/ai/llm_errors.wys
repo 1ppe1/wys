@@ -1,0 +1,29 @@
+# モックが尽きた、要求が不正（messages が空、未知の role）、根のコンテキストでツールを要求された（ADR-0023 論点 9・10）
+# expect-stdout: mock_exhausted
+# expect-stdout: provider
+# expect-stdout: provider
+# expect-stdout: denied
+# expect-stdout: tool_denied add
+def ask(messages: list[Message]) -> LlmRequest uses pure:
+    return LlmRequest(model="", system="", messages=messages, max_tokens=0)
+
+async def kind(req: LlmRequest) -> None uses io, llm:
+    match await llm_generate[str](req):
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind)
+
+async def main() -> None uses io, llm:
+    await kind(ask([Message(role="user", content="hi")]))
+    await kind(ask([]))
+    await kind(ask([Message(role="system", content="hi")]))
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="add", args_json="{}")], input_tokens=1, output_tokens=1, latency_ms=0))
+    await kind(ask([Message(role="user", content="hi")]))
+    for ev in audit_events():
+        if ev.kind == "tool_denied":
+            match ev.tool:
+                case str():
+                    print(ev.kind + " " + ev.tool)
+                case None:
+                    print(ev.kind)

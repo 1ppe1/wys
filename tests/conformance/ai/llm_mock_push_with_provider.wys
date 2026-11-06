@@ -1,0 +1,6 @@
+# 実プロバイダを設定したまま llm_mock_push を呼ぶと実行時エラー（テストの設定が本番の呼び出しに化けない。ADR-0022 論点 10）
+# expect-env: WYS_LLM_PROVIDER=cmd:/nonexistent
+# expect-exit: 101
+# expect-stderr-contains: llm_mock_push is not allowed when WYS_LLM_PROVIDER is set
+def main() -> None:
+    llm_mock_push(MockResponse(text="hi", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))

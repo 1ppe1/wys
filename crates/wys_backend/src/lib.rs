@@ -204,6 +204,14 @@ declare void @wys_json_float(double)
 declare void @wys_json_str(ptr)
 declare void @wys_json_unknown(ptr)
 declare ptr @wys_json_end()
+declare ptr @wys_llm_generate(ptr, ptr)
+declare zeroext i1 @wys_llm_failed()
+declare ptr @wys_llm_err_kind()
+declare ptr @wys_llm_err_message()
+declare ptr @wys_llm_json_rejected()
+declare ptr @wys_llm_schema_rejected()
+declare void @wys_llm_mock_push(ptr)
+declare ptr @wys_audit_json()
 declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
@@ -268,6 +276,26 @@ fn type_defs(p: &Program) -> String {
     }
     if p.unknown.is_some() {
         out.push_str("%unknown = type { i8, [1 x i64] }\n");
+    }
+    out
+}
+
+/// `const schema` に使う型（出現の順、重複なし）。
+fn schema_consts(p: &Program) -> Vec<Ty> {
+    let mut out: Vec<Ty> = Vec::new();
+    for f in &p.funcs {
+        for b in &f.blocks {
+            for inst in &b.insts {
+                if let Inst::Const {
+                    value: Const::Schema(t),
+                    ..
+                } = inst
+                    && !out.contains(t)
+                {
+                    out.push(*t);
+                }
+            }
+        }
     }
     out
 }
@@ -363,6 +391,16 @@ fn emit_module(p: &Program, sanitize_address: bool) -> String {
         let _ = writeln!(
             out,
             "@.str.{i} = private unnamed_addr constant {{ i64, i64, [{len} x i8] }} {{ i64 -1, i64 {len}, [{len} x i8] {bytes} }}, align 8"
+        );
+    }
+    // 型の JSON Schema（`const schema`、ADR-0022 論点 5）も不死の文字列オブジェクト
+    for (k, t) in schema_consts(p).iter().enumerate() {
+        let text = json_schema(p, *t);
+        let len = text.len();
+        let _ = writeln!(
+            out,
+            "@.schema.{k} = private unnamed_addr constant {{ i64, i64, [{len} x i8] }} {{ i64 -1, i64 {len}, [{len} x i8] c\"{}\" }}, align 8",
+            escape_bytes(&text)
         );
     }
     out.push('\n');
@@ -1219,6 +1257,7 @@ fn emit_glue(out: &mut String, p: &Program, drops: &DropInfo) {
 }
 
 fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) {
+    let schemas = schema_consts(p);
     let ret = f.ret.map_or("void".to_string(), llty);
     let params: Vec<String> = (0..f.param_count as usize)
         .map(|i| format!("{} %p{i}", llty(f.locals[i])))
@@ -1301,6 +1340,14 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                             "  {} = getelementptr inbounds i8, ptr @.str.{}, i64 0",
                             t(*dst),
                             s.0
+                        );
+                    }
+                    Const::Schema(ty) => {
+                        let k = schemas.iter().position(|x| x == ty).expect("collected");
+                        let _ = writeln!(
+                            out,
+                            "  {} = getelementptr inbounds i8, ptr @.schema.{k}, i64 0",
+                            t(*dst)
                         );
                     }
                 },
@@ -1925,6 +1972,37 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                             Builtin::SchemaErrPath => ("ptr", "@wys_schema_err_path"),
                             Builtin::SchemaErrExpected => ("ptr", "@wys_schema_err_expected"),
                             _ => ("ptr", "@wys_schema_err_found"),
+                        };
+                        let _ = writeln!(out, "  {d} = call {ret} {sym}()");
+                    }
+                    Callee::Builtin(Builtin::LlmGenerate) => {
+                        let d = t(dst.expect("llm_generate returns a value"));
+                        let _ = writeln!(
+                            out,
+                            "  {d} = call ptr @wys_llm_generate(ptr {}, ptr {})",
+                            t(args[0]),
+                            t(args[1])
+                        );
+                    }
+                    Callee::Builtin(Builtin::LlmMockPush) => {
+                        let _ = writeln!(out, "  call void @wys_llm_mock_push(ptr {})", t(args[0]));
+                    }
+                    Callee::Builtin(
+                        b @ (Builtin::LlmFailed
+                        | Builtin::LlmErrKind
+                        | Builtin::LlmErrMessage
+                        | Builtin::LlmJsonRejected
+                        | Builtin::LlmSchemaRejected
+                        | Builtin::AuditJson),
+                    ) => {
+                        let d = t(dst.expect("llm builtins return a value"));
+                        let (ret, sym) = match b {
+                            Builtin::LlmFailed => ("zeroext i1", "@wys_llm_failed"),
+                            Builtin::LlmErrKind => ("ptr", "@wys_llm_err_kind"),
+                            Builtin::LlmErrMessage => ("ptr", "@wys_llm_err_message"),
+                            Builtin::LlmJsonRejected => ("ptr", "@wys_llm_json_rejected"),
+                            Builtin::LlmSchemaRejected => ("ptr", "@wys_llm_schema_rejected"),
+                            _ => ("ptr", "@wys_audit_json"),
                         };
                         let _ = writeln!(out, "  {d} = call {ret} {sym}()");
                     }

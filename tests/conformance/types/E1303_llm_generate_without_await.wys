@@ -1,0 +1,4 @@
+# expect-error: E1303 4:9
+async def main() -> None uses llm:
+    req = LlmRequest(model="", system="", messages=[], max_tokens=0)
+    r = llm_generate[str](req)

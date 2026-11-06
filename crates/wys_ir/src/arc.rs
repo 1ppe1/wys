@@ -392,7 +392,7 @@ fn keeps_places(inst: &Inst) -> bool {
         Inst::Spawn { .. }
         | Inst::Await { .. }
         | Inst::Call {
-            callee: Callee::Builtin(Builtin::SleepMs),
+            callee: Callee::Builtin(Builtin::SleepMs | Builtin::LlmGenerate),
             ..
         } => false,
         // 呼ばれた関数は、引数を通じてコンテナを書き換え得る（`xs[0] + replace_first(xs)`）
@@ -426,6 +426,13 @@ fn keeps_places(inst: &Inst) -> bool {
                 | Builtin::Exit
                 | Builtin::Panic
                 | Builtin::AssertFail
+                | Builtin::LlmFailed
+                | Builtin::LlmErrKind
+                | Builtin::LlmErrMessage
+                | Builtin::LlmJsonRejected
+                | Builtin::LlmSchemaRejected
+                | Builtin::LlmMockPush
+                | Builtin::AuditJson
         ),
         _ => true,
     }

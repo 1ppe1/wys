@@ -9,6 +9,7 @@
 //! # expect-exit: 101                期待する終了コード（省略時は 0）
 //! # expect-stderr-contains: overflow 標準エラーに含まれるべき文字列
 //! # expect-args: 42 true hello      実行時にプログラムに渡すコマンドライン引数（空白区切り）
+//! # expect-env: WYS_APPROVAL=allow 実行時に設定する環境変数（`KEY=VALUE`。複数書ける。ADR-0023 の影響）
 //! # expect-mode: test               `wys test` と同じ検査（main 不要、test_* の検査）で診断だけを確かめる
 //! ```
 //!
@@ -27,8 +28,16 @@ pub struct Expectations {
     pub exit: i32,
     pub stderr_contains: Vec<String>,
     pub args: Vec<String>,
+    /// `# expect-env: KEY=VALUE`
+    pub env: Vec<(String, String)>,
     /// `# expect-mode: test`
     pub test_mode: bool,
+}
+
+/// 実行時の挙動を変える AI Runtime の環境変数（ADR-0023 と `docs/design/ai-sdk.md` 11 章）。
+pub fn is_ai_env(name: &str) -> bool {
+    name.starts_with("WYS_LLM_")
+        || matches!(name, "WYS_CAPABILITIES" | "WYS_APPROVAL" | "WYS_AUDIT")
 }
 
 pub fn parse_expectations(src: &str) -> Result<Expectations, String> {
@@ -71,6 +80,10 @@ pub fn parse_expectations(src: &str) -> Result<Expectations, String> {
             }
             "stderr-contains" => e.stderr_contains.push(value.to_string()),
             "args" => e.args.extend(value.split_whitespace().map(str::to_string)),
+            "env" => match value.split_once('=') {
+                Some((k, v)) => e.env.push((k.trim().to_string(), v.trim().to_string())),
+                None => return Err(format!("line {}: `expect-env` needs KEY=VALUE", i + 1)),
+            },
             "mode" if value.trim() == "test" => e.test_mode = true,
             other => return Err(format!("line {}: unknown expectation `{other}`", i + 1)),
         }
@@ -180,7 +193,15 @@ pub fn run_case(
     let exe = scratch.join(stem);
     wys_driver::link_program(program, &exe, opts).map_err(|e| format!("build failed: {e:?}"))?;
     // `sleep_ms` は仮想時計で順序を決め、実時間は待たない（ADR-0020 論点 10）
-    let out = Command::new(&exe)
+    // 開発者のシェルの AI Runtime の設定（ADR-0023）がケースの結果を変えないように、外してから `# expect-env:` を足す
+    let mut cmd = Command::new(&exe);
+    for (k, _) in std::env::vars() {
+        if is_ai_env(&k) {
+            cmd.env_remove(k);
+        }
+    }
+    let out = cmd
+        .envs(exp.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .env("WYS_VIRTUAL_TIME", "1")
         .args(&exp.args)
         .output()

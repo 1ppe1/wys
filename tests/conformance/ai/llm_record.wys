@@ -1,0 +1,14 @@
+# llm_generate[T] の本文はスキーマ型 T として検証される（ADR-0022 論点 8、AC-006）
+# expect-stdout: plan
+# expect-stdout: 3
+type Plan = {title: str, steps: int}
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="{\"title\": \"plan\", \"steps\": 3}", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    req = LlmRequest(model="", system="Reply with a plan.", messages=[Message(role="user", content="go")], max_tokens=0)
+    match await llm_generate[Plan](req):
+        case Ok(p):
+            print(p.title)
+            print(p.steps)
+        case Err(e):
+            print(e.kind + ": " + e.message)

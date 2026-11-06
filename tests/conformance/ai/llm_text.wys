@@ -1,0 +1,18 @@
+# llm_generate[str]（ADR-0022 論点 8）: モックの本文をそのまま返す。監査イベントに llm_called が残る（ADR-0023 論点 15）
+# expect-stdout: hello
+# expect-stdout: 1
+# expect-stdout: llm_called tokens=15
+def request(text: str) -> LlmRequest uses pure:
+    return LlmRequest(model="", system="", messages=[Message(role="user", content=text)], max_tokens=0)
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="hello", tool_calls=[], input_tokens=10, output_tokens=5, latency_ms=0))
+    match await llm_generate[str](request("hi")):
+        case Ok(t):
+            print(t)
+        case Err(e):
+            print(e.kind)
+    events = audit_events()
+    print(len(events))
+    for ev in events:
+        print(ev.kind + " " + ev.detail)

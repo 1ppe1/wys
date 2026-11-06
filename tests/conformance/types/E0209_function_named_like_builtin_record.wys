@@ -1,0 +1,6 @@
+# expect-error: E0209 2:5
+def Message(role: str) -> str uses pure:
+    return role
+
+def main() -> None:
+    pass

@@ -471,6 +471,93 @@ impl Types {
         )
     }
 
+    /// AI SDK の組み込みのレコード（ADR-0022 論点 3）。構造的で、同じフィールドの利用者のレコードと同じ型。
+    pub fn message(&mut self) -> Ty {
+        self.record_named(
+            vec![("role".into(), Ty::Str), ("content".into(), Ty::Str)],
+            Some("Message".into()),
+            vec![],
+        )
+    }
+
+    pub fn llm_request(&mut self) -> Ty {
+        let m = self.message();
+        let ms = self.list(m);
+        self.record_named(
+            vec![
+                ("model".into(), Ty::Str),
+                ("system".into(), Ty::Str),
+                ("messages".into(), ms),
+                ("max_tokens".into(), Ty::Int),
+            ],
+            Some("LlmRequest".into()),
+            vec![],
+        )
+    }
+
+    pub fn llm_error(&mut self) -> Ty {
+        self.record_named(
+            vec![("kind".into(), Ty::Str), ("message".into(), Ty::Str)],
+            Some("LlmError".into()),
+            vec![],
+        )
+    }
+
+    pub fn audit_event(&mut self) -> Ty {
+        let tool = self.union([Ty::Str, Ty::None]);
+        self.record_named(
+            vec![
+                ("seq".into(), Ty::Int),
+                ("kind".into(), Ty::Str),
+                ("agent".into(), Ty::Str),
+                ("tool".into(), tool),
+                ("detail".into(), Ty::Str),
+            ],
+            Some("AuditEvent".into()),
+            vec![],
+        )
+    }
+
+    pub fn mock_tool_call(&mut self) -> Ty {
+        self.record_named(
+            vec![("name".into(), Ty::Str), ("args_json".into(), Ty::Str)],
+            Some("MockToolCall".into()),
+            vec![],
+        )
+    }
+
+    pub fn mock_response(&mut self) -> Ty {
+        let c = self.mock_tool_call();
+        let cs = self.list(c);
+        self.record_named(
+            vec![
+                ("text".into(), Ty::Str),
+                ("tool_calls".into(), cs),
+                ("input_tokens".into(), Ty::Int),
+                ("output_tokens".into(), Ty::Int),
+                ("latency_ms".into(), Ty::Int),
+            ],
+            Some("MockResponse".into()),
+            vec![],
+        )
+    }
+
+    /// 組み込みのレコードの名前（`PyError`、`JsonError`、`SchemaError` と AI SDK の 6 つ）。
+    pub fn builtin_record(&mut self, name: &str) -> Option<Ty> {
+        Some(match name {
+            "PyError" => self.py_error(),
+            "JsonError" => self.json_error(),
+            "SchemaError" => self.schema_error(),
+            "Message" => self.message(),
+            "LlmRequest" => self.llm_request(),
+            "LlmError" => self.llm_error(),
+            "AuditEvent" => self.audit_event(),
+            "MockToolCall" => self.mock_tool_call(),
+            "MockResponse" => self.mock_response(),
+            _ => return None,
+        })
+    }
+
     /// スキーマ型か（ADR-0022 論点 4 と訂正）。`top` なら一番外側（`None` だけの型は使えない）。
     pub fn is_schema_type(&self, t: Ty, top: bool) -> bool {
         match t {
@@ -710,6 +797,24 @@ impl Types {
     }
 }
 
+/// 組み込みの async 関数（`await` の直下にだけ書け、タスクにはできない。ADR-0020 論点 10、ADR-0022 論点 8）。
+fn is_async_builtin(name: &str) -> bool {
+    matches!(name, "sleep_ms" | "llm_generate")
+}
+
+/// 組み込みのレコードの名前（再定義は E0209。`Name(...)` で作れる）。
+pub const BUILTIN_RECORDS: [&str; 9] = [
+    "PyError",
+    "JsonError",
+    "SchemaError",
+    "Message",
+    "LlmRequest",
+    "LlmError",
+    "AuditEvent",
+    "MockToolCall",
+    "MockResponse",
+];
+
 #[derive(Debug, Clone)]
 pub struct FuncSig {
     pub name: String,
@@ -881,6 +986,7 @@ pub fn builtin_effects(name: &str) -> Option<EffectSet> {
         "print" | "arg" | "arg_count" => s.insert(Effect::Io),
         "exit" => s.insert(Effect::Exit),
         "py_import" | "py_value" => s.insert(Effect::Python),
+        "llm_generate" => s.insert(Effect::Llm),
         _ if py_method => s.insert(Effect::Python),
         _ => {}
     }
@@ -1060,6 +1166,9 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
     cx.types.py_error();
     cx.types.json_error();
     cx.types.schema_error();
+    for n in BUILTIN_RECORDS {
+        cx.types.builtin_record(n);
+    }
     declare_types(&mut cx, module);
     for f in &module.funcs {
         let type_params: Vec<ParamId> = f
@@ -1076,6 +1185,16 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
                 "E0209",
                 format!(
                     "`{}` is a built-in function and cannot be redefined",
+                    f.name.name
+                ),
+                f.name.span,
+            ));
+        } else if BUILTIN_RECORDS.contains(&f.name.name.as_str()) {
+            // `Message(...)` は組み込みのレコードの構築になるので、同じ名前の関数は呼べない
+            cx.diags.push(Diagnostic::error(
+                "E0209",
+                format!(
+                    "`{}` is a built-in type and cannot be redefined as a function",
                     f.name.name
                 ),
                 f.name.span,
@@ -1174,9 +1293,9 @@ fn declare_types(cx: &mut Ctx, module: &Module) {
                 | "list"
                 | "dict"
                 | "PyObject"
-                | "PyError"
                 | "Task"
-        ) {
+        ) || BUILTIN_RECORDS.contains(&name.as_str())
+        {
             cx.diags.push(Diagnostic::error(
                 "E0209",
                 format!("`{name}` is a built-in type and cannot be redefined"),
@@ -1812,9 +1931,10 @@ impl Ctx {
                 "None" => Ty::None,
                 "Unknown" => Ty::Unknown,
                 "PyObject" => Ty::PyObject,
-                "PyError" => self.types.py_error(),
-                "JsonError" => self.types.json_error(),
-                "SchemaError" => self.types.schema_error(),
+                name if BUILTIN_RECORDS.contains(&name) => self
+                    .types
+                    .builtin_record(name)
+                    .expect("listed in BUILTIN_RECORDS"),
                 other if self.aliases.contains_key(other) => self.resolve_alias(other),
                 other => {
                     self.diags.push(
@@ -3825,7 +3945,9 @@ impl<'a> FnCk<'a> {
                 kwargs,
             } => {
                 let explicit = self.explicit_type_args(callee, type_args);
-                if self.cx.aliases.contains_key(&callee.name) {
+                if self.cx.aliases.contains_key(&callee.name)
+                    || BUILTIN_RECORDS.contains(&callee.name.as_str())
+                {
                     self.construct(callee, explicit.as_deref(), args, kwargs, e.span, env)
                 } else if !kwargs.is_empty() {
                     self.check_effects(callee);
@@ -4241,6 +4363,23 @@ impl<'a> FnCk<'a> {
                     })
                     .collect()
             }
+            // Generic でないレコード（組み込みのレコードを含む）は、フィールドの型そのもの（`MockResponse(tool_calls=[])`）
+            (_, None) => {
+                let rt = match self.cx.types.builtin_record(&callee.name) {
+                    Some(t) => t,
+                    None if self.cx.aliases.contains_key(&callee.name) => {
+                        self.cx.resolve_alias(&callee.name)
+                    }
+                    None => Ty::Error,
+                };
+                match rt {
+                    Ty::Record(r) => kwargs
+                        .iter()
+                        .map(|(k, _)| self.cx.types.record_def(r).field(&k.name).map(|(_, t)| t))
+                        .collect(),
+                    _ => vec![None; kwargs.len()],
+                }
+            }
             _ => vec![None; kwargs.len()],
         };
         let kw_tys: Vec<Ty> = kwargs
@@ -4274,7 +4413,10 @@ impl<'a> FnCk<'a> {
                 }
                 ty
             }
-            None => self.cx.resolve_alias(&callee.name),
+            None => match self.cx.types.builtin_record(&callee.name) {
+                Some(t) => t,
+                None => self.cx.resolve_alias(&callee.name),
+            },
         };
         let id = match ty {
             Ty::Record(id) => id,
@@ -4535,8 +4677,8 @@ impl<'a> FnCk<'a> {
         );
         let expected = if let Some((params, _)) = self.cx.generics.get(&callee.name) {
             Some(params.len())
-        } else if callee.name == "validate" {
-            // 組み込みの Generic（ADR-0022 論点 6）
+        } else if matches!(callee.name.as_str(), "validate" | "llm_generate") {
+            // 組み込みの Generic（ADR-0022 論点 6・8）
             Some(1)
         } else if self.cx.aliases.contains_key(&callee.name) {
             None
@@ -4582,7 +4724,7 @@ impl<'a> FnCk<'a> {
     /// 型引数の誤りを報告した後の値。組み込みの Generic（`validate`）は推論で補えないので、`Error` の型引数にして
     /// 「型引数がない」（E0403）を重ねて出さない。利用者の Generic は従来どおり推論に任せる
     fn erroneous_type_args(&self, callee: &Ident, n: usize) -> Option<Vec<Ty>> {
-        (callee.name == "validate").then(|| vec![Ty::Error; n])
+        matches!(callee.name.as_str(), "validate" | "llm_generate").then(|| vec![Ty::Error; n])
     }
 
     /// 推論できなかった型パラメータを報告し、`Error` で埋める。
@@ -4726,7 +4868,7 @@ impl<'a> FnCk<'a> {
     fn is_async_call(&self, e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Call { callee, .. } => {
-                callee.name == "sleep_ms"
+                is_async_builtin(&callee.name)
                     || self
                         .cx
                         .sig_index
@@ -4814,7 +4956,7 @@ impl<'a> FnCk<'a> {
         }
         let a = &args[0];
         let is_sleep =
-            matches!(&a.kind, ExprKind::Call { callee, .. } if callee.name == "sleep_ms");
+            matches!(&a.kind, ExprKind::Call { callee, .. } if is_async_builtin(&callee.name));
         if self.is_async_call(a) && !is_sleep {
             self.allow_async_call = true;
             let t = self.expr(a, env);
@@ -4826,8 +4968,11 @@ impl<'a> FnCk<'a> {
         if t != Ty::Error {
             let what = match &a.kind {
                 // `sleep_ms` は組み込みの中断点で、タスクにはできない（`await sleep_ms(n)` と書く）
-                ExprKind::Call { callee, .. } if callee.name == "sleep_ms" => {
-                    "`sleep_ms` cannot run as a task; write `await sleep_ms(n)`, or spawn an `async def` function that sleeps".to_string()
+                ExprKind::Call { callee, .. } if is_async_builtin(&callee.name) => {
+                    format!(
+                        "`{n}` cannot run as a task; write `await {n}(...)`, or spawn an `async def` function that calls it",
+                        n = callee.name
+                    )
                 }
                 ExprKind::Call { callee, .. } => {
                     format!("`{}` is not an `async def` function", callee.name)
@@ -4863,7 +5008,7 @@ impl<'a> FnCk<'a> {
             self.check_effects(callee);
             return self.spawn(args, span, env);
         }
-        let is_async = callee.name == "sleep_ms"
+        let is_async = is_async_builtin(&callee.name)
             || self
                 .cx
                 .sig_index
@@ -4983,6 +5128,81 @@ impl<'a> FnCk<'a> {
                 self.require_schema_type(t, span, "the type argument of `validate`");
                 self.cx.call_type_args.insert(id, vec![t]);
                 return self.cx.types.result(t, err);
+            }
+            "llm_generate" => {
+                // llm_generate[T](req: LlmRequest) -> Result[T, LlmError]（ADR-0022 論点 8）
+                let err = self.cx.types.llm_error();
+                let req_t = self.cx.types.llm_request();
+                let Some(&[t]) = explicit else {
+                    if explicit.is_none() {
+                        self.cx.diags.push(
+                            Diagnostic::error(
+                                "E0403",
+                                "cannot infer the type parameter of `llm_generate`",
+                                span,
+                            )
+                            .with_hint("write the type to generate, e.g. `llm_generate[Plan](req)` or `llm_generate[str](req)`"),
+                        );
+                    }
+                    return Ty::Error;
+                };
+                if args.len() != 1 {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!(
+                            "`llm_generate` takes 1 argument but {} were given",
+                            args.len()
+                        ),
+                        span,
+                    ));
+                } else {
+                    self.cx.require(
+                        arg_tys[0],
+                        req_t,
+                        args[0].span,
+                        "argument of `llm_generate`",
+                        None,
+                    );
+                }
+                self.require_schema_type(t, span, "the type argument of `llm_generate`");
+                self.cx.call_type_args.insert(id, vec![t]);
+                return self.cx.types.result(t, err);
+            }
+            "llm_mock_push" => {
+                let mr = self.cx.types.mock_response();
+                if args.len() != 1 {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!(
+                            "`llm_mock_push` takes 1 argument but {} were given",
+                            args.len()
+                        ),
+                        span,
+                    ));
+                } else {
+                    self.cx.require(
+                        arg_tys[0],
+                        mr,
+                        args[0].span,
+                        "argument of `llm_mock_push`",
+                        None,
+                    );
+                }
+                return Ty::None;
+            }
+            "audit_events" => {
+                if !args.is_empty() {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!(
+                            "`audit_events` takes no arguments but {} were given",
+                            args.len()
+                        ),
+                        span,
+                    ));
+                }
+                let ev = self.cx.types.audit_event();
+                return self.cx.types.list(ev);
             }
             "to_json" => {
                 if args.len() != 1 {

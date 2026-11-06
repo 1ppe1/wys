@@ -31,7 +31,7 @@
 | E0206 | 型 | 値を返す関数が、`return` せずに終わる経路がある |
 | E0207 | 型 | 演算子をその型に使えない（暗黙の型変換はしない）。`int` と `float` を混ぜた演算（`float(n)` / `int(x)` で変換する）、`int / int`（`//` か `float(a) / float(b)`）、`float` の `//` と `%` も含む（ADR-0019）。`is` を `None` 以外と比べた場合も含む。`==` / `!=` は、同じ型どうし（レコード・`list`・`dict`・`Result` は構成要素も比べられること）か、片方の構成要素がもう片方に含まれる Union どうし（`o == 1`）だけ。定義の違うレコード、型パラメータ、`None` との比較（`x == None`。`is None` を使う）は E0207（ADR-0016） |
 | E0208 | 型 | 未定義の関数、または関数でないものの呼び出し |
-| E0209 | 型 | 関数の重複定義、または組み込み関数の再定義 |
+| E0209 | 型 | 関数の重複定義、組み込み関数の再定義、または組み込みの型（`Result`、`Task`、組み込みのレコード `Message` / `LlmRequest` / `PyError` など）と同じ名前の型・関数の定義 |
 | E0210 | 型 | `main` がない、またはシグネチャが `def main() -> None` でない |
 | E0211 | 型 | `return` の値の有無が戻り値の型と合わない |
 | E0213 | 型 | 関数を値として使っている（未対応） |
@@ -138,6 +138,9 @@
 | `parse_json(s)` | `Result[Unknown, JsonError]` | JSON（RFC 8259）を `Unknown` の木にする。数値は、小数点も指数もなく `i64` に収まれば `int`（`-0` も）、ほかは `float`。`float` で表せない数値（`1e400`）・重複したキー・深さ 129 以上・先頭の BOM は `Err`。`JsonError` は `{message: str, offset: int}` で、`offset` は誤りを見つけた UTF-8 のバイト位置（入力の途中で終わったら入力の長さ）。`Unknown` の `list` / `dict` は `case list():` / `case dict():` で絞り込み、読み取り専用（ADR-0021） |
 | `validate[T](u)` | `Result[T, SchemaError]` | `Unknown` の木を型 `T`（スキーマ型）として検証する。整数は `float` にも受け付け、レコードは宣言したフィールドをすべて要求し、宣言にないキーは無視する。Union は型検査がそろえた順に試す。失敗は最初の不一致 1 つを `SchemaError = {path, expected, found}` で返す（`path` は `steps[2].name`、`found` は JSON の種類か `missing`）。型引数は必須（E0403）。ADR-0022 論点 6 と訂正 |
 | `to_json(v)` | `str` | スキーマ型の値を JSON にする（空白なし、レコードはフィールドの名前の順、`dict` は挿入順、`float` は `print` と同じ表記）。NaN / 無限大は実行時エラー（`cannot encode NaN or infinity as JSON`）。ADR-0022 論点 7 と訂正 |
+| `llm_generate[T](req)` | `Result[T, LlmError]`（`async`、Effect `llm`） | LLM を呼ぶ（M5 ではモック。`WYS_LLM_PROVIDER` を設定すると T11 までは `Err(kind="provider")`）。`T = str` なら本文、ほかはスキーマ型 `T` として検証（本文が JSON でなければ `invalid JSON: …`、型に合わなければ経路付き。どちらも `kind="schema"`）。`messages` が空・未知の `role` は `kind="provider"`、Capability `llm` がなければ `kind="denied"`、モックが尽きたら `kind="mock_exhausted"`。`await` の直下だけ（E1303）、タスクにはできない（E1304）。ADR-0022 論点 8・9、ADR-0023 |
+| `llm_mock_push(r)` | `None` | モックの応答（`MockResponse`）を末尾に積む。`WYS_LLM_PROVIDER` を設定していれば実行時エラー（`llm_mock_push is not allowed when WYS_LLM_PROVIDER is set`）。ADR-0022 論点 10 |
+| `audit_events()` | `list[AuditEvent]` | これまでの監査イベント（`seq` の順。本文は含めない）。ADR-0023 論点 15 |
 | `py_import(name)` | `Result[PyObject, PyError]` | Python のモジュールを import する。Effect `python`（ADR-0018） |
 | `py_value(x)` | `PyObject` | `int` / `bool` / `str` / `float` / `None`、それらの `list` / `dict`（挿入順）と Union を、新しい Python のオブジェクトにコピーする（`PyObject` はそのまま）。Effect `python` |
 | `h.attr(name)` / `h.call(args)` / `h.call_kw(args, kwargs)` | `Result[PyObject, PyError]` | 属性の参照と呼び出し（`args` は `list[PyObject]`、`kwargs` は `dict[str, PyObject]`）。Effect `python` |

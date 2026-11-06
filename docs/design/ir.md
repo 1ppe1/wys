@@ -75,6 +75,7 @@ bb0:
 - 解放処理: `@wys_retain_unknown` / `@wys_release_unknown` がタグで分岐する。`list` の種類の解放は `@wys_release_listN` から要素の `@wys_release_unknown` に戻る（相互再帰）。`needs_drop` は定数で真（型を辿らない）。
 - `parse_json` は `json_parse`（木を出力ポインタに書く。失敗なら `None` の種類）、`json_failed`、`json_err_message`、`json_err_offset` の組み合わせ。ランタイムは `wys_runtime::json`。
 - `validate[T]` は `validate`（dst の一時値の型が `T`。glue `@wys_validate_{型}` が `%unknown` の木を歩き、成功なら +1 所有の値、失敗ならゼロの値を出力ポインタに書く）と `schema_failed` / `schema_err_expected` / `schema_err_found` / `schema_err_path`。`to_json` は `to_json`（glue `@wys_to_json_{型}` が `wys_json_*` のバッファに書く）。どちらもスキーマ型だけ（検証器が確かめる。ADR-0022）。ランタイムは `wys_runtime::schema`。JSON Schema の文字列は `wys_backend::json_schema` が IR の型から作る（T8 / T9 で使う）
+- `llm_generate[T]` は `llm_generate`（`LlmRequest` を `to_json` した文字列と、出力スキーマ `const schema T`（`T = str` なら空の文字列）を渡し、本文を +1 所有で受け取る。中断点で、`async` の関数の中だけ）→ `llm_failed` / `llm_err_kind` / `llm_err_message`、本文は `json_parse` → `validate`（失敗の理由は `llm_json_rejected` / `llm_schema_rejected`。ランタイムが監査 `schema_rejected` を残す）。`llm_mock_push` は `MockResponse` の JSON、`audit_events` は `audit_json` → `json_parse` → `validate[list[AuditEvent]]`。`const schema T` はバックエンドが `json_schema` の文字列を不死の `str` として出す。ランタイムは `wys_runtime::ai`
 - 外部入力は組み込み関数（`arg_count`、`arg_exists`、`arg_str`、`scalar_kind`、`scalar_int`、`scalar_bool`）を lowering が組み合わせて作る。ランタイムとの境界はスカラーとポインタだけ。
 
 ## `wys test`（M2 T7）

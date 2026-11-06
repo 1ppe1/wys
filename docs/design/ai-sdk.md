@@ -311,3 +311,15 @@ async def main() -> None uses io, llm:
 ## 13. 用語（用語集に追加する）
 
 属性（コンパイル時のデコレータ）、スキーマ型、ツール表、トランポリン、agent コンテキスト、根のコンテキスト、proxy（`wys llm-proxy`）、JSON 行のプロトコル、配備時の縮小。
+
+## 14. T8 の時点の決定（2026-11-06、ユーザー承認）
+
+- LLM の本文が JSON として壊れていたら `Err(kind="schema")`（`message` は `invalid JSON: <理由> at <位置>`）で、監査 `schema_rejected` を残す。
+- `spawn(llm_generate[T](req))` は `sleep_ms` と同じ E1304（組み込みの async 関数はタスクにできない）。
+- 組み込みのレコードの名前（`Message`、`LlmRequest`、`LlmError`、`AuditEvent`、`MockResponse`、`MockToolCall`、`JsonError`、`SchemaError`、`PyError`）の再定義は E0209。組み込みのレコードは `Message(role=..., content=...)` のように作れる。
+- 実プロバイダをつなぐ T11 までは、`WYS_LLM_PROVIDER` を設定すると `llm_generate` は `Err(kind="provider")`。
+- PoC4 の C の試作とそのテストは削除し、挙動の検査は Conformance（`tests/conformance/ai/`）に移した。テスト用のプロバイダ `crates/wys_cli/tests/fake_provider.sh` は T11 で使う。
+- モックの `latency_ms` は agent の経過時間だけを進め、`sleep_ms` の順序を決める仮想時計は動かさない。
+- Conformance に `# expect-env: KEY=VALUE` を足した。
+- Capability がなくて `llm_generate` を拒否したときの監査は `capability_denied`、`tool` は `"llm_generate"`。
+- 根のコンテキストでモックがツールを要求したら `tool_denied` で中止する（ツールの実行は T9）。

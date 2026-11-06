@@ -276,6 +276,8 @@ pub enum Const {
     Str(StrId),
     /// `f64` のビット列（`Eq` を保つため。`f64::from_bits` で戻す）
     Float(u64),
+    /// 型の JSON Schema の文字列（不死の `str`。バックエンドが `json_schema` で作る。ADR-0022 論点 5）
+    Schema(Ty),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -410,6 +412,20 @@ pub enum Builtin {
     SchemaErrFound,
     /// `to_json(v)`: スキーマ型の値（型は問わない。verify が確かめる）を JSON の文字列にする
     ToJson,
+    // AI SDK（ADR-0022 論点 8・10、ADR-0023）。ランタイムとは JSON の文字列で受け渡す（ランタイムは型の配置を知らない）
+    /// `llm_generate`: 要求（`LlmRequest` の JSON）と出力スキーマ（空ならなし）を受け取り、本文を +1 所有で返す
+    /// （失敗なら null。`LlmFailed` で確かめる）。中断点。`async` の関数の中だけ
+    LlmGenerate,
+    LlmFailed,
+    LlmErrKind,
+    LlmErrMessage,
+    /// 直前の `parse_json` / `validate` の失敗の理由（監査 `schema_rejected` を残す）
+    LlmJsonRejected,
+    LlmSchemaRejected,
+    /// `llm_mock_push`（`MockResponse` の JSON）
+    LlmMockPush,
+    /// `audit_events` の本体: 監査イベントの JSON の配列
+    AuditJson,
 }
 
 impl Builtin {
@@ -468,6 +484,14 @@ impl Builtin {
             Builtin::SchemaErrExpected => "schema_err_expected",
             Builtin::SchemaErrFound => "schema_err_found",
             Builtin::ToJson => "to_json",
+            Builtin::LlmGenerate => "llm_generate",
+            Builtin::LlmFailed => "llm_failed",
+            Builtin::LlmErrKind => "llm_err_kind",
+            Builtin::LlmErrMessage => "llm_err_message",
+            Builtin::LlmJsonRejected => "llm_json_rejected",
+            Builtin::LlmSchemaRejected => "llm_schema_rejected",
+            Builtin::LlmMockPush => "llm_mock_push",
+            Builtin::AuditJson => "audit_json",
         }
     }
 
@@ -504,6 +528,12 @@ impl Builtin {
                 | Builtin::SchemaErrExpected
                 | Builtin::SchemaErrFound
                 | Builtin::ToJson
+                | Builtin::LlmGenerate
+                | Builtin::LlmErrKind
+                | Builtin::LlmErrMessage
+                | Builtin::LlmJsonRejected
+                | Builtin::LlmSchemaRejected
+                | Builtin::AuditJson
         )
     }
 
@@ -556,6 +586,14 @@ impl Builtin {
                 Some(Ty::Str)
             }
             Builtin::ToJson => Some(Ty::Str),
+            Builtin::LlmGenerate
+            | Builtin::LlmErrKind
+            | Builtin::LlmErrMessage
+            | Builtin::LlmJsonRejected
+            | Builtin::LlmSchemaRejected
+            | Builtin::AuditJson => Some(Ty::Str),
+            Builtin::LlmFailed => Some(Ty::Bool),
+            Builtin::LlmMockPush => None,
         }
     }
 
@@ -607,6 +645,14 @@ impl Builtin {
             Builtin::Validate | Builtin::ToJson => {
                 unreachable!("verify checks these separately")
             }
+            Builtin::LlmGenerate => &[Ty::Str, Ty::Str],
+            Builtin::LlmMockPush => &[Ty::Str],
+            Builtin::LlmFailed
+            | Builtin::LlmErrKind
+            | Builtin::LlmErrMessage
+            | Builtin::LlmJsonRejected
+            | Builtin::LlmSchemaRejected
+            | Builtin::AuditJson => &[],
         }
     }
 }
@@ -1079,6 +1125,12 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                             }
                             Ty::Str
                         }
+                        Const::Schema(t) => {
+                            if !schema_convertible(p, *t) {
+                                return Err(format!("bb{bi}: no JSON Schema for {}", t.name()));
+                            }
+                            Ty::Str
+                        }
                     };
                     expect("const", temp_ty(*dst)?, ty)?;
                     define(*dst, &mut defined_in)?;
@@ -1477,9 +1529,10 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                             _ => return Err(format!("bb{bi}: py_call takes two arguments")),
                         },
                         Callee::Builtin(b) => {
-                            if *b == Builtin::SleepMs && !f.is_async {
+                            if matches!(b, Builtin::SleepMs | Builtin::LlmGenerate) && !f.is_async {
                                 return Err(format!(
-                                    "bb{bi}: sleep_ms outside of an async function"
+                                    "bb{bi}: {} outside of an async function",
+                                    b.name()
                                 ));
                             }
                             (b.signature().to_vec(), b.ret())
@@ -1656,6 +1709,9 @@ impl fmt::Display for Program {
                             }
                             Const::Bool(v) => writeln!(f, "t{} = const {v}", dst.0)?,
                             Const::Str(s) => writeln!(f, "t{} = const s{}", dst.0, s.0)?,
+                            Const::Schema(t) => {
+                                writeln!(f, "t{} = const schema {}", dst.0, t.name())?
+                            }
                         },
                         Inst::Load { dst, src } => writeln!(f, "t{} = load l{}", dst.0, src.0)?,
                         Inst::Take { dst, src } => writeln!(f, "t{} = take l{}", dst.0, src.0)?,

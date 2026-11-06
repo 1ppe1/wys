@@ -117,6 +117,19 @@ fn render(segs: &[Seg]) -> String {
     out
 }
 
+/// 直前の `validate` の失敗の説明（`steps[2].name: expected str, found int`。経路が空なら経路を付けない）。
+pub(crate) fn last_failure_message() -> String {
+    LAST.with(|l| {
+        let f = l.borrow();
+        let path = render(&f.segs);
+        if path.is_empty() {
+            format!("expected {}, found {}", f.expected, f.found)
+        } else {
+            format!("{path}: expected {}, found {}", f.expected, f.found)
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_schema_err_path() -> *mut Header {
     LAST.with(|l| embed::new_object(render(&l.borrow().segs).as_bytes()))

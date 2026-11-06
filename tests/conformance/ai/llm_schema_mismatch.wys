@@ -1,0 +1,30 @@
+# 型に合わない出力は Err(kind="schema")、本文が JSON でなければ invalid JSON（AC-006）。監査に schema_rejected
+# expect-stdout: schema
+# expect-stdout: title: expected str, found int
+# expect-stdout: schema
+# expect-stdout: invalid JSON: expected ident at 1
+# expect-stdout: llm_called
+# expect-stdout: schema_rejected
+# expect-stdout: llm_called
+# expect-stdout: schema_rejected
+type Step = {name: str, tags: list[str]}
+
+type Plan = {title: str, steps: list[Step]}
+
+def request() -> LlmRequest uses pure:
+    return LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="{\"title\": 1, \"steps\": [{\"name\": \"a\", \"tags\": [\"x\"]}]}", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="not json", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    i = 0
+    while i < 2:
+        match await llm_generate[Plan](request()):
+            case Ok(p):
+                print(p.title)
+            case Err(e):
+                print(e.kind)
+                print(e.message)
+        i = i + 1
+    for ev in audit_events():
+        print(ev.kind)
