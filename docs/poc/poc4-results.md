@@ -51,3 +51,5 @@ scripts/llm-smoke.sh           # 1 往復（費用がかかる。モデルは WY
 ```
 
 標準エラーに監査イベント（`WYS_AUDIT=stderr`）、標準出力に最終の JSON、最後に往復の時間が出る。
+
+（追記 2026-11-06）試作の C のプログラムとそのテスト（`ai_poc.c` / `ai_proxy_poc.c` / `ai_poc.rs`）は、M5 T8 で ABI を ADR-0023 の形に書き直したときに削除し、検査は `tests/conformance/ai/` に移した。

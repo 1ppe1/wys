@@ -1,0 +1,5 @@
+# expect-error: E0209 2:6
+type Message = {text: str}
+
+def main() -> None:
+    pass

@@ -391,6 +391,16 @@ pub unsafe extern "C" fn wys_json_parse(s: *const Header, out: *mut UnknownVal) 
     unsafe { out.write(v) };
 }
 
+/// 直前の `wys_json_parse` の失敗の説明（`llm_generate` が LLM の本文を読めなかったとき。ADR-0022 論点 8）。
+pub(crate) fn last_failure_message() -> String {
+    LAST.with(|l| {
+        l.borrow()
+            .as_ref()
+            .map(|f| format!("invalid JSON: {} at {}", f.message, f.offset))
+            .unwrap_or_default()
+    })
+}
+
 /// 直前の `wys_json_parse` が失敗したか。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_json_failed() -> bool {

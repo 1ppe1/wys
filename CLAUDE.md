@@ -42,6 +42,7 @@ WYS_SANITIZE=address target/debug/wys run examples/fib.wys   # AddressSanitizer 
 WYS_RC_STATS=1 target/debug/wys run examples/fib.wys         # 終了時に retain / release の回数を出す
 WYS_ARC_OPT=0 target/debug/wys run examples/fib.wys          # Move 最適化を止める（前後の比較、誤りの切り分け）
 WYS_VIRTUAL_TIME=1 target/debug/wys run examples/async_hello.wys  # sleep_ms を仮想時計だけで進める（実時間を待たない。Conformance の harness が設定する）
+WYS_AUDIT=stderr target/debug/wys run tests/conformance/ai/llm_text.wys   # 監査イベントを JSON 行で出す（ADR-0023）。WYS_CAPABILITIES=io,llm で Capability を縮める
 target/debug/wys explain examples/fib.wys   # 型・絞り込み・ARC 操作の理由を JSON で（ADR-0017）
 target/debug/wys explain E0201              # エラーコードの説明
 benches/measure.sh                                          # ベンチ計測（倍率は書かない）
@@ -61,6 +62,7 @@ benches/measure.sh                                          # ベンチ計測（
    - 構文エラー: `syntax/`、型エラー: `types/`。`# expect-error: CODE 行:列`
    - 診断 JSON の形も固定したいもの: `diagnostics/`（insta スナップショット）
    - 複数ファイル（モジュール）: `modules/<ケース名>/main.wys` と、そこから import するファイル
+   - AI SDK（`llm_generate` など。プロバイダは既定のモック）: `ai/`。環境変数は `# expect-env: KEY=VALUE`
 2. 新しいケースが**失敗することを確認してから**実装する。
 3. `.wys` の挙動は `scripts/ai-loop.sh <file>` で確かめる。診断があれば JSON が返るので、`code`・`span`・`hints` を読んで直す。
 4. `./scripts/ci.sh` が通るまで作業を終えない。

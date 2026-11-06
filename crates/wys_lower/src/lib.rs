@@ -637,6 +637,13 @@ impl<'s, 't> FnLower<'s, 't> {
         dst
     }
 
+    /// 文字列の定数（不死の `str`）。
+    fn string_const(&mut self, text: &str) -> TempId {
+        let id = StrId(self.sh.strings.len() as u32);
+        self.sh.strings.push(text.to_string());
+        self.konst(Const::Str(id), Ty::Str)
+    }
+
     fn konst(&mut self, value: Const, ty: Ty) -> TempId {
         let dst = self.temp(ty);
         self.emit(Inst::Const { dst, value });
@@ -1396,7 +1403,15 @@ impl<'s, 't> FnLower<'s, 't> {
             ExprKind::Call { callee, args, .. }
                 if matches!(
                     callee.name.as_str(),
-                    "arg_count" | "arg" | "parse_scalar" | "parse_json" | "validate" | "to_json"
+                    "arg_count"
+                        | "arg"
+                        | "parse_scalar"
+                        | "parse_json"
+                        | "validate"
+                        | "to_json"
+                        | "llm_generate"
+                        | "llm_mock_push"
+                        | "audit_events"
                 ) =>
             {
                 Some(match callee.name.as_str() {
@@ -1412,6 +1427,18 @@ impl<'s, 't> FnLower<'s, 't> {
                     "arg" => self.lower_arg(&args[0], e),
                     "parse_json" => self.lower_parse_json(&args[0], e),
                     "validate" => self.lower_validate(&args[0], e),
+                    "llm_generate" => self.lower_llm_generate(&args[0], e),
+                    "llm_mock_push" => {
+                        let mr = self.sh.types.mock_response();
+                        let j = self.json_of(&args[0], mr);
+                        self.emit(Inst::Call {
+                            dst: None,
+                            callee: Callee::Builtin(Builtin::LlmMockPush),
+                            args: vec![j],
+                        });
+                        return None;
+                    }
+                    "audit_events" => self.lower_audit_events(e),
                     "to_json" => {
                         let v = self.expr(&args[0]).expect("schema values exist");
                         self.builtin(Builtin::ToJson, vec![v])
@@ -1525,7 +1552,7 @@ impl<'s, 't> FnLower<'s, 't> {
         // 型検査（`is_async_call`）と同じ判定: async の関数の呼び出しなら、戻り値が `Task` でもその場で呼ぶだけ
         let direct = match &inner.kind {
             ExprKind::Call { callee, .. } => {
-                callee.name == "sleep_ms"
+                matches!(callee.name.as_str(), "sleep_ms" | "llm_generate")
                     || self
                         .sh
                         .func_index
@@ -2267,6 +2294,219 @@ impl<'s, 't> FnLower<'s, 't> {
         d
     }
 
+    /// 値を型 `to`（組み込みのレコード）にそろえてから JSON の文字列にする（ランタイムはレコードの配置を知らない）
+    fn json_of(&mut self, arg: &ast::Expr, to: TTy) -> TempId {
+        let v = self.expr(arg);
+        let at = self.ty(arg);
+        let v = self.coerce(v, at, to).expect("records have values");
+        self.builtin(Builtin::ToJson, vec![v])
+    }
+
+    /// `LlmError { kind, message }`（フィールドは名前の順）を `Err` に入れて `out` に置く
+    fn store_llm_error(
+        &mut self,
+        out: LocalId,
+        union: UnionId,
+        record: RecordId,
+        kind: TempId,
+        message: TempId,
+    ) {
+        let ev = self.temp(Ty::Record(record));
+        self.emit(Inst::MakeRecord {
+            dst: ev,
+            record,
+            fields: vec![kind, message],
+        });
+        let errv = self.temp(Ty::Union(union));
+        self.emit(Inst::MakeUnion {
+            dst: errv,
+            union,
+            variant: 1,
+            payload: Some(ev),
+        });
+        self.emit(Inst::Store {
+            dst: out,
+            src: errv,
+        });
+    }
+
+    /// `await llm_generate[T](req)`（ADR-0022 論点 8）: ランタイムが LLM を呼び、本文を返す。`T = str` ならそのまま、
+    /// それ以外は `parse_json` → `validate[T]`（T6 の glue）。失敗はどれも `Err(LlmError)`
+    fn lower_llm_generate(&mut self, arg: &ast::Expr, e: &ast::Expr) -> TempId {
+        let TTy::Result(r) = self.ty(e) else {
+            panic!("llm_generate returns a Result")
+        };
+        let (ok_t, err) = self.sh.types.result_args(r);
+        let union = self.sh.ir_result(r);
+        let TTy::Record(erid) = err else {
+            panic!("LlmError is a record")
+        };
+        let record = self.sh.ir_record(erid);
+        let out = self.hidden_local(Ty::Union(union));
+        let req = self.sh.types.llm_request();
+        let j = self.json_of(arg, req);
+        let vt = self.sh.ir_ty(ok_t).expect("schema values exist");
+        let schema = if ok_t == TTy::Str {
+            self.string_const("")
+        } else {
+            self.konst(Const::Schema(vt), Ty::Str)
+        };
+        let text = self.temp(Ty::Str);
+        self.emit(Inst::Call {
+            dst: Some(text),
+            callee: Callee::Builtin(Builtin::LlmGenerate),
+            args: vec![j, schema],
+        });
+        let text_slot = self.hidden_local(Ty::Str);
+        self.emit(Inst::Store {
+            dst: text_slot,
+            src: text,
+        });
+        let failed = self.builtin(Builtin::LlmFailed, vec![]);
+        let (ok_b, err_b, join) = (self.new_block(), self.new_block(), self.new_block());
+        self.terminate(Terminator::Branch {
+            cond: failed,
+            then_block: err_b,
+            else_block: ok_b,
+        });
+        self.switch_to(err_b);
+        let kind = self.builtin(Builtin::LlmErrKind, vec![]);
+        let msg = self.builtin(Builtin::LlmErrMessage, vec![]);
+        self.store_llm_error(out, union, record, kind, msg);
+        self.terminate(Terminator::Jump(join));
+        self.switch_to(ok_b);
+        let lt = self.temp(Ty::Str);
+        self.emit(Inst::Load {
+            dst: lt,
+            src: text_slot,
+        });
+        if ok_t == TTy::Str {
+            let okv = self.temp(Ty::Union(union));
+            self.emit(Inst::MakeUnion {
+                dst: okv,
+                union,
+                variant: 0,
+                payload: Some(lt),
+            });
+            self.emit(Inst::Store { dst: out, src: okv });
+            self.terminate(Terminator::Jump(join));
+        } else {
+            // 本文 → Unknown（壊れていれば invalid JSON）→ 型 T
+            let u = self.temp(Ty::Unknown);
+            self.emit(Inst::Call {
+                dst: Some(u),
+                callee: Callee::Builtin(Builtin::JsonParse),
+                args: vec![lt],
+            });
+            let u_slot = self.hidden_local(Ty::Unknown);
+            self.emit(Inst::Store {
+                dst: u_slot,
+                src: u,
+            });
+            let jfailed = self.builtin(Builtin::JsonFailed, vec![]);
+            let (parsed_b, bad_json_b) = (self.new_block(), self.new_block());
+            self.terminate(Terminator::Branch {
+                cond: jfailed,
+                then_block: bad_json_b,
+                else_block: parsed_b,
+            });
+            self.switch_to(bad_json_b);
+            let kind = self.string_const("schema");
+            let msg = self.builtin(Builtin::LlmJsonRejected, vec![]);
+            self.store_llm_error(out, union, record, kind, msg);
+            self.terminate(Terminator::Jump(join));
+            self.switch_to(parsed_b);
+            let lu = self.temp(Ty::Unknown);
+            self.emit(Inst::Load {
+                dst: lu,
+                src: u_slot,
+            });
+            let v = self.temp(vt);
+            self.emit(Inst::Call {
+                dst: Some(v),
+                callee: Callee::Builtin(Builtin::Validate),
+                args: vec![lu],
+            });
+            let v_slot = self.hidden_local(vt);
+            self.emit(Inst::Store {
+                dst: v_slot,
+                src: v,
+            });
+            let sfailed = self.builtin(Builtin::SchemaFailed, vec![]);
+            let (valid_b, invalid_b) = (self.new_block(), self.new_block());
+            self.terminate(Terminator::Branch {
+                cond: sfailed,
+                then_block: invalid_b,
+                else_block: valid_b,
+            });
+            self.switch_to(invalid_b);
+            let kind = self.string_const("schema");
+            let msg = self.builtin(Builtin::LlmSchemaRejected, vec![]);
+            self.store_llm_error(out, union, record, kind, msg);
+            self.terminate(Terminator::Jump(join));
+            self.switch_to(valid_b);
+            let lv = self.temp(vt);
+            self.emit(Inst::Load {
+                dst: lv,
+                src: v_slot,
+            });
+            let okv = self.temp(Ty::Union(union));
+            self.emit(Inst::MakeUnion {
+                dst: okv,
+                union,
+                variant: 0,
+                payload: Some(lv),
+            });
+            self.emit(Inst::Store { dst: out, src: okv });
+            self.terminate(Terminator::Jump(join));
+        }
+        self.switch_to(join);
+        let d = self.temp(Ty::Union(union));
+        self.emit(Inst::Load { dst: d, src: out });
+        d
+    }
+
+    /// `audit_events()`: ランタイムが JSON の配列を返し、T6 の glue で `list[AuditEvent]` にする。壊れていればコンパイラかランタイムの誤り
+    fn lower_audit_events(&mut self, e: &ast::Expr) -> TempId {
+        let lt = self.ty(e);
+        let vt = self.sh.ir_ty(lt).expect("lists have values");
+        let j = self.builtin(Builtin::AuditJson, vec![]);
+        let u = self.temp(Ty::Unknown);
+        self.emit(Inst::Call {
+            dst: Some(u),
+            callee: Callee::Builtin(Builtin::JsonParse),
+            args: vec![j],
+        });
+        let v = self.temp(vt);
+        self.emit(Inst::Call {
+            dst: Some(v),
+            callee: Callee::Builtin(Builtin::Validate),
+            args: vec![u],
+        });
+        let slot = self.hidden_local(vt);
+        self.emit(Inst::Store { dst: slot, src: v });
+        let failed = self.builtin(Builtin::SchemaFailed, vec![]);
+        let (ok_b, bad_b) = (self.new_block(), self.new_block());
+        self.terminate(Terminator::Branch {
+            cond: failed,
+            then_block: bad_b,
+            else_block: ok_b,
+        });
+        self.switch_to(bad_b);
+        let m = self.string_const("audit events are malformed (this is a compiler bug)");
+        let at = self.string_const("audit_events");
+        self.emit(Inst::Call {
+            dst: None,
+            callee: Callee::Builtin(Builtin::Panic),
+            args: vec![m, at],
+        });
+        self.terminate(Terminator::Unreachable);
+        self.switch_to(ok_b);
+        let d = self.temp(vt);
+        self.emit(Inst::Load { dst: d, src: slot });
+        d
+    }
+
     /// `validate[T](u)`（ADR-0022 論点 6）: 型ごとの glue が木を検証する。失敗したら `SchemaError` の `Err`。
     fn lower_validate(&mut self, arg: &ast::Expr, e: &ast::Expr) -> TempId {
         let TTy::Result(r) = self.ty(e) else {
@@ -2564,6 +2804,9 @@ impl<'s, 't> FnLower<'s, 't> {
                     | "parse_json"
                     | "validate"
                     | "to_json"
+                    | "llm_generate"
+                    | "llm_mock_push"
+                    | "audit_events"
                     | "assert"
                     | "Ok"
                     | "Err"

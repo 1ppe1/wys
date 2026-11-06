@@ -55,6 +55,8 @@
 | 属性（デコレータ） | `def` の前に書く `@tool(...)` / `@agent(...)`。M5 ではコンパイラが解釈するコンパイル時の属性で、関数値が入ったら同じ構文のままライブラリのデコレータに置き換える | ADR-0022 |
 | スキーマ型 | `validate[T]` / `to_json` / `llm_generate[T]` と `@tool` の引数・戻り値に使える型。JSON への写像が一意に決まる型（スカラー、それらの Union、`list`、`dict[str, ..]`、それらだけを持つレコード、`Unknown`） | ADR-0022 |
 | `JsonError` | `parse_json` の失敗を表す組み込みのレコード `{message, offset}`。`offset` は UTF-8 のバイト位置 | ADR-0021 |
+| 根のコンテキスト | `@agent` の外の、agent コンテキストのスタックの底。ツールなし、予算なし、Capability はすべて（`WYS_CAPABILITIES` で縮小される）。`llm_generate` を agent の外から呼ぶとここで数える | ADR-0023 論点 9 |
+| モックのプロバイダ | `WYS_LLM_PROVIDER` を設定しないときの既定のプロバイダ。`llm_mock_push` で積んだ応答を順に返すので、Conformance と CI はネットワークに出ずに決定的に動く | ADR-0022 論点 10、ADR-0023 論点 1 |
 | `PyError` | Python の例外を表す組み込みのレコード `{kind, message, traceback}`。Python の操作は `Result[.., PyError]` を返す。構造的なので、同じフィールドを持つレコードと同じ型になる | ADR-0018 |
 | ADR | Architecture Decision Record。設計判断とその理由を記録する文書 | docs/adr/ |
 | タスク | `spawn` が作る、並行に進む処理の単位（`Task[T]`）。単一スレッドの上で協調的に切り替わる | ADR-0020 |
