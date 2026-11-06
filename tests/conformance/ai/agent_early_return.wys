@@ -1,0 +1,32 @@
+# `?` で早く抜けても agent コンテキストを出る（ADR-0022 論点 14）。その後の llm_generate は根のコンテキストで数える
+# expect-stdout: mock_exhausted
+# expect-stdout: llm_called inner
+# expect-stdout: llm_called
+async def ask() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="x")], max_tokens=0)
+    return await llm_generate[str](req)
+
+@agent(tools=[], capabilities=["llm"])
+async def inner() -> Result[str, LlmError] uses llm:
+    first = await ask()?
+    second = await ask()?
+    return Ok(first + second)
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="x", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    match await inner():
+        case Ok(t):
+            print(t)
+        case Err(e):
+            print(e.kind)
+    llm_mock_push(MockResponse(text="y", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    match await ask():
+        case Ok(_t):
+            pass
+        case Err(e):
+            print(e.kind)
+    for ev in audit_events():
+        if ev.agent == "":
+            print(ev.kind)
+        else:
+            print(ev.kind + " " + ev.agent)

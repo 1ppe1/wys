@@ -1,0 +1,32 @@
+# LLM がツールを要求すると、ランタイムが検査してから実行し、結果を次の要求に返す（ADR-0022 論点 13・15、ADR-0023 論点 10）
+# expect-stdout: add 2 3
+# expect-stdout: p 5
+# expect-stdout: llm_called planner
+# expect-stdout: tool_called planner add
+# expect-stdout: llm_called planner
+type Plan = {title: str, steps: int}
+
+@tool(description="Add two integers.")
+def add(a: int, b: int) -> int uses io:
+    print("add " + to_json(a) + " " + to_json(b))
+    return a + b
+
+@agent(tools=[add], capabilities=["io", "llm"])
+async def planner() -> Result[Plan, LlmError] uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[Plan](req)
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="add", args_json="{\"a\": 2, \"b\": 3}")], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="{\"title\": \"p\", \"steps\": 5}", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    match await planner():
+        case Ok(p):
+            print(p.title + " " + to_json(p.steps))
+        case Err(e):
+            print(e.kind + ": " + e.message)
+    for ev in audit_events():
+        match ev.tool:
+            case str():
+                print(ev.kind + " " + ev.agent + " " + ev.tool)
+            case None:
+                print(ev.kind + " " + ev.agent)

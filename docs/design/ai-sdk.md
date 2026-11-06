@@ -323,3 +323,13 @@ async def main() -> None uses io, llm:
 - Conformance に `# expect-env: KEY=VALUE` を足した。
 - Capability がなくて `llm_generate` を拒否したときの監査は `capability_denied`、`tool` は `"llm_generate"`。
 - 根のコンテキストでモックがツールを要求したら `tool_denied` で中止する（ツールの実行は T9）。
+
+## 15. T9 の時点の決定（2026-11-06、ユーザー承認）
+
+- agent コンテキストのスタックはタスクごとで、`spawn` した子タスクは親のスタックを引き継ぐ（ADR-0023 の訂正）。
+- ツールのトランポリンは IR の関数 `__wys_tool_entry_<名前>(args: str) -> str` として lowering が合成する（`dump-ir` に見える。2 章の `@wys_tool_entry_f{}` は、この関数の記号 `@wys_fn___wys_tool_entry_<名前>` になった）。`async def` のツールなら、トランポリンも `async` で、ランタイムはタスクのスタックの上で呼ぶ（ツールの中の `sleep_ms` でタスクが切り替わってよい）。
+- 承認が要るツール（`approval="required"`）は、T9 では常に拒否する（監査 `approval_requested` → `approval_denied`、LLM には `denied by approver` を失敗として返して続ける）。`WYS_APPROVAL` の `allow` / `prompt` は T10。
+- 入口の再検査（ADR-0023 論点 11）: `exit` は Capability がなければ実行時エラー（`capability exit is not granted`）、Python のコードが動き得る入口（`py_import`・属性の取得 `attr`・呼び出し `call`）は `Err(PyError{kind: "CapabilityError"})`。agent の外で import した `PyObject` を渡されても、`python` を持たない agent の中では使えない。値の変換・解放は Python のコードを動かさないので検査しない。どれも監査 `capability_denied`。
+- ツールの結果の印（`tool_err` / `tool_args_rejected`）はランタイムが読んだ瞬間に落とす。ツールの中の `llm_generate` や別のタスクのツールの印を持ち越さない（Fable のレビューで直した）。
+- `@agent` の `tools` に、モジュールが違っても基底名が同じツールを 2 つ並べると E1404（LLM はツールを基底名で呼ぶ）。
+- 監査 `tool_called` の `detail` は `args_len=N`。

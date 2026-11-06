@@ -963,3 +963,45 @@ fn llm_output_is_validated_against_the_declared_type() {
     assert!(ir.contains("call @llm_generate("), "{ir}");
     assert!(ir.contains("const schema r"), "{ir}");
 }
+
+#[test]
+fn tools_run_after_the_runtime_checks_them() {
+    // ツール表とトランポリン（ADR-0022 論点 15）、agent コンテキスト（ADR-0023 論点 9・10、AC-007）:
+    // 一覧にあるツールは実行され、ないツールは本体が動かないまま拒否される。dump-ir に agent の出入りとトランポリンが出る
+    let src = "@tool(description=\"Add.\")\ndef add(a: int, b: int) -> int uses io:\n    print(\"add\")\n    return a + b\n\n@tool(description=\"Secret.\")\ndef secret() -> None uses io:\n    print(\"secret ran\")\n\n@agent(tools=[add], capabilities=[\"io\", \"llm\"])\nasync def plan() -> Result[str, LlmError] uses io, llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm:\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"add\", args_json=\"{\\\"a\\\": 1, \\\"b\\\": 2}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"secret\", args_json=\"{}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    match await plan():\n        case Ok(t):\n            print(t)\n        case Err(e):\n            print(e.kind)\n";
+    let path = scratch("tools_checked.wys", src);
+    let audit = path.with_extension("audit.jsonl");
+    let _ = std::fs::remove_file(&audit);
+    let out = cli_env(
+        &["run", path.to_str().unwrap()],
+        &[
+            ("WYS_AUDIT", audit.to_str().unwrap()),
+            ("WYS_VIRTUAL_TIME", "1"),
+        ],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "add\ndenied\n",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let kinds: Vec<String> = std::fs::read_to_string(&audit)
+        .unwrap()
+        .lines()
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["kind"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        ["llm_called", "tool_called", "llm_called", "tool_denied"]
+    );
+    let ir = cli(&["dump-ir", path.to_str().unwrap()]);
+    let ir = String::from_utf8_lossy(&ir.stdout);
+    assert!(ir.contains("call @agent_enter()"), "{ir}");
+    assert!(ir.contains("call @agent_exit()"), "{ir}");
+    assert!(ir.contains("__wys_tool_entry_add(l0: str) -> str"), "{ir}");
+}

@@ -1,0 +1,39 @@
+# max_tool_calls を超えるツールの要求は Err(budget)、期限を過ぎて届いた応答は Err(timeout)（AC-008、ADR-0023 論点 13・14）
+# expect-stdout: budget
+# expect-stdout: timeout
+# expect-stdout: 2
+@tool(description="Count.")
+def tick() -> None uses pure:
+    pass
+
+@agent(tools=[tick], capabilities=["llm"], max_tool_calls=1)
+async def once() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+@agent(tools=[tick], capabilities=["llm"], timeout_ms=100)
+async def slow() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+async def main() -> None uses io, llm:
+    call = MockToolCall(name="tick", args_json="{}")
+    llm_mock_push(MockResponse(text="", tool_calls=[call], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="", tool_calls=[call], input_tokens=1, output_tokens=1, latency_ms=0))
+    match await once():
+        case Ok(t):
+            print(t)
+        case Err(e):
+            print(e.kind)
+    llm_mock_push(MockResponse(text="", tool_calls=[call], input_tokens=1, output_tokens=1, latency_ms=60))
+    llm_mock_push(MockResponse(text="", tool_calls=[call], input_tokens=1, output_tokens=1, latency_ms=60))
+    match await slow():
+        case Ok(t):
+            print(t)
+        case Err(e):
+            print(e.kind)
+    n = 0
+    for ev in audit_events():
+        if ev.kind == "tool_called":
+            n = n + 1
+    print(n)

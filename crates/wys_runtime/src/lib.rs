@@ -1011,6 +1011,10 @@ pub extern "C" fn wys_write_newline() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_exit(code: i64) -> ! {
+    // 入口の再検査（ADR-0023 論点 11）
+    if !ai::capability_granted(ai::CAP_EXIT, "exit") {
+        runtime_error("capability exit is not granted");
+    }
     let _ = std::io::stdout().flush();
     std::process::exit(code as i32);
 }

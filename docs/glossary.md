@@ -56,6 +56,9 @@
 | スキーマ型 | `validate[T]` / `to_json` / `llm_generate[T]` と `@tool` の引数・戻り値に使える型。JSON への写像が一意に決まる型（スカラー、それらの Union、`list`、`dict[str, ..]`、それらだけを持つレコード、`Unknown`） | ADR-0022 |
 | `JsonError` | `parse_json` の失敗を表す組み込みのレコード `{message, offset}`。`offset` は UTF-8 のバイト位置 | ADR-0021 |
 | 根のコンテキスト | `@agent` の外の、agent コンテキストのスタックの底。ツールなし、予算なし、Capability はすべて（`WYS_CAPABILITIES` で縮小される）。`llm_generate` を agent の外から呼ぶとここで数える | ADR-0023 論点 9 |
+| ツール表 | 生成コードが `wys_tools_register` でランタイムに渡す `@tool` の表（名前・説明・引数の JSON Schema・Effect のビット・承認の要否・トランポリン）。agent の設定はこの表の添字でツールを指す | ADR-0022 論点 15 |
+| トランポリン（ツールの） | lowering が `@tool` ごとに合成する IR の関数 `__wys_tool_entry_<名前>(args: str) -> str`。引数の JSON を検証して型付きの値にし、ツールを呼び、戻り値を JSON にする。ランタイムは検査を通ったツールだけをこれで呼ぶ | ADR-0022 論点 15、`docs/design/ai-sdk.md` 15 章 |
+| agent コンテキストのスタック（タスクごと） | 今どの agent の中にいるかを表すスタック。タスクごとに持ち、`spawn` した子は親のスタックを引き継ぐ（予算は共有して数える） | ADR-0023 の訂正（2026-11-06） |
 | モックのプロバイダ | `WYS_LLM_PROVIDER` を設定しないときの既定のプロバイダ。`llm_mock_push` で積んだ応答を順に返すので、Conformance と CI はネットワークに出ずに決定的に動く | ADR-0022 論点 10、ADR-0023 論点 1 |
 | `PyError` | Python の例外を表す組み込みのレコード `{kind, message, traceback}`。Python の操作は `Result[.., PyError]` を返す。構造的なので、同じフィールドを持つレコードと同じ型になる | ADR-0018 |
 | ADR | Architecture Decision Record。設計判断とその理由を記録する文書 | docs/adr/ |

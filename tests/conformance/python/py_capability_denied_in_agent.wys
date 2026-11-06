@@ -1,0 +1,28 @@
+# agent の外で import した PyObject でも、python を持たない agent の中では使えない（入口の再検査は wys_py_* のすべて、ADR-0023 論点 11）
+# expect-stdout: 4
+# expect-stdout: CapabilityError
+# expect-stdout: capability python is not granted
+def floor(m: PyObject) -> Result[int, PyError] uses python:
+    f = m.attr("floor")?
+    r = f.call([py_value(4.5)])?
+    return r.to_int()
+
+def show(r: Result[int, PyError]) -> None uses io:
+    match r:
+        case Ok(n):
+            print(n)
+        case Err(e):
+            print(e.kind)
+            print(e.message)
+
+@agent(tools=[], capabilities=["io", "llm"])
+def run(m: PyObject) -> None uses io, python, llm:
+    show(floor(m))
+
+def main() -> None uses io, python, llm:
+    match py_import("math"):
+        case Ok(m):
+            show(floor(m))
+            run(m)
+        case Err(e):
+            print(e.message)

@@ -1,0 +1,6 @@
+# 配備時に exit の Capability を外すと、exit は入口で拒否される（ADR-0023 論点 11）
+# expect-env: WYS_CAPABILITIES=io,llm
+# expect-exit: 101
+# expect-stderr-contains: capability exit is not granted
+def main() -> None uses exit:
+    exit(3)

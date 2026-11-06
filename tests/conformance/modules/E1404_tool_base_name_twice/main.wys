@@ -1,0 +1,19 @@
+# expect-error: E1404 9:23
+# LLM はツールを基底名で呼ぶので、モジュールが違っても同じ基底名のツールを 1 つの agent に並べられない
+import tl
+
+@tool(description="Add.")
+def add(a: int, b: int) -> int uses pure:
+    return a + b + 100
+
+@agent(tools=[tl.add, add], capabilities=["llm"])
+async def a() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="a")], max_tokens=0)
+    return await llm_generate[str](req)
+
+async def main() -> None uses llm:
+    match await a():
+        case Ok(_t):
+            pass
+        case Err(_e):
+            pass

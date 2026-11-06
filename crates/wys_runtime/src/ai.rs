@@ -1,14 +1,16 @@
-//! AI Runtime（ADR-0023、M5 T8）: `llm_generate` の本体、モックのプロバイダ、agent コンテキストのスタック、監査イベント。
+//! AI Runtime（ADR-0023、M5 T8〜T9）: `llm_generate` の本体、モックのプロバイダ、agent コンテキスト、ツールの実行、監査。
 //!
 //! - 生成コードとは JSON の文字列で受け渡す（ランタイムはレコードの配置を知らない）。要求は `LlmRequest` の JSON、
 //!   モックの応答は `MockResponse` の JSON、監査イベントは JSON の配列で返し、生成コードが `validate` の glue で型にする。
-//! - スタックの底は**根のコンテキスト**（ツールなし、Capability はすべて ∩ `WYS_CAPABILITIES`、予算なし。ADR-0023 論点 9）。
-//!   `@agent` の本体は `wys_agent_enter` / `wys_agent_exit` で積む（lowering が呼ぶのは T9）。
-//! - LLM がツールを要求したら、実行の前に一覧・Capability・予算を検査する（論点 10）。T8 ではツールを実行しない
-//!   （根のコンテキストにはツールがないので拒否になる）。トランポリンの呼び出しは T9、承認は T10、実プロバイダは T11。
+//! - agent コンテキストは**タスクごとのスタック**（ADR-0023 の訂正）。底は根のコンテキスト（ツールなし、Capability は
+//!   すべて ∩ `WYS_CAPABILITIES`、予算なし）。`spawn` した子タスクは親のスタックを引き継ぐ。コンテキストの実体は
+//!   共有の表（`arena`）にあり、スタックは添字の並び。予算の検査と加算はスタック上のすべての agent に行う。
+//! - LLM がツールを要求したら、実行の前に一覧 → Capability → 予算 → 承認の順に検査する（論点 10）。承認は T9 では
+//!   常に拒否（T10 で `WYS_APPROVAL`）。ツールはコンパイラが合成したトランポリンを呼ぶ。トランポリンの中でタスクが
+//!   切り替わり得るので、ランタイムの状態の借りはトランポリンを呼ぶ前に必ず返す。
 
-use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{CStr, c_char};
 use std::io::Write;
 use std::time::Instant;
@@ -16,27 +18,34 @@ use std::time::Instant;
 use crate::{Header, embed};
 
 /// Effect / Capability のビット（Capability の名前は Effect の名前と同じ。ADR-0023 論点 7）。
+/// バックエンドの `effect_bit` と同じ値にする
 pub const CAP_IO: u64 = 1;
 pub const CAP_EXIT: u64 = 2;
 pub const CAP_PYTHON: u64 = 4;
 pub const CAP_LLM: u64 = 8;
 const CAP_ALL: u64 = CAP_IO | CAP_EXIT | CAP_PYTHON | CAP_LLM;
 
-/// コンパイラが生成するツール表の 1 行（T9 で使う。ABI は暫定）。
+/// コンパイラが生成するツール表の 1 行（`@wys_tools`）。
 #[repr(C)]
 pub struct ToolDesc {
     pub name: *const c_char,
     pub description: *const c_char,
+    /// 引数のレコードの JSON Schema（T11 でプロバイダに渡す）
     pub schema: *const c_char,
+    /// ツールの `uses`
     pub effects: u64,
+    /// 1 なら承認が要る
     pub approval: i64,
+    /// トランポリン: JSON の引数（+0）を受け取り、結果の JSON（+1）を返す。引数が検証を通らなければ
+    /// `wys_tool_args_rejected` を呼んで空の文字列を返す。結果が `Err` なら `wys_tool_err` を呼ぶ
     pub entry: extern "C" fn(args: *const Header) -> *mut Header,
 }
 
-/// `@agent(...)` の属性（T9 で使う。ABI は暫定）。
+/// `@agent(...)` の属性（`@.agent.*`）。
 #[repr(C)]
 pub struct AgentCfg {
     pub name: *const c_char,
+    /// ツール表の番号の並び
     pub tools: *const i64,
     pub n_tools: i64,
     pub caps: u64,
@@ -46,11 +55,11 @@ pub struct AgentCfg {
     pub timeout_ms: i64,
 }
 
-#[allow(dead_code)]
 struct Tool {
     name: String,
     effects: u64,
     approval: bool,
+    entry: extern "C" fn(*const Header) -> *mut Header,
 }
 
 struct Ctx {
@@ -67,13 +76,11 @@ struct Ctx {
     started: Instant,
     /// モックの応答の遅延の合計（`WYS_VIRTUAL_TIME=1` ならこれだけが時間を進める。スケジューラの時計は動かさない）
     virtual_ms: i64,
+    /// このコンテキストを持つスタックの数（`spawn` で引き継ぐと増える）。0 になったら表の場所を再利用する
+    refs: usize,
 }
 
 impl Ctx {
-    fn root() -> Ctx {
-        Ctx::new(String::new(), Vec::new(), CAP_ALL & deployed_caps(), [0; 4])
-    }
-
     fn new(name: String, tools: Vec<usize>, caps: u64, limits: [i64; 4]) -> Ctx {
         Ctx {
             name,
@@ -88,6 +95,7 @@ impl Ctx {
             tokens: 0,
             started: Instant::now(),
             virtual_ms: 0,
+            refs: 1,
         }
     }
 
@@ -119,7 +127,11 @@ struct AuditEvent {
 
 struct State {
     tools: Vec<Tool>,
-    stack: Vec<Ctx>,
+    /// コンテキストの実体（0 は根）
+    arena: Vec<Ctx>,
+    free: Vec<usize>,
+    /// タスクの番号 → コンテキストの添字の並び（底が根）。登録がなければ `[0]`
+    stacks: HashMap<usize, Vec<usize>>,
     mock: VecDeque<Reply>,
     audit: Vec<AuditEvent>,
     failure: Option<(&'static str, String)>,
@@ -127,22 +139,61 @@ struct State {
 
 impl State {
     fn new() -> State {
+        let mut root = Ctx::new(String::new(), Vec::new(), CAP_ALL & deployed_caps(), [0; 4]);
+        root.refs = usize::MAX / 2;
         State {
             tools: Vec::new(),
-            stack: vec![Ctx::root()],
+            arena: vec![root],
+            free: Vec::new(),
+            stacks: HashMap::new(),
             mock: VecDeque::new(),
             audit: Vec::new(),
             failure: None,
         }
     }
 
+    fn chain(&self) -> Vec<usize> {
+        self.stacks
+            .get(&crate::task::current_task())
+            .cloned()
+            .unwrap_or_else(|| vec![0])
+    }
+
     fn top(&self) -> &Ctx {
-        self.stack.last().expect("the root context is never popped")
+        let chain = self.chain();
+        &self.arena[*chain.last().expect("the root is always there")]
+    }
+
+    fn alloc(&mut self, c: Ctx) -> usize {
+        match self.free.pop() {
+            Some(i) => {
+                self.arena[i] = c;
+                i
+            }
+            None => {
+                self.arena.push(c);
+                self.arena.len() - 1
+            }
+        }
+    }
+
+    fn unref(&mut self, i: usize) {
+        if i == 0 {
+            return;
+        }
+        self.arena[i].refs -= 1;
+        if self.arena[i].refs == 0 {
+            self.free.push(i);
+        }
     }
 }
 
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::new());
+    /// トランポリンが立てる印（ツールの呼び出しの前に落とす）
+    static TOOL_ERR: Cell<bool> = const { Cell::new(false) };
+    /// `Some(真)` なら引数が型に合わなかった、`Some(偽)` なら JSON として壊れていた
+    static TOOL_ARGS_REJECTED: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
 /// 配備時の Capability の縮小（`WYS_CAPABILITIES=io,llm`）。未設定なら縮小しない。広げることはできず、未知の名前は無視する
@@ -166,6 +217,15 @@ fn deployed_caps_from(v: Option<&str>) -> u64 {
     }
 }
 
+fn cap_name(c: u64) -> &'static str {
+    match c {
+        CAP_IO => "io",
+        CAP_EXIT => "exit",
+        CAP_PYTHON => "python",
+        _ => "llm",
+    }
+}
+
 fn provider_configured() -> bool {
     std::env::var("WYS_LLM_PROVIDER").is_ok_and(|v| !v.is_empty())
 }
@@ -185,6 +245,13 @@ unsafe fn cstr(p: *const c_char) -> String {
     }
     // SAFETY: 関数の安全条件どおり。
     unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+}
+
+/// # Safety
+/// `p` は null か生存している文字列オブジェクトでなければならない（トランポリンは不死の定数を返すことがある）。
+unsafe fn release_str(p: *mut Header) {
+    // SAFETY: 関数の安全条件どおり。`wys_release` は不死のオブジェクトを数えない。
+    unsafe { crate::wys_release(p) }
 }
 
 fn audit(s: &mut State, kind: &'static str, tool: Option<&str>, detail: String) {
@@ -222,7 +289,8 @@ fn fail(s: &mut State, kind: &'static str, message: String) -> *mut Header {
 
 /// 予算を超えた agent（スタック上のすべてを見る。外側の残りを超えて使えない）があれば、その理由（ADR-0023 論点 13・14）。
 fn over_budget(s: &State, tools_next: bool) -> Option<(&'static str, &'static str)> {
-    s.stack.iter().rev().find_map(|a| {
+    s.chain().into_iter().rev().find_map(|i| {
+        let a = &s.arena[i];
         if a.timeout_ms > 0 && a.elapsed_ms() >= a.timeout_ms {
             Some(("timeout", "timeout_ms"))
         } else if a.max_tokens > 0 && a.tokens > a.max_tokens {
@@ -256,6 +324,133 @@ fn check_request(req: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
+/// 入口の再検査（ADR-0023 論点 11）: 現在のコンテキストに Capability がなければ監査 `capability_denied` を残して偽。
+pub fn capability_granted(cap: u64, entry: &str) -> bool {
+    STATE.with(|cell| {
+        let mut s = cell.borrow_mut();
+        if s.top().caps & cap != 0 {
+            return true;
+        }
+        let detail = format!("capability {} is not granted", cap_name(cap));
+        audit(&mut s, "capability_denied", Some(entry), detail);
+        false
+    })
+}
+
+/// スケジューラが子タスクを始めるとき: 親のスタックを引き継ぐ（ADR-0023 の訂正）。
+pub(crate) fn task_spawned(parent: usize, child: usize) {
+    STATE.with(|cell| {
+        let mut s = cell.borrow_mut();
+        let chain = s.stacks.get(&parent).cloned().unwrap_or_else(|| vec![0]);
+        for &i in &chain {
+            if i != 0 {
+                s.arena[i].refs += 1;
+            }
+        }
+        if let Some(old) = s.stacks.insert(child, chain) {
+            for i in old {
+                s.unref(i);
+            }
+        }
+    });
+}
+
+/// タスクが終わったとき: 引き継いだ分を返す（自分で入った agent はすべて出ているはず）。
+pub(crate) fn task_finished(id: usize) {
+    STATE.with(|cell| {
+        let mut s = cell.borrow_mut();
+        if let Some(chain) = s.stacks.remove(&id) {
+            for i in chain {
+                s.unref(i);
+            }
+        }
+    });
+}
+
+/// 1 回のプロバイダの呼び出し（予算の検査、使用量の加算、監査）。失敗なら `Err(null)`
+fn provider_step(s: &mut State) -> Result<Reply, *mut Header> {
+    if let Some((kind, what)) = over_budget(s, false) {
+        audit(s, "budget_exceeded", None, what.into());
+        return Err(fail(s, kind, format!("{what} exceeded")));
+    }
+    let Some(reply) = s.mock.pop_front() else {
+        return Err(fail(s, "mock_exhausted", "no mock response left".into()));
+    };
+    for i in s.chain() {
+        let a = &mut s.arena[i];
+        a.llm_calls += 1;
+        a.tokens += reply.tokens;
+        a.virtual_ms += reply.latency_ms;
+    }
+    audit(s, "llm_called", None, format!("tokens={}", reply.tokens));
+    // 期限を過ぎて届いた応答は受け取らず、要求されたツールも呼ばない
+    if let Some((kind, what)) = over_budget(s, false).filter(|(_, w)| *w != "max_llm_calls") {
+        audit(s, "budget_exceeded", None, what.into());
+        return Err(fail(s, kind, format!("{what} exceeded")));
+    }
+    Ok(reply)
+}
+
+/// ツールの要求の検査（一覧 → Capability → 予算 → 承認）。実行してよければトランポリンを返す
+enum Gate {
+    Run(extern "C" fn(*const Header) -> *mut Header),
+    /// 承認が拒否された（LLM に失敗として返して続ける）
+    Refused,
+    Stop(*mut Header),
+}
+
+fn gate(s: &mut State, name: &str) -> Gate {
+    let top = s.top();
+    let caps = top.caps;
+    let Some(ti) = top.tools.iter().copied().find(|&i| s.tools[i].name == name) else {
+        audit(
+            s,
+            "tool_denied",
+            Some(name),
+            "not in the agent's tools".into(),
+        );
+        return Gate::Stop(fail(
+            s,
+            "denied",
+            format!("tool `{name}` is not allowed for this agent"),
+        ));
+    };
+    let missing = s.tools[ti].effects & !caps;
+    if missing != 0 {
+        let names: Vec<&str> = [CAP_IO, CAP_EXIT, CAP_PYTHON, CAP_LLM]
+            .into_iter()
+            .filter(|c| missing & c != 0)
+            .map(cap_name)
+            .collect();
+        let detail = format!("missing capability {}", names.join(", "));
+        audit(s, "tool_denied", Some(name), detail);
+        return Gate::Stop(fail(
+            s,
+            "denied",
+            format!("tool `{name}` needs capabilities the agent does not have"),
+        ));
+    }
+    if let Some((kind, what)) = over_budget(s, true) {
+        audit(s, "budget_exceeded", Some(name), what.into());
+        return Gate::Stop(fail(s, kind, format!("{what} exceeded")));
+    }
+    if s.tools[ti].approval {
+        // T9 では常に拒否（T10 で `WYS_APPROVAL` の `allow` / `prompt`）
+        audit(
+            s,
+            "approval_requested",
+            Some(name),
+            "WYS_APPROVAL=deny".into(),
+        );
+        audit(s, "approval_denied", Some(name), "WYS_APPROVAL=deny".into());
+        return Gate::Refused;
+    }
+    for i in s.chain() {
+        s.arena[i].tool_calls += 1;
+    }
+    Gate::Run(s.tools[ti].entry)
+}
+
 /// `llm_generate` の本体（`docs/design/ai-sdk.md` 5.1）。本文を +1 所有で返す。失敗なら null（`wys_llm_failed`）。
 ///
 /// # Safety
@@ -267,7 +462,7 @@ pub unsafe extern "C" fn wys_llm_generate(
 ) -> *mut Header {
     // SAFETY: 関数の安全条件どおり。出力スキーマは実プロバイダ（T11）に渡す。モックは使わない
     let (req, _schema) = unsafe { (text(req), text(schema)) };
-    STATE.with(|cell| {
+    let first = STATE.with(|cell| {
         let mut s = cell.borrow_mut();
         s.failure = None;
         // 1. Capability（`WYS_CAPABILITIES` で外せる。入口の再検査、ADR-0023 論点 11）
@@ -278,79 +473,112 @@ pub unsafe extern "C" fn wys_llm_generate(
                 Some("llm_generate"),
                 "capability llm is not granted".into(),
             );
-            return fail(
+            return Err(fail(
                 &mut s,
                 "denied",
                 "the `llm` capability is not granted".into(),
-            );
+            ));
         }
         // 2. 要求
         let req: serde_json::Value = match serde_json::from_str(&req) {
             Ok(v) => v,
-            Err(e) => return fail(&mut s, "provider", format!("invalid request: {e}")),
+            Err(e) => return Err(fail(&mut s, "provider", format!("invalid request: {e}"))),
         };
         if let Err(m) = check_request(&req) {
-            return fail(&mut s, "provider", m);
+            return Err(fail(&mut s, "provider", m));
         }
         if provider_configured() {
-            return fail(
+            return Err(fail(
                 &mut s,
                 "provider",
                 "external providers (WYS_LLM_PROVIDER) are not available yet".into(),
-            );
+            ));
         }
-        // 3. 予算（前）
-        if let Some((kind, what)) = over_budget(&s, false) {
-            audit(&mut s, "budget_exceeded", None, what.into());
-            return fail(&mut s, kind, format!("{what} exceeded"));
-        }
-        // 4. プロバイダ（モック）
-        let Some(reply) = s.mock.pop_front() else {
-            return fail(&mut s, "mock_exhausted", "no mock response left".into());
+        Ok(req)
+    });
+    let req = match first {
+        Ok(r) => r,
+        Err(p) => return p,
+    };
+    // 会話（T11 のプロバイダが読む。モックは読まない）
+    let mut messages: Vec<serde_json::Value> =
+        req["messages"].as_array().cloned().unwrap_or_default();
+    loop {
+        let reply = match STATE.with(|cell| provider_step(&mut cell.borrow_mut())) {
+            Ok(r) => r,
+            Err(p) => return p,
         };
-        // 5. 使用量を数える（すべての agent に）
-        for a in &mut s.stack {
-            a.llm_calls += 1;
-            a.tokens += reply.tokens;
-            a.virtual_ms += reply.latency_ms;
-        }
-        audit(
-            &mut s,
-            "llm_called",
-            None,
-            format!("tokens={}", reply.tokens),
-        );
-        // 6. 予算（後）: 期限を過ぎて届いた応答は受け取らない
-        if let Some((kind, what)) = over_budget(&s, false).filter(|(_, w)| *w != "max_llm_calls") {
-            audit(&mut s, "budget_exceeded", None, what.into());
-            return fail(&mut s, kind, format!("{what} exceeded"));
-        }
-        // 7. ツールの要求がなければ本文
-        let Some((_, name, _)) = reply.tool_calls.first() else {
+        if reply.tool_calls.is_empty() {
+            // ツールの中の `llm_generate` が失敗を残していても、この呼び出しは成功
+            STATE.with(|cell| cell.borrow_mut().failure = None);
             return embed::new_object(reply.text.as_bytes());
-        };
-        // 8. ツールの要求: 実行の前に一覧を見る（T8 では実行しない。トランポリンは T9）
-        let name = name.clone();
-        let listed = s.top().tools.iter().any(|&i| s.tools[i].name == name);
-        if !listed {
-            audit(
-                &mut s,
-                "tool_denied",
-                Some(&name),
-                "not in the agent's tools".into(),
-            );
-            return fail(
-                &mut s,
-                "denied",
-                format!("tool `{name}` is not allowed for this agent"),
-            );
         }
-        fail(
-            &mut s,
-            "denied",
-            format!("tool `{name}` cannot be run yet (tool execution comes with M5 T9)"),
-        )
-    })
+        messages.push(serde_json::json!({"role": "assistant", "content": reply.text}));
+        for (id, name, args) in &reply.tool_calls {
+            let g = STATE.with(|cell| gate(&mut cell.borrow_mut(), name));
+            let entry = match g {
+                Gate::Stop(p) => return p,
+                Gate::Refused => {
+                    messages.push(serde_json::json!({
+                        "role": "tool", "id": id, "content": "denied by approver", "is_error": true
+                    }));
+                    continue;
+                }
+                Gate::Run(e) => e,
+            };
+            STATE.with(|cell| {
+                let mut s = cell.borrow_mut();
+                audit(
+                    &mut s,
+                    "tool_called",
+                    Some(name),
+                    format!("args_len={}", args.len()),
+                );
+            });
+            // 借りを返してから呼ぶ（ツールの中でタスクが切り替わり、ほかのタスクがランタイムを使う）
+            TOOL_ERR.with(|c| c.set(false));
+            TOOL_ARGS_REJECTED.with(|c| c.set(None));
+            let arg = embed::new_object(args.as_bytes());
+            let out = entry(arg);
+            // SAFETY: arg は作ったばかりの参照カウント 1 の文字列。
+            unsafe { release_str(arg) };
+            // SAFETY: out はトランポリンが返した参照カウント 1 の文字列。
+            let result = unsafe { text(out) };
+            // SAFETY: 同上。
+            unsafe { release_str(out) };
+            // 印は読んだ瞬間に落とす（トランポリンが立ててから、ここで読むまでに中断はない）。落とさないと、
+            // ツールの中の llm_generate や別のタスクのツールの印が、後で読むツールの結果に持ち越す（Fable のレビュー）
+            if let Some(schema_mismatch) = TOOL_ARGS_REJECTED.with(Cell::take) {
+                let why = if schema_mismatch {
+                    crate::schema::last_failure_message()
+                } else {
+                    crate::json::last_failure_message()
+                };
+                let msg = format!("tool `{name}`: {why}");
+                return STATE.with(|cell| {
+                    let mut s = cell.borrow_mut();
+                    audit(&mut s, "schema_rejected", Some(name), why);
+                    fail(&mut s, "schema", msg)
+                });
+            }
+            let is_error = TOOL_ERR.with(|c| c.replace(false));
+            messages.push(serde_json::json!({
+                "role": "tool", "id": id, "content": result, "is_error": is_error
+            }));
+        }
+    }
+}
+
+/// トランポリン: ツールが `Err` を返した。
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_tool_err() {
+    TOOL_ERR.with(|c| c.set(true));
+}
+
+/// トランポリン: 引数が検証を通らなかった（`schema` が真なら型の不一致、偽なら壊れた JSON）。
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_tool_args_rejected(schema: bool) {
+    TOOL_ARGS_REJECTED.with(|c| c.set(Some(schema)));
 }
 
 #[unsafe(no_mangle)]
@@ -447,7 +675,7 @@ pub extern "C" fn wys_audit_json() -> *mut Header {
     })
 }
 
-/// ツール表を登録する（T9 で生成コードの `main` が呼ぶ）。
+/// ツール表を登録する（生成コードの `main` が最初に呼ぶ）。
 ///
 /// # Safety
 /// `tools` は `n` 個の有効な `ToolDesc` を指さなければならない。
@@ -462,12 +690,13 @@ pub unsafe extern "C" fn wys_tools_register(tools: *const ToolDesc, n: i64) {
             name: unsafe { cstr(d.name) },
             effects: d.effects,
             approval: d.approval != 0,
+            entry: d.entry,
         })
         .collect();
     STATE.with(|s| s.borrow_mut().tools = list);
 }
 
-/// `@agent` の本体に入る（T9）。Capability は外側との積に縮める。
+/// `@agent` の本体に入る。Capability は外側との積に縮める。
 ///
 /// # Safety
 /// `cfg` は有効な `AgentCfg` を指さなければならない。
@@ -475,35 +704,47 @@ pub unsafe extern "C" fn wys_tools_register(tools: *const ToolDesc, n: i64) {
 pub unsafe extern "C" fn wys_agent_enter(cfg: *const AgentCfg) {
     // SAFETY: 関数の安全条件どおり。
     let c = unsafe { &*cfg };
-    // SAFETY: 同上。
-    let tools = unsafe { std::slice::from_raw_parts(c.tools, c.n_tools as usize) }
-        .iter()
-        .map(|&i| i as usize)
-        .collect();
-    STATE.with(|s| {
-        let mut s = s.borrow_mut();
+    let tools = if c.n_tools == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: 同上。
+        unsafe { std::slice::from_raw_parts(c.tools, c.n_tools as usize) }
+            .iter()
+            .map(|&i| i as usize)
+            .collect()
+    };
+    // SAFETY: 生成コードの文字列定数。
+    let name = unsafe { cstr(c.name) };
+    STATE.with(|cell| {
+        let mut s = cell.borrow_mut();
         let caps = c.caps & s.top().caps;
-        // SAFETY: 生成コードの文字列定数。
-        let name = unsafe { cstr(c.name) };
         let limits = [
             c.max_llm_calls,
             c.max_tool_calls,
             c.max_tokens,
             c.timeout_ms,
         ];
-        s.stack.push(Ctx::new(name, tools, caps, limits));
+        let i = s.alloc(Ctx::new(name, tools, caps, limits));
+        let task = crate::task::current_task();
+        let mut chain = s.chain();
+        chain.push(i);
+        s.stacks.insert(task, chain);
     });
 }
 
-/// `@agent` の本体を出る（T9）。根のコンテキストは下ろせない。
+/// `@agent` の本体を出る（すべての出口で）。根のコンテキストは下ろせない。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_agent_exit() {
-    STATE.with(|s| {
-        let mut s = s.borrow_mut();
-        if s.stack.len() <= 1 {
+    STATE.with(|cell| {
+        let mut s = cell.borrow_mut();
+        let task = crate::task::current_task();
+        let mut chain = s.chain();
+        if chain.len() <= 1 {
             embed::runtime_error("agent context mismatch (this is a compiler bug)");
         }
-        s.stack.pop();
+        let i = chain.pop().expect("checked above");
+        s.unref(i);
+        s.stacks.insert(task, chain);
     });
 }
 
@@ -534,5 +775,31 @@ mod tests {
                 .unwrap_err()
                 .contains("unknown role `system`")
         );
+    }
+
+    #[test]
+    fn spawned_tasks_inherit_and_release_the_parent_stack() {
+        let mut s = State::new();
+        let i = s.alloc(Ctx::new("outer".into(), Vec::new(), CAP_LLM, [0; 4]));
+        s.stacks.insert(1, vec![0, i]);
+        // 子タスク 2 は親 1 のスタックを引き継ぐ
+        let chain = s.stacks[&1].clone();
+        for &j in &chain {
+            if j != 0 {
+                s.arena[j].refs += 1;
+            }
+        }
+        s.stacks.insert(2, chain);
+        assert_eq!(s.arena[i].refs, 2);
+        // 親が出ても、子が持っている間は再利用しない
+        let mut c1 = s.stacks[&1].clone();
+        let top = c1.pop().unwrap();
+        s.unref(top);
+        s.stacks.insert(1, c1);
+        assert!(s.free.is_empty());
+        for j in s.stacks.remove(&2).unwrap() {
+            s.unref(j);
+        }
+        assert_eq!(s.free, vec![i]);
     }
 }

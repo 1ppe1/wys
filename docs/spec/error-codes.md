@@ -93,7 +93,7 @@
 | E1401 | デコレータ | 未知のデコレータ名（M5 で解釈するのは `tool` / `agent` だけ。ADR-0022 論点 12） |
 | E1402 | デコレータ | デコレータの引数の誤り（未知のキーワード、位置引数、リテラルでも関数名の `list` でもない値、型の不一致、同じデコレータや同じキーワード引数の重複、`approval` が `"none"` / `"required"` 以外、負の予算） |
 | E1403 | デコレータ | `@tool` / `@agent` の関数に `uses` がない、`main` / `test_*` に付けている、両方を同じ関数に付けている、または Generic な関数を `@tool` にしている（ツールは型引数を決める呼び出しなしで呼ばれる） |
-| E1404 | デコレータ | `@agent` の `tools` の要素が `@tool` の関数でない、または同じツールが 2 回ある |
+| E1404 | デコレータ | `@agent` の `tools` の要素が `@tool` の関数でない、同じツールが 2 回ある、またはモジュールが違っても同じ基底名のツールが 2 つある（LLM はツールを基底名で呼ぶ） |
 | E1405 | デコレータ | ツールの `uses` が `@agent` の `capabilities` に含まれない（足りない名前を示し、ツールの定義を `related` に） |
 | E1406 | デコレータ | `@agent` の `capabilities`（既定は `io`, `llm`）が自身の `uses` に含まれない（agent はツールを通してその Effect を起こし得る。ADR-0022 論点 14） |
 | E1501 | JSON・スキーマ | スキーマ型でない型（`Result` / `Task` / `PyObject` / `PyError` / 型パラメータを含む型 / キーが `str` でない `dict` / 一番外側の `None`）を `validate` の型引数か `to_json` の引数、`@tool` の引数・戻り値に使っている（ADR-0022 論点 4 と訂正。ツールの戻り値の一番外側だけ `Result[T, E]` と `None` を認める） |
@@ -121,6 +121,8 @@
 | index out of range: index i, length n | リストの添字が範囲外（負の添字は末尾から数える） |
 | key not found: キー | `d[k]` / `d.pop(k)` のキーがない（`str` のキーは引用符付きで表示する） |
 | dict changed size during iteration | `for k in d:` の途中で `d` のキーの数が変わった |
+| capability exit is not granted | `exit()` を呼んだが、Capability `exit` が今の agent コンテキストにない（入口の再検査、ADR-0023 論点 11。監査 `capability_denied`） |
+| agent context mismatch (this is a compiler bug) | agent の本体の出口と入口が対応しない（コンパイラの誤り。利用者のコードでは起きない） |
 
 プログラムの終了時に解放されていないオブジェクトが残っていた場合は、`runtime error: N object(s) were not freed (this is a compiler bug)` を出して終了コード 102 で終わる（ARC の誤りを検出するための検査、ADR-0012）。
 

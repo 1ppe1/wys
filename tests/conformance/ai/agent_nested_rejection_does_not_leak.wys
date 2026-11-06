@@ -1,0 +1,29 @@
+# 内側の llm_generate で弾かれたツールの印は、外側のツールの結果に持ち越さない（Fable のレビューで直した）
+# expect-stdout: ok outer done
+@tool(description="Add.")
+def add(a: int, b: int) -> int uses pure:
+    return a + b
+
+@tool(description="Asks the model and recovers from failure.")
+async def ask() -> str uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="inner")], max_tokens=0)
+    match await llm_generate[str](req):
+        case Ok(t):
+            return t
+        case Err(e):
+            return "recovered from " + e.kind
+
+@agent(tools=[ask, add], capabilities=["llm"])
+async def outer() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="outer")], max_tokens=0)
+    return await llm_generate[str](req)
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="ask", args_json="{}")], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="add", args_json="{\"a\": \"x\", \"b\": 1}")], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="outer done", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    match await outer():
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print("err " + e.kind + ": " + e.message)
