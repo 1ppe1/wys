@@ -158,6 +158,8 @@ pub static wys_stat_releases: AtomicI64 = AtomicI64::new(0);
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_runtime_finish() {
     let _ = std::io::stdout().flush();
+    // プロバイダの子プロセスの stdin を閉じて待つ（ADR-0023 論点 4）
+    ai::shutdown();
     if std::env::var("WYS_RC_STATS").is_ok_and(|v| !v.is_empty() && v != "0") {
         eprintln!(
             "rc stats: retain {}, release {}",

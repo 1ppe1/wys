@@ -57,6 +57,8 @@
 | `JsonError` | `parse_json` の失敗を表す組み込みのレコード `{message, offset}`。`offset` は UTF-8 のバイト位置 | ADR-0021 |
 | 根のコンテキスト | `@agent` の外の、agent コンテキストのスタックの底。ツールなし、予算なし、Capability はすべて（`WYS_CAPABILITIES` で縮小される）。`llm_generate` を agent の外から呼ぶとここで数える | ADR-0023 論点 9 |
 | ツール表 | 生成コードが `wys_tools_register` でランタイムに渡す `@tool` の表（名前・説明・引数の JSON Schema・Effect のビット・承認の要否・トランポリン）。agent の設定はこの表の添字でツールを指す | ADR-0022 論点 15 |
+| proxy（`wys llm-proxy`） | Anthropic Messages API の adapter として働く `wys` の副コマンド。`WYS_LLM_PROVIDER=anthropic` のときにランタイムが子プロセスとして起動する。HTTPS と API キーはこのプロセスだけが持つ | ADR-0023 論点 1・5・6 |
+| JSON 行のプロトコル | ランタイムと外部のプロバイダ（proxy か `cmd:<path>`）が stdin / stdout で 1 行に 1 つの JSON をやり取りする約束（要求は `v` / `model` / `system` / `messages` / `tools` / `schema` / `max_tokens` / `timeout_ms`、応答は `text` / `tool_calls` / `usage` / `stop` / `assistant` か `error`） | ADR-0023 論点 2、`docs/design/ai-sdk.md` 8.2 |
 | トランポリン（ツールの） | lowering が `@tool` ごとに合成する IR の関数 `__wys_tool_entry_<名前>(args: str) -> str`。引数の JSON を検証して型付きの値にし、ツールを呼び、戻り値を JSON にする。ランタイムは検査を通ったツールだけをこれで呼ぶ | ADR-0022 論点 15、`docs/design/ai-sdk.md` 15 章 |
 | agent コンテキストのスタック（タスクごと） | 今どの agent の中にいるかを表すスタック。タスクごとに持ち、`spawn` した子は親のスタックを引き継ぐ（予算は共有して数える） | ADR-0023 の訂正（2026-11-06） |
 | モックのプロバイダ | `WYS_LLM_PROVIDER` を設定しないときの既定のプロバイダ。`llm_mock_push` で積んだ応答を順に返すので、Conformance と CI はネットワークに出ずに決定的に動く | ADR-0022 論点 10、ADR-0023 論点 1 |

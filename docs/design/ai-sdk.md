@@ -318,7 +318,7 @@ async def main() -> None uses io, llm:
 - `spawn(llm_generate[T](req))` は `sleep_ms` と同じ E1304（組み込みの async 関数はタスクにできない）。
 - 組み込みのレコードの名前（`Message`、`LlmRequest`、`LlmError`、`AuditEvent`、`MockResponse`、`MockToolCall`、`JsonError`、`SchemaError`、`PyError`）の再定義は E0209。組み込みのレコードは `Message(role=..., content=...)` のように作れる。
 - 実プロバイダをつなぐ T11 までは、`WYS_LLM_PROVIDER` を設定すると `llm_generate` は `Err(kind="provider")`。
-- PoC4 の C の試作とそのテストは削除し、挙動の検査は Conformance（`tests/conformance/ai/`）に移した。テスト用のプロバイダ `crates/wys_cli/tests/fake_provider.sh` は T11 で使う。
+- PoC4 の C の試作とそのテストは削除し、挙動の検査は Conformance（`tests/conformance/ai/`）に移した。テスト用のプロバイダ `crates/wys_cli/tests/fake_provider.sh` は T11 で使う（T11 で、`$FAKE_REPLIES` の行を順に返す形に書き直した）。
 - モックの `latency_ms` は agent の経過時間だけを進め、`sleep_ms` の順序を決める仮想時計は動かさない。
 - Conformance に `# expect-env: KEY=VALUE` を足した。
 - Capability がなくて `llm_generate` を拒否したときの監査は `capability_denied`、`tool` は `"llm_generate"`。
@@ -345,3 +345,30 @@ ADR-0023 論点 12〜14 のとおりに実装した。仕様の解釈として�
 - 承認の拒否は `max_tool_calls` に数えない（論点 13 の「拒否は数えない」）。
 - `prompt` の答えは fd 0 から 1 バイトずつ、改行まで読む（先読みしない）。残りの入力は、Python のツールの `sys.stdin` など fd を直接読むものから読める。stdin が端末でなければ、答えの後に stderr に改行を出す（エコーがないので、続く出力が問いの行に連なる）。
 - 仮想時計の値が `i64` に収まらなければ飽和させる（経過時間を負にしない）。
+
+## 17. T11 の時点の決定（2026-11-06）
+
+ADR-0023 論点 1〜6 のとおりに実装した。仕様の解釈として決めた細部:
+
+- **プロバイダの失敗の `message`**（どれも `Err(kind="provider")`）:
+  - 起動できない: `cannot start the provider <path>: <理由>`
+  - 未知の値: `unknown WYS_LLM_PROVIDER value <値> (use anthropic or cmd:<path>)`
+  - 応答の行が JSON でない、`text` がない、ツールの呼び出しに `id` / `name` がない: `malformed provider response: ...`
+  - `error` 行: その文字列をそのまま
+  - 子プロセスが応答を返さずに終わった・書き込めない: `the provider exited`
+- **失敗の後:** 起動の失敗・子の終了・未知の値の後は、プロセスの終わりまで同じ理由で失敗する（起動し直さない。予算に見えない呼び出しを増やさない）。壊れた応答や `error` 行の後は、同じ子プロセスを使い続ける。
+- **数え方:** 応答の行が届けば、`error` 行や壊れた応答でも `llm_calls` を 1 増やし、監査 `llm_called`（`tokens=0`）を残す。失敗を繰り返す呼び出しも `max_llm_calls` で止まる。起動できなかったときや子が終わっていたときは、呼び出しが起きていないので数えない。
+- **要求の組み立て:**
+  - `max_tokens` の負の値は 0（指定なし）。
+  - `timeout_ms` は、スタック上で期限のある agent の残り時間の最小。前の検査を通った後なので 1 以上。
+  - `model` は、要求 → `@agent(model=)` → `WYS_LLM_MODEL` の順にランタイムが決める。すべて空なら空で送り、proxy が既定を使う。
+  - ツールの呼び出しの `args`（JSON の値）は、文字列にしてトランポリンに渡す（`args_len` もこの長さ）。
+- **コンパイラの場所:** 生成コードに埋めるのは、`llm_generate` を使うプログラムだけ。ビルドした機械の絶対パスが実行ファイルに入るので、使わないプログラムには入れない。パスのファイルがなければ、`PATH` の `wys` を使う。
+- **`wys llm-proxy`:**
+  - `v` が 1 でない要求は、HTTP を呼ばずに `error` 行を返す。
+  - 続くツールの結果は、1 つの `user` の発話の `tool_result` の並びにまとめる。
+  - `is_error` が偽なら付けない。
+  - `system` が空なら送らない。
+  - 要求の `max_tokens` が 0 なら 16000。
+  - 要求全体のタイムアウトは、要求の `timeout_ms` と 600 秒の小さいほう。
+- **実 API との往復:** `scripts/llm-smoke.sh` は本言語のプログラムを `WYS_LLM_PROVIDER=anthropic` で実行する（手元だけ、CI では動かさない）。
