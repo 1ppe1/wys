@@ -1,0 +1,14 @@
+# Unknown の型を書かずに parse_scalar / parse_json の結果を直接 match する（Unknown の型の登録が漏れない）
+# expect-stdout: int
+# expect-stdout: ok
+def main() -> None:
+    match parse_scalar("1"):
+        case int():
+            print("int")
+        case _:
+            print("other")
+    match parse_json("[1]"):
+        case Ok(_v):
+            print("ok")
+        case Err(_e):
+            print("err")

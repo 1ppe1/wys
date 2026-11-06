@@ -574,12 +574,22 @@ impl<'s, 't> FnLower<'s, 't> {
         self.blocks[self.cur].term = Some(term);
     }
 
+    /// `Unknown` の値を作るときは、コンテナの種類の型を必ず登録する（型を書かずに `parse_scalar` の結果を
+    /// `match` するだけのプログラムでも `Program::unknown` が決まるように）
+    fn register_unknown(&mut self, ty: Ty) {
+        if ty == Ty::Unknown && self.sh.unknown_ir.is_none() {
+            self.sh.ir_ty(TTy::Unknown);
+        }
+    }
+
     fn temp(&mut self, ty: Ty) -> TempId {
+        self.register_unknown(ty);
         self.temps.push(ty);
         TempId(self.temps.len() as u32 - 1)
     }
 
     fn hidden_local(&mut self, ty: Ty) -> LocalId {
+        self.register_unknown(ty);
         self.locals.push(ty);
         LocalId(self.locals.len() as u32 - 1)
     }
