@@ -27,7 +27,7 @@
 | [0011](0011-unknown-and-validation.md) | `Unknown` の実行時表現と検証 API | Accepted | 2026-11-04 |
 | [0012](0012-heap-objects-and-arc-pass.md) | ヒープオブジェクトと、IR パスによる ARC | Accepted | 2026-11-04 |
 | [0013](0013-result-binding-patterns-try-panic.md) | `Result[T, E]`、束縛パターン、`?`、パニックの仕様 | Accepted | 2026-11-04 |
-| [0014](0014-effects-phase1-annotations.md) | Effect の基礎（Phase 1 は注釈だけ） | Accepted | 2026-11-04 |
+| [0014](0014-effects-phase1-annotations.md) | Effect の基礎（Phase 1 は注釈だけ） | Accepted（論点 4・5・7・10・12 は ADR-0024 で置き換え） | 2026-11-04 |
 | [0015](0015-dict-keys-order-mutation.md) | `dict[K, V]` のキー、反復の順序、反復中の変更 | Accepted | 2026-11-04 |
 | [0016](0016-record-field-narrowing-and-structural-values.md) | 不変レコードのフィールドの絞り込みと、構造を持つ値の `print` / `==` | Accepted | 2026-11-04 |
 | [0017](0017-explain-report-and-arc-reasons.md) | `wys explain` の報告と、ARC 操作の理由 | Accepted | 2026-11-04 |
