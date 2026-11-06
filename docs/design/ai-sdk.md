@@ -111,7 +111,7 @@ Union は構成要素の順に試し、最初に合ったものにする（`int 
 6. **予算（後）。** `max_tokens` と `timeout_ms` をもう一度見る。期限を過ぎて届いた応答は受け取らず、要求されたツールも呼ばない（PoC4 で決めた。`Err(kind="timeout")`）。
 7. **ツールの要求がなければ終わり。** `stop` が `max_tokens` なら `Err(kind="provider", message="response truncated: max_tokens")`。`T = str` なら `text` をそのまま `Ok`。それ以外は `parse_json(text)` → `validate[T]`。失敗は `Err(kind="schema", message="<path>: expected <expected>, found <found>")`、監査 `schema_rejected`。
 8. **ツールの要求があれば、1 つずつ順に**（Anthropic は `disable_parallel_tool_use` で 1 つ。`cmd:` が複数返したら順に）: **実行の前に** (a) agent の一覧にあるか → なければ `Err(kind="denied")`、監査 `tool_denied`（**`llm_generate` を中止する**。モデルの逸脱）。(b) ツールの `uses` ⊆ コンテキストの Capability → 足りなければ同じく `Err(kind="denied")`。(c) 予算（`max_tool_calls` / `timeout_ms`、すべての agent）→ `Err(kind="budget" | "timeout")`。(d) 承認が要るなら方針（7.4）→ 拒否なら `tool_result` に `denied by approver`（`is_error`）を入れて **続行**（正常な運用）。
-9. **実行。** `tool_calls` を 1 増やし（すべての agent）、監査 `tool_called`（`args_len=N`）、トランポリンに `args` の JSON を渡す。引数の検証に失敗したら `Err(kind="schema", message="tool `name`: <path>: ...")`、監査 `schema_rejected`。戻り値の JSON（`Result` の `Err` なら `is_error`）を `tool_result` として、プロバイダが返した `assistant` の値を**そのまま**添えて次の要求に戻し、4 へ。
+9. **実行。** `tool_calls` を 1 増やし（すべての agent）、監査 `tool_called`（`args_len=N`）、トランポリンに `args` の JSON を渡す。引数の検証に失敗したら `Err(kind="schema", message="tool `name`: <path>: ...")`、監査 `schema_rejected`。戻り値の JSON（`Result` の `Err` なら `is_error`）を `tool_result` として、プロバイダが返した `assistant` の値を**そのまま**添えて次の要求に戻し、**3 へ**（プロバイダを呼ぶたびに予算（前）を確かめる。`max_llm_calls` はツールの往復の 2 回目以降の呼び出しも数える）。
 
 ### 5.2 `T = str`
 
