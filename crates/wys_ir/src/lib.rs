@@ -374,6 +374,16 @@ pub enum Builtin {
     JsonFailed,
     JsonErrMessage,
     JsonErrOffset,
+    // スキーマ型（ADR-0022 論点 6・7）。glue はバックエンドが型ごとに作る
+    /// `validate[T](u)`: `Unknown` の木を型 `T`（dst の一時値の型）として検証し、+1 所有の値を返す（失敗ならゼロの値）。
+    /// 後で `SchemaFailed` を確かめ、失敗なら `SchemaErr*` で理由を読む
+    Validate,
+    SchemaFailed,
+    SchemaErrPath,
+    SchemaErrExpected,
+    SchemaErrFound,
+    /// `to_json(v)`: スキーマ型の値（型は問わない。verify が確かめる）を JSON の文字列にする
+    ToJson,
 }
 
 impl Builtin {
@@ -426,6 +436,12 @@ impl Builtin {
             Builtin::JsonFailed => "json_failed",
             Builtin::JsonErrMessage => "json_err_message",
             Builtin::JsonErrOffset => "json_err_offset",
+            Builtin::Validate => "validate",
+            Builtin::SchemaFailed => "schema_failed",
+            Builtin::SchemaErrPath => "schema_err_path",
+            Builtin::SchemaErrExpected => "schema_err_expected",
+            Builtin::SchemaErrFound => "schema_err_found",
+            Builtin::ToJson => "to_json",
         }
     }
 
@@ -457,6 +473,11 @@ impl Builtin {
                 | Builtin::PyErrTraceback
                 | Builtin::JsonParse
                 | Builtin::JsonErrMessage
+                | Builtin::Validate
+                | Builtin::SchemaErrPath
+                | Builtin::SchemaErrExpected
+                | Builtin::SchemaErrFound
+                | Builtin::ToJson
         )
     }
 
@@ -502,6 +523,13 @@ impl Builtin {
             Builtin::JsonFailed => Some(Ty::Bool),
             Builtin::JsonErrMessage => Some(Ty::Str),
             Builtin::JsonErrOffset => Some(Ty::Int),
+            // 型は呼び出しごとに違う（verify が扱う）
+            Builtin::Validate => None,
+            Builtin::SchemaFailed => Some(Ty::Bool),
+            Builtin::SchemaErrPath | Builtin::SchemaErrExpected | Builtin::SchemaErrFound => {
+                Some(Ty::Str)
+            }
+            Builtin::ToJson => Some(Ty::Str),
         }
     }
 
@@ -546,6 +574,13 @@ impl Builtin {
             | Builtin::PyErrTraceback => &[],
             Builtin::JsonParse => &[Ty::Str],
             Builtin::JsonFailed | Builtin::JsonErrMessage | Builtin::JsonErrOffset => &[],
+            Builtin::SchemaFailed
+            | Builtin::SchemaErrPath
+            | Builtin::SchemaErrExpected
+            | Builtin::SchemaErrFound => &[],
+            Builtin::Validate | Builtin::ToJson => {
+                unreachable!("verify checks these separately")
+            }
         }
     }
 }
@@ -883,6 +918,30 @@ fn py_convertible(p: &Program, t: Ty) -> bool {
             .unions
             .get(u.0 as usize)
             .is_some_and(|ms| ms.iter().flatten().all(|m| py_convertible(p, *m))),
+    }
+}
+
+/// スキーマ型か（ADR-0022 論点 4。型検査の E1501 と同じ規則）。Union の `None` の構成要素は可。
+fn schema_convertible(p: &Program, t: Ty) -> bool {
+    match t {
+        Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Unknown => true,
+        Ty::Py | Ty::Task(_) => false,
+        Ty::List(l) => p
+            .lists
+            .get(l.0 as usize)
+            .is_some_and(|e| schema_convertible(p, *e)),
+        Ty::Dict(d) => p
+            .dicts
+            .get(d.0 as usize)
+            .is_some_and(|(k, v)| *k == Ty::Str && schema_convertible(p, *v)),
+        Ty::Union(u) => p
+            .unions
+            .get(u.0 as usize)
+            .is_some_and(|ms| ms.iter().flatten().all(|m| schema_convertible(p, *m))),
+        Ty::Record(r) => p
+            .records
+            .get(r.0 as usize)
+            .is_some_and(|fs| fs.iter().all(|(_, ft)| schema_convertible(p, *ft))),
     }
 }
 
@@ -1312,6 +1371,34 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                             }
                             (vec![Ty::Py], Some(rt))
                         }
+                        Callee::Builtin(Builtin::Validate) => {
+                            let [u] = args.as_slice() else {
+                                return Err(format!("bb{bi}: validate takes one argument"));
+                            };
+                            expect("validate argument", use_(*u, &defined_in)?, Ty::Unknown)?;
+                            let d = dst.ok_or_else(|| format!("bb{bi}: validate has a result"))?;
+                            let rt = temp_ty(d)?;
+                            if !schema_convertible(p, rt) {
+                                return Err(format!(
+                                    "bb{bi}: validate cannot produce {}",
+                                    rt.name()
+                                ));
+                            }
+                            (vec![Ty::Unknown], Some(rt))
+                        }
+                        Callee::Builtin(Builtin::ToJson) => match args.as_slice() {
+                            [a] => {
+                                let at = use_(*a, &defined_in)?;
+                                if !schema_convertible(p, at) {
+                                    return Err(format!(
+                                        "bb{bi}: to_json cannot encode {}",
+                                        at.name()
+                                    ));
+                                }
+                                (vec![at], Some(Ty::Str))
+                            }
+                            _ => return Err(format!("bb{bi}: to_json takes one argument")),
+                        },
                         Callee::Builtin(Builtin::PyFromValue) => match args.as_slice() {
                             [a] => {
                                 let at = use_(*a, &defined_in)?;

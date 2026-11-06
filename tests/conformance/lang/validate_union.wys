@@ -1,0 +1,50 @@
+# validate[T] の Union は型検査がそろえた順に試す（ADR-0022 の訂正）: int | float に 3 は int
+# expect-stdout: int
+# expect-stdout: float
+# expect-stdout: str
+# expect-stdout: step
+# expect-stdout: none
+type Step = {name: str}
+
+def j(s: str) -> Unknown:
+    match parse_json(s):
+        case Ok(v):
+            return v
+        case Err(_e):
+            return "parse error"
+
+def kind(r: Result[int | float, SchemaError]) -> None:
+    match r:
+        case Ok(v):
+            match v:
+                case int():
+                    print("int")
+                case float():
+                    print("float")
+        case Err(e):
+            print(e.path)
+
+def main() -> None:
+    kind(validate[int | float](j("3")))
+    kind(validate[int | float](j("3.5")))
+    match validate[int | str](j("\"s\"")):
+        case Ok(v):
+            match v:
+                case str():
+                    print("str")
+                case int():
+                    print("int")
+        case Err(e):
+            print(e.path)
+    match validate[Step | None](j("{\"name\": \"x\"}")):
+        case Ok(v):
+            if v is not None:
+                print("step")
+        case Err(e):
+            print(e.path)
+    match validate[Step | None](j("null")):
+        case Ok(v):
+            if v is None:
+                print("none")
+        case Err(e):
+            print(e.path)

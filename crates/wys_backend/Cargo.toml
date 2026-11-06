@@ -11,4 +11,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# スキーマ型の JSON Schema と to_json のキー（ADR-0022、M5 T6）
+serde_json = "1"
 wys_ir = { path = "../wys_ir" }

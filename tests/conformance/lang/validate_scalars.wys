@@ -1,0 +1,46 @@
+# validate[T]（ADR-0022 論点 6）: スカラー。整数は float にも受け付ける。T | None に null
+# expect-stdout: 3
+# expect-stdout: 3.0
+# expect-stdout: 2.5
+# expect-stdout: True
+# expect-stdout: hi
+# expect-stdout: none
+def j(s: str) -> Unknown:
+    match parse_json(s):
+        case Ok(v):
+            return v
+        case Err(_e):
+            return "parse error"
+
+def main() -> None:
+    match validate[int](j("3")):
+        case Ok(n):
+            print(n)
+        case Err(e):
+            print(e.path)
+    match validate[float](j("3")):
+        case Ok(x):
+            print(x)
+        case Err(e):
+            print(e.path)
+    match validate[float](j("2.5")):
+        case Ok(x):
+            print(x)
+        case Err(e):
+            print(e.path)
+    match validate[bool](j("true")):
+        case Ok(b):
+            print(b)
+        case Err(e):
+            print(e.path)
+    match validate[str](j("\"hi\"")):
+        case Ok(s):
+            print(s)
+        case Err(e):
+            print(e.path)
+    match validate[int | None](j("null")):
+        case Ok(n):
+            if n is None:
+                print("none")
+        case Err(e):
+            print(e.path)

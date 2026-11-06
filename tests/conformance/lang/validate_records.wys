@@ -1,0 +1,41 @@
+# validate[T] のレコード: 入れ子、list と dict、Optional のフィールド、宣言にないキーは無視、Unknown のフィールドは木を共有
+# expect-stdout: plan
+# expect-stdout: 2
+# expect-stdout: b
+# expect-stdout: 3.0
+# expect-stdout: none
+# expect-stdout: 7
+# expect-stdout: [["a"], []]
+type Step = {name: str, n: int}
+
+type Plan = {title: str, steps: list[Step], meta: dict[str, float], note: str | None, extra: Unknown}
+
+def j(s: str) -> Unknown:
+    match parse_json(s):
+        case Ok(v):
+            return v
+        case Err(_e):
+            return "parse error"
+
+def main() -> None:
+    src = "{\"title\": \"plan\", \"ignored\": [1, 2], \"steps\": [{\"name\": \"a\", \"n\": 1}, {\"name\": \"b\", \"n\": 2}], \"meta\": {\"k\": 3}, \"note\": null, \"extra\": 7}"
+    match validate[Plan](j(src)):
+        case Ok(p):
+            print(p.title)
+            print(len(p.steps))
+            print(p.steps[1].name)
+            print(p.meta["k"])
+            if p.note is None:
+                print("none")
+            match p.extra:
+                case int():
+                    print(p.extra)
+                case _:
+                    print("other")
+        case Err(e):
+            print(e.path)
+    match validate[list[list[str]]](j("[[\"a\"], []]")):
+        case Ok(xss):
+            print(xss)
+        case Err(e):
+            print(e.path)

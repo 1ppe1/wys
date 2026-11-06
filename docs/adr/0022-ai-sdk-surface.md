@@ -66,3 +66,15 @@
 - 更新する文書: `grammar.ebnf`（`decorator`）、`error-codes.md`（E1401〜E1406、E1501、実行時エラー、組み込み関数の表）、`explain-schema.json`（`tool` / `agent`）、`docs/design/ir.md`（`Function.tool` / `agent`、glue）、用語集（属性、スキーマ型、ツール表、トランポリン）、`docs/test-plan.md`、ADR 一覧と未決定事項 9 の欄、`docs/README.md`（`ai-sdk.md`）。
 - 初版の制限: `dict[str, T]` / `Unknown` のスキーマは Anthropic に乗らない（論点 5）。`description` を省略できる（LLM の挙動は悪くなる）。`llm_generate` の呼び出しをまたいで thinking のブロックは引き継がれない（論点 9）。
 - 見直し条件は論点 19。
+
+## 訂正と補足（2026-11-06、ユーザー承認、T6 の計画で判明）
+
+本文の表は Accepted のときのまま残す。
+
+- **レコードのフィールドの順（論点 5・7）:** 「定義の順」は実現できない。レコードは構造的で、順序の違う同じフィールドの集合は同じ型になり、型検査がフィールドを名前順にそろえる（`print` も名前順。ADR-0016 論点 16）。`to_json` の出力と JSON Schema の `properties` / `required` は**フィールドの名前順**にする。JSON の意味はキーの順序に依存しない。
+- **Union を試す順（論点 6）:** 「構成要素の順」は、型検査がそろえた順（`int`、`bool`、`str`、`float`、レコード、`list`、`dict`、`Unknown`、`None`）。`int | float` に `3` は `int`、`Unknown` は具体的な型の後、`None` は最後になる。同じ種類どうし（`list[int] | list[str]`）は登録の順で決まる（決定的だが、書いた順ではない）。
+- **`expected` の表記:** Generic なレコードは型引数を付けない名前（`Pair[int, str]` は `Pair`）。
+- **Union の内側の失敗:** 構成要素の内側で失敗しても、Union の段の失敗として報告する（`expected` は Union の表記、`found` は JSON の種類）。
+- **E1501 の範囲（論点 4）:** 型パラメータを**含む**型（`validate[list[T]]`）と、一番外側の `None`（`validate[None]`、`to_json(None)`）も E1501。`None` は Union の構成要素としてだけ使える。
+- **経路の表記:** レコードのフィールドと `dict` のキーは同じ規則（先頭は `name`、続きは `.name`）、`list` の添字は `[i]`。
+- **glue の名前:** `@wys_validate_{型の IR の名前}` / `@wys_to_json_{…}`（`@wys_show_*` と同じ規約）。

@@ -1,0 +1,5 @@
+# expect-error: E1501 5:9
+type Box = {h: PyObject}
+
+def main() -> None:
+    r = validate[Box](parse_scalar("1"))

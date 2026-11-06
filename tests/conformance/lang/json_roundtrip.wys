@@ -1,0 +1,28 @@
+# to_json（ADR-0022 論点 7 と訂正）: 空白なし、レコードはフィールドの名前の順、dict は挿入順、float の表示、エスケープ。
+# validate → to_json → parse_json → validate で同じ値に戻る
+# expect-stdout: {"meta":{"z":1.0,"a":1e+16},"note":null,"steps":[{"n":1,"name":"a\"b\\"}],"title":"t"}
+# expect-stdout: True
+# expect-stdout: [1,-0.0,1e-05,true,null,"x"]
+# expect-stdout: 3
+type Step = {name: str, n: int}
+
+type Plan = {title: str, steps: list[Step], meta: dict[str, float], note: str | None}
+
+def j(s: str) -> Unknown:
+    match parse_json(s):
+        case Ok(v):
+            return v
+        case Err(_e):
+            return "parse error"
+
+def main() -> None:
+    p = Plan(title="t", steps=[Step(name="a\"b\\", n=1)], meta={"z": 1.0, "a": 1e16}, note=None)
+    s = to_json(p)
+    print(s)
+    match validate[Plan](j(s)):
+        case Ok(q):
+            print(q == p)
+        case Err(e):
+            print(e.path)
+    print(to_json(j("[1, -0.0, 0.00001, true, null, \"x\"]")))
+    print(to_json(3))

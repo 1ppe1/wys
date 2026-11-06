@@ -74,6 +74,7 @@ bb0:
 - 命令: `make_unknown 種類(t)`（`make_union` と同じ所有の規則）。`union_is` / `union_payload` は `unknown` にも使える。
 - 解放処理: `@wys_retain_unknown` / `@wys_release_unknown` がタグで分岐する。`list` の種類の解放は `@wys_release_listN` から要素の `@wys_release_unknown` に戻る（相互再帰）。`needs_drop` は定数で真（型を辿らない）。
 - `parse_json` は `json_parse`（木を出力ポインタに書く。失敗なら `None` の種類）、`json_failed`、`json_err_message`、`json_err_offset` の組み合わせ。ランタイムは `wys_runtime::json`。
+- `validate[T]` は `validate`（dst の一時値の型が `T`。glue `@wys_validate_{型}` が `%unknown` の木を歩き、成功なら +1 所有の値、失敗ならゼロの値を出力ポインタに書く）と `schema_failed` / `schema_err_expected` / `schema_err_found` / `schema_err_path`。`to_json` は `to_json`（glue `@wys_to_json_{型}` が `wys_json_*` のバッファに書く）。どちらもスキーマ型だけ（検証器が確かめる。ADR-0022）。ランタイムは `wys_runtime::schema`。JSON Schema の文字列は `wys_backend::json_schema` が IR の型から作る（T8 / T9 で使う）
 - 外部入力は組み込み関数（`arg_count`、`arg_exists`、`arg_str`、`scalar_kind`、`scalar_int`、`scalar_bool`）を lowering が組み合わせて作る。ランタイムとの境界はスカラーとポインタだけ。
 
 ## `wys test`（M2 T7）

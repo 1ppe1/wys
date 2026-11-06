@@ -1,0 +1,3 @@
+# expect-error: E0201 3:23
+def main() -> None:
+    r = validate[int]([1])

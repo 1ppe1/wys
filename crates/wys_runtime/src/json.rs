@@ -300,6 +300,71 @@ fn build(n: Node) -> UnknownVal {
     }
 }
 
+/// `Unknown` の木を JSON にする（`to_json`。`list` / `dict` は挿入順）。`bytes` は区切りなど、`string` は文字列の中身。
+///
+/// # Safety
+/// `v` は有効な `Unknown` の値でなければならない。
+pub(crate) unsafe fn write_unknown(
+    v: UnknownVal,
+    bytes: &mut dyn FnMut(&[u8]),
+    string: &mut dyn FnMut(&[u8]),
+) {
+    match v.tag {
+        UNK_INT => bytes(v.word.to_string().as_bytes()),
+        UNK_BOOL => bytes(if v.word & 0xff != 0 {
+            b"true"
+        } else {
+            b"false"
+        }),
+        UNK_FLOAT => {
+            let f = f64::from_bits(v.word as u64);
+            if !f.is_finite() {
+                crate::embed::runtime_error("cannot encode NaN or infinity as JSON");
+            }
+            bytes(crate::float_repr(f).as_bytes())
+        }
+        // SAFETY: タグが str なら中身は生存している文字列オブジェクト。
+        UNK_STR => string(unsafe { embed::bytes(v.word as *const Header) }),
+        UNK_LIST => {
+            let l = v.word as *mut ListObj;
+            bytes(b"[");
+            // SAFETY: タグが list なら中身は要素 16 バイトの生存しているリスト。
+            unsafe {
+                for i in 0..crate::wys_list_len(l) {
+                    if i > 0 {
+                        bytes(b",");
+                    }
+                    let e = *(crate::wys_list_slot(l, i, UNKNOWN_SIZE) as *const UnknownVal);
+                    write_unknown(e, bytes, string);
+                }
+            }
+            bytes(b"]");
+        }
+        UNK_DICT => {
+            let d = v.word as *mut crate::DictObj;
+            bytes(b"{");
+            // SAFETY: タグが dict なら中身はキーが str、値が 16 バイトの生存している辞書。
+            unsafe {
+                let len = crate::wys_dict_len(d);
+                let mut first = true;
+                let mut e = crate::wys_dict_iter_next(d, 0, len);
+                while e >= 0 {
+                    if !first {
+                        bytes(b",");
+                    }
+                    first = false;
+                    string(embed::bytes(crate::wys_dict_key(d, e) as *const Header));
+                    bytes(b":");
+                    write_unknown(*(wys_dict_val(d, e) as *const UnknownVal), bytes, string);
+                    e = crate::wys_dict_iter_next(d, e + 1, len);
+                }
+            }
+            bytes(b"}");
+        }
+        _ => bytes(b"null"),
+    }
+}
+
 /// `parse_json(s)`: 成功なら木を `out` に書く（+1 所有）。失敗なら `None` の種類を書き、理由を覚える。
 ///
 /// # Safety
