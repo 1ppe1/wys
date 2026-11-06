@@ -9,7 +9,8 @@
 //! # expect-exit: 101                期待する終了コード（省略時は 0）
 //! # expect-stderr-contains: overflow 標準エラーに含まれるべき文字列
 //! # expect-args: 42 true hello      実行時にプログラムに渡すコマンドライン引数（空白区切り）
-//! # expect-env: WYS_APPROVAL=allow 実行時に設定する環境変数（`KEY=VALUE`。複数書ける。ADR-0023 の影響）
+//! # expect-env: WYS_APPROVAL=allow 実行時に設定する環境変数（`KEY=VALUE`。複数書ける。ADR-0023 の影響）。
+//!                                   値の `${CASE_DIR}` はケースのファイルがあるディレクトリの絶対パスに置き換える
 //! # expect-mode: test               `wys test` と同じ検査（main 不要、test_* の検査）で診断だけを確かめる
 //! ```
 //!
@@ -32,6 +33,15 @@ pub struct Expectations {
     pub env: Vec<(String, String)>,
     /// `# expect-mode: test`
     pub test_mode: bool,
+}
+
+/// `# expect-env:` の値の `${CASE_DIR}` を、ケースのファイルがあるディレクトリに置き換える（記録の再生などでケースの隣のファイルを指すため）。
+pub fn expand_case_dir(value: &str, case_path: &Path) -> String {
+    let dir = case_path
+        .parent()
+        .map(|d| std::fs::canonicalize(d).unwrap_or_else(|_| d.to_path_buf()))
+        .unwrap_or_default();
+    value.replace("${CASE_DIR}", &dir.to_string_lossy())
 }
 
 /// 実行時の挙動を変える AI Runtime の環境変数（ADR-0023 と `docs/design/ai-sdk.md` 11 章）。
@@ -201,7 +211,11 @@ pub fn run_case(
         }
     }
     let out = cmd
-        .envs(exp.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .envs(
+            exp.env
+                .iter()
+                .map(|(k, v)| (k.as_str(), expand_case_dir(v, path))),
+        )
         .env("WYS_VIRTUAL_TIME", "1")
         .args(&exp.args)
         .output()
@@ -235,6 +249,17 @@ pub fn run_case(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn case_dir_expands_to_the_directory_of_the_case() {
+        let case = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+        let dir = std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("src")).unwrap();
+        assert_eq!(
+            expand_case_dir("replay:${CASE_DIR}/x.jsonl", &case),
+            format!("replay:{}/x.jsonl", dir.display())
+        );
+        assert_eq!(expand_case_dir("allow", &case), "allow");
+    }
 
     #[test]
     fn parses_expectations() {

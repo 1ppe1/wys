@@ -77,7 +77,8 @@ struct Ctx {
     timeout_ms: i64,
     llm_calls: i64,
     tool_calls: i64,
-    tokens: i64,
+    /// プロバイダの `usage` の合計（`max_tokens` は入力と出力の和で数える。ADR-0023 論点 13）
+    usage: Usage,
     started: Instant,
     /// 入ったときのスケジューラの仮想時計（`WYS_VIRTUAL_TIME=1` のとき、ツールの中の `sleep_ms` も経過に数える）
     started_virtual_ms: i64,
@@ -101,7 +102,7 @@ impl Ctx {
             timeout_ms: limits[3],
             llm_calls: 0,
             tool_calls: 0,
-            tokens: 0,
+            usage: Usage::default(),
             started: Instant::now(),
             started_virtual_ms: crate::task::virtual_now_ms(),
             virtual_ms: 0,
@@ -121,12 +122,37 @@ impl Ctx {
     }
 }
 
+/// トークンの使用量（入力と出力を分けて持つ。M6 のトレースと費用で使う）。
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+struct Usage {
+    input_tokens: i64,
+    output_tokens: i64,
+}
+
+impl Usage {
+    fn total(self) -> i64 {
+        self.input_tokens.saturating_add(self.output_tokens)
+    }
+
+    fn add(&mut self, other: Usage) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+    }
+
+    fn from_json(v: &serde_json::Value) -> Usage {
+        Usage {
+            input_tokens: v["input_tokens"].as_i64().unwrap_or(0),
+            output_tokens: v["output_tokens"].as_i64().unwrap_or(0),
+        }
+    }
+}
+
 /// プロバイダの 1 回の応答。
 struct Reply {
     text: String,
     /// (呼び出しの ID, ツール名, 引数の JSON)
     tool_calls: Vec<(String, String, String)>,
-    tokens: i64,
+    usage: Usage,
     latency_ms: i64,
     /// 終わった理由（`max_tokens` なら切れている）。モックは空
     stop: String,
@@ -326,7 +352,7 @@ fn over_budget(s: &State, tools_next: bool) -> Option<(&'static str, &'static st
         let a = &s.arena[i];
         if a.timeout_ms > 0 && a.elapsed_ms() >= a.timeout_ms {
             Some(("timeout", "timeout_ms"))
-        } else if a.max_tokens > 0 && a.tokens > a.max_tokens {
+        } else if a.max_tokens > 0 && a.usage.total() > a.max_tokens {
             Some(("budget", "max_tokens"))
         } else if !tools_next && a.max_llm_calls > 0 && a.llm_calls >= a.max_llm_calls {
             Some(("budget", "max_llm_calls"))
@@ -410,15 +436,18 @@ fn provider_step(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
         let line = request_line(s, call);
         match exchange(s, &line) {
             // 応答の行が届いた（JSON でなくても、届いた応答として数える。Codex のレビュー）
-            Ok(v) => match v.map_err(|m| (m, 0)).and_then(|v| parse_reply(&v)) {
+            Ok(v) => match v
+                .map_err(|m| (m, Usage::default()))
+                .and_then(|v| parse_reply(&v))
+            {
                 Ok(r) => r,
-                Err((m, tokens)) => {
+                Err((m, usage)) => {
                     // 応答は届いたので、回数とトークンを数える（失敗を繰り返す呼び出しも予算で止まる）
                     for i in s.chain() {
                         s.arena[i].llm_calls += 1;
-                        s.arena[i].tokens += tokens;
+                        s.arena[i].usage.add(usage);
                     }
-                    audit(s, "llm_called", None, format!("tokens={tokens}"));
+                    audit(s, "llm_called", None, format!("tokens={}", usage.total()));
                     return Err(fail(s, "provider", m));
                 }
             },
@@ -433,10 +462,15 @@ fn provider_step(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
     for i in s.chain() {
         let a = &mut s.arena[i];
         a.llm_calls += 1;
-        a.tokens += reply.tokens;
+        a.usage.add(reply.usage);
         a.virtual_ms += reply.latency_ms;
     }
-    audit(s, "llm_called", None, format!("tokens={}", reply.tokens));
+    audit(
+        s,
+        "llm_called",
+        None,
+        format!("tokens={}", reply.usage.total()),
+    );
     // 期限を過ぎて届いた応答は受け取らず、要求されたツールも呼ばない
     if let Some((kind, what)) = over_budget(s, false).filter(|(_, w)| *w != "max_llm_calls") {
         audit(s, "budget_exceeded", None, what.into());
@@ -686,15 +720,13 @@ fn check_executable(program: &str) -> Result<(), String> {
 
 /// プロバイダの応答の 1 行を読む（`text` / `tool_calls` / `usage` / `stop` だけを解釈する）。`error` 行は `Err`。
 /// 失敗なら理由と、`error` 行に `usage` があればそのトークン数（拒否でも入力は課金されるので予算に数える）。
-fn parse_reply(v: &serde_json::Value) -> Result<Reply, (String, i64)> {
-    let usage = &v["usage"];
-    let tokens =
-        usage["input_tokens"].as_i64().unwrap_or(0) + usage["output_tokens"].as_i64().unwrap_or(0);
+fn parse_reply(v: &serde_json::Value) -> Result<Reply, (String, Usage)> {
+    let usage = Usage::from_json(&v["usage"]);
     // `error` は文字列のときだけ失敗（`"error": null` は成功の応答に付く慣習なので無視する。Fable のレビュー）
     if let Some(e) = v["error"].as_str() {
-        return Err((e.to_string(), tokens));
+        return Err((e.to_string(), usage));
     }
-    let malformed = |what: &str| Err((format!("malformed provider response: {what}"), tokens));
+    let malformed = |what: &str| Err((format!("malformed provider response: {what}"), usage));
     if !v.is_object() || !v["text"].is_string() {
         return malformed("`text` is missing");
     }
@@ -714,7 +746,7 @@ fn parse_reply(v: &serde_json::Value) -> Result<Reply, (String, i64)> {
     Ok(Reply {
         text,
         tool_calls,
-        tokens,
+        usage,
         latency_ms: 0,
         stop: v["stop"].as_str().unwrap_or_default().to_string(),
         assistant,
@@ -1026,7 +1058,7 @@ pub unsafe extern "C" fn wys_llm_mock_push(resp: *const Header) {
     let r = Reply {
         text: v["text"].as_str().unwrap_or_default().to_string(),
         tool_calls,
-        tokens: v["input_tokens"].as_i64().unwrap_or(0) + v["output_tokens"].as_i64().unwrap_or(0),
+        usage: Usage::from_json(&v),
         latency_ms: v["latency_ms"].as_i64().unwrap_or(0),
         stop: String::new(),
         assistant: serde_json::Value::String(v["text"].as_str().unwrap_or_default().to_string()),
@@ -1132,6 +1164,38 @@ pub extern "C" fn wys_agent_exit() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replies_keep_input_and_output_tokens_apart() {
+        let v = serde_json::json!({"text": "x", "usage": {"input_tokens": 7, "output_tokens": 3}});
+        let r = parse_reply(&v).ok().unwrap();
+        assert_eq!(
+            r.usage,
+            Usage {
+                input_tokens: 7,
+                output_tokens: 3
+            }
+        );
+        assert_eq!(r.usage.total(), 10);
+        let e = serde_json::json!({"error": "refused", "usage": {"input_tokens": 5}});
+        let (_, u) = parse_reply(&e).err().unwrap();
+        assert_eq!(
+            u,
+            Usage {
+                input_tokens: 5,
+                output_tokens: 0
+            }
+        );
+        let mut sum = Usage {
+            input_tokens: i64::MAX,
+            output_tokens: 1,
+        };
+        sum.add(Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+        });
+        assert_eq!(sum.total(), i64::MAX);
+    }
 
     #[test]
     fn deployed_capabilities_only_narrow() {

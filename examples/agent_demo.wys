@@ -11,15 +11,55 @@ def char_count(text: str) -> int uses pure:
 def save_note(title: str) -> None uses io:
     print("saved " + title)
 
-@agent(tools=[char_count, save_note], capabilities=["io", "llm"], max_llm_calls=4, max_tool_calls=4, timeout_ms=60000)
+@agent(
+    tools=[char_count, save_note],
+    capabilities=["io", "llm"],
+    max_llm_calls=4,
+    max_tool_calls=4,
+    timeout_ms=60000
+)
 async def summarizer(text: str) -> Result[Summary, LlmError] uses io, llm:
-    req = LlmRequest(model="", system="Summarize the text. Use the tools.", messages=[Message(role="user", content=text)], max_tokens=1024)
+    req = LlmRequest(
+        model="",
+        system="Summarize the text. Use the tools.",
+        messages=[Message(role="user", content=text)],
+        max_tokens=1024
+    )
     return await llm_generate[Summary](req)
 
 async def main() -> None uses io, llm:
-    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="char_count", args_json="{\"text\": \"typed output from a model\"}")], input_tokens=20, output_tokens=5, latency_ms=0))
-    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="save_note", args_json="{\"title\": \"notes\"}")], input_tokens=30, output_tokens=5, latency_ms=0))
-    llm_mock_push(MockResponse(text="{\"title\": \"notes\", \"chars\": 25, \"saved\": false}", tool_calls=[], input_tokens=40, output_tokens=10, latency_ms=0))
+    llm_mock_push(
+        MockResponse(
+            text="",
+            tool_calls=[
+                MockToolCall(
+                    name="char_count",
+                    args_json="{\"text\": \"typed output from a model\"}"
+                )
+            ],
+            input_tokens=20,
+            output_tokens=5,
+            latency_ms=0
+        )
+    )
+    llm_mock_push(
+        MockResponse(
+            text="",
+            tool_calls=[MockToolCall(name="save_note", args_json="{\"title\": \"notes\"}")],
+            input_tokens=30,
+            output_tokens=5,
+            latency_ms=0
+        )
+    )
+    llm_mock_push(
+        MockResponse(
+            text="{\"title\": \"notes\", \"chars\": 25, \"saved\": false}",
+            tool_calls=[],
+            input_tokens=40,
+            output_tokens=10,
+            latency_ms=0
+        )
+    )
     match await summarizer("typed output from a model"):
         case Ok(s):
             print(s.title + ": " + to_json(s.chars) + " chars, saved=" + to_json(s.saved))
