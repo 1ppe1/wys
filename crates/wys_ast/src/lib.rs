@@ -130,6 +130,8 @@ pub struct Param {
 
 #[derive(Debug, Clone)]
 pub struct FuncDef {
+    /// `def` の前の `@name(...)`（ADR-0022 論点 11。M5 ではコンパイル時の属性で、`tool` / `agent` だけを解釈する）
+    pub decorators: Vec<Decorator>,
     /// `pub def`（ほかのモジュールから使える、ADR-0010）
     pub public: bool,
     /// `async def`（ADR-0020）
@@ -143,6 +145,38 @@ pub struct FuncDef {
     pub effects: Option<EffectClause>,
     pub body: Vec<Stmt>,
     pub span: Span,
+}
+
+/// デコレータ `@name` / `@name(key=value, ...)`（ADR-0022 論点 11）。引数の検査は型検査で行う。
+#[derive(Debug, Clone)]
+pub struct Decorator {
+    pub name: Ident,
+    pub args: Vec<AttrArg>,
+    pub span: Span,
+}
+
+/// デコレータの引数。`key` が `None` なら位置引数（E1402）。
+#[derive(Debug, Clone)]
+pub struct AttrArg {
+    pub key: Option<Ident>,
+    pub value: AttrValue,
+    pub span: Span,
+}
+
+/// デコレータの引数の値: リテラルか、文字列と名前の並び。
+#[derive(Debug, Clone)]
+pub enum AttrValue {
+    Int(i64),
+    Str(String),
+    Bool(bool),
+    List(Vec<AttrElem>),
+}
+
+#[derive(Debug, Clone)]
+pub enum AttrElem {
+    Str(String, Span),
+    /// 関数の名前（`add`、`m.add`）。名前解決が内部名に直す
+    Name(String, Span),
 }
 
 /// 関数の `uses` 節（ADR-0014）。名前の検査（未知の名前、重複）は型検査で行う。

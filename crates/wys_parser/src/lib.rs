@@ -197,6 +197,18 @@ impl Parser<'_> {
         let mut types = Vec::new();
         let mut funcs = Vec::new();
         loop {
+            // `@name(...)` は `[pub] [async] def` の直前にだけ書ける（ADR-0022 論点 11）
+            let decorators = if self.at(&TokenKind::At) {
+                match self.decorators() {
+                    Ok(d) => d,
+                    Err(Reported) => {
+                        self.sync();
+                        continue;
+                    }
+                }
+            } else {
+                Vec::new()
+            };
             let public = matches!(self.peek(), TokenKind::Pub)
                 && matches!(
                     self.peek_at(1),
@@ -204,6 +216,19 @@ impl Parser<'_> {
                 );
             if public {
                 self.bump();
+            }
+            if !decorators.is_empty() && !matches!(self.peek(), TokenKind::Def | TokenKind::Async) {
+                let found = self.peek().describe();
+                self.diags.push(
+                    Diagnostic::error(
+                        "E0101",
+                        format!("expected `def` after a decorator, found {found}"),
+                        self.span(),
+                    )
+                    .with_hint("decorators can only be written before a function definition"),
+                );
+                self.sync();
+                continue;
             }
             match self.peek() {
                 TokenKind::Eof => break,
@@ -231,6 +256,7 @@ impl Parser<'_> {
                 TokenKind::Def | TokenKind::Async => match self.func_def() {
                     Ok(mut f) => {
                         f.public = public;
+                        f.decorators = decorators;
                         funcs.push(f);
                     }
                     Err(Reported) => self.sync(),
@@ -257,6 +283,117 @@ impl Parser<'_> {
             }
         }
         (imports, types, funcs)
+    }
+
+    /// `@name` / `@name(key=value, ...)` を 1 行に 1 つずつ（ADR-0022 論点 11）。
+    fn decorators(&mut self) -> PResult<Vec<Decorator>> {
+        let mut out = Vec::new();
+        while self.at(&TokenKind::At) {
+            let start = self.bump().span.start;
+            let name = self.ident("a decorator name")?;
+            let mut args = Vec::new();
+            if self.eat(&TokenKind::LParen) {
+                while !self.at(&TokenKind::RParen) {
+                    let astart = self.span().start;
+                    let key = if matches!(self.peek(), TokenKind::Ident(_))
+                        && matches!(self.peek_at(1), TokenKind::Assign)
+                    {
+                        let k = self.ident("an argument name")?;
+                        self.bump(); // `=`
+                        Some(k)
+                    } else {
+                        None
+                    };
+                    let value = self.attr_value()?;
+                    args.push(AttrArg {
+                        key,
+                        value,
+                        span: Span::new(astart, self.prev_end()),
+                    });
+                    if !self.eat(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&TokenKind::RParen, "`,` or `)`")?;
+            }
+            let span = Span::new(start, self.prev_end());
+            self.expect(&TokenKind::Newline, "a new line after a decorator")?;
+            while self.eat(&TokenKind::BlankLine) {}
+            out.push(Decorator { name, args, span });
+        }
+        Ok(out)
+    }
+
+    /// デコレータの引数の値: 整数（負を含む）、文字列、`True` / `False`、文字列と名前の `[...]`。
+    fn attr_value(&mut self) -> PResult<AttrValue> {
+        let bad = |p: &mut Self| {
+            let found = p.peek().describe();
+            p.diags.push(
+                Diagnostic::error(
+                    "E1402",
+                    format!("expected a literal or a list of names as a decorator argument, found {found}"),
+                    p.span(),
+                )
+                .with_hint("decorator arguments are integers, strings, `True` / `False`, or lists of strings and function names"),
+            );
+            Reported
+        };
+        let v = match self.peek().clone() {
+            TokenKind::Int(v) => {
+                self.bump();
+                AttrValue::Int(v)
+            }
+            TokenKind::Minus if matches!(self.peek_at(1), TokenKind::Int(_)) => {
+                self.bump();
+                let TokenKind::Int(v) = self.bump().kind.clone() else {
+                    unreachable!("checked above")
+                };
+                AttrValue::Int(-v)
+            }
+            TokenKind::Str(s) => {
+                self.bump();
+                AttrValue::Str(s)
+            }
+            TokenKind::True => {
+                self.bump();
+                AttrValue::Bool(true)
+            }
+            TokenKind::False => {
+                self.bump();
+                AttrValue::Bool(false)
+            }
+            TokenKind::LBracket => {
+                self.bump();
+                let mut elems = Vec::new();
+                while !self.at(&TokenKind::RBracket) {
+                    match self.peek().clone() {
+                        TokenKind::Str(s) => {
+                            let sp = self.bump().span;
+                            elems.push(AttrElem::Str(s, sp));
+                        }
+                        TokenKind::Ident(_) => {
+                            let first = self.ident("a function name")?;
+                            let mut name = first.name;
+                            let mut span = first.span;
+                            while self.eat(&TokenKind::Dot) {
+                                let part = self.ident("a function name")?;
+                                name = format!("{name}.{}", part.name);
+                                span = Span::new(span.start, part.span.end);
+                            }
+                            elems.push(AttrElem::Name(name, span));
+                        }
+                        _ => return Err(bad(self)),
+                    }
+                    if !self.eat(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&TokenKind::RBracket, "`,` or `]`")?;
+                AttrValue::List(elems)
+            }
+            _ => return Err(bad(self)),
+        };
+        Ok(v)
     }
 
     /// `import a.b [as c]` / `from a.b import f [as g], ...`
@@ -473,6 +610,7 @@ impl Parser<'_> {
         self.expect(&TokenKind::Colon, "`:`")?;
         let body = self.block()?;
         Ok(FuncDef {
+            decorators: Vec::new(),
             public: false,
             is_async,
             name,

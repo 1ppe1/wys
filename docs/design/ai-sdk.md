@@ -153,7 +153,7 @@ attr_elem  = STRING | IDENT { "." IDENT } ;
 | `description` | `str` | `""` | LLM に見せる説明（書くことを強く推奨する） |
 | `approval` | `"none"` / `"required"` | `"none"` | 実行の前に承認が要るか（7.4） |
 
-関数の条件: `uses` を書く（`uses pure` でよい。E1403）、引数と戻り値はスキーマ型（E1501。戻り値の最上位だけ `Result[T, E]` を認め、`Err(e)` は `to_json(e)` を `is_error` の `tool_result` として LLM に返す）、`main` / `test_*` ではない（E1403）、`async def` でもよい（トランポリンがその場で `await` する）。ツールの名前は関数の名前（モジュールの修飾は付けない）。ツールは普通の関数としても呼べる（属性は呼び出しの意味を変えない）。
+関数の条件: `uses` を書く（`uses pure` でよい。E1403）、引数と戻り値はスキーマ型（E1501。戻り値の最上位だけ `Result[T, E]` と `None`（何も返さないツール。結果は JSON の `null`）を認め、`Err(e)` は `to_json(e)` を `is_error` の `tool_result` として LLM に返す）、`main` / `test_*` ではない（E1403）、`async def` でもよい（トランポリンがその場で `await` する）。ツールの名前は関数の名前（モジュールの修飾は付けない）。ツールは普通の関数としても呼べる（属性は呼び出しの意味を変えない）。
 
 コンパイラは、引数を 1 つのレコードとみなして JSON Schema と検証の glue を作り、ツール表の 1 行（名前・説明・引数の JSON Schema・`uses` の Effect・承認の要否・トランポリン）を生成する。トランポリンは `args_json` → `parse_json` → `validate[引数のレコード]` → 呼び出し → `to_json(戻り値)`。
 

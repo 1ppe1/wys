@@ -83,7 +83,9 @@
         "locals",
         "narrowing",
         "arc",
-        "effects"
+        "effects",
+        "tool",
+        "agent"
       ],
       "additionalProperties": false,
       "properties": {
@@ -95,6 +97,31 @@
         "async": {
           "description": "`async def` の関数か（ADR-0020）。",
           "type": "boolean"
+        },
+        "tool": {
+          "description": "`@tool(...)` の属性（ADR-0022 論点 16）。付いていなければ null。",
+          "type": ["object", "null"],
+          "required": ["description", "approval"],
+          "additionalProperties": false,
+          "properties": {
+            "description": {"type": "string"},
+            "approval": {"enum": ["none", "required"]}
+          }
+        },
+        "agent": {
+          "description": "`@agent(...)` の属性（ADR-0022 論点 16）。付いていなければ null。予算の 0 は上限なし。",
+          "type": ["object", "null"],
+          "required": ["tools", "capabilities", "model", "max_llm_calls", "max_tool_calls", "max_tokens", "timeout_ms"],
+          "additionalProperties": false,
+          "properties": {
+            "tools": {"type": "array", "items": {"type": "string"}},
+            "capabilities": {"type": "array", "items": {"$ref": "#/$defs/effect_name"}},
+            "model": {"type": "string"},
+            "max_llm_calls": {"type": "integer", "minimum": 0},
+            "max_tool_calls": {"type": "integer", "minimum": 0},
+            "max_tokens": {"type": "integer", "minimum": 0},
+            "timeout_ms": {"type": "integer", "minimum": 0}
+          }
         },
         "span": {
           "$ref": "#/$defs/span"
@@ -378,7 +405,8 @@
       "enum": [
         "io",
         "exit",
-        "python"
+        "python",
+        "llm"
       ]
     },
     "effects": {

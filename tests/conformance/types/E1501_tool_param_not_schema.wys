@@ -1,0 +1,7 @@
+# expect-error: E1501 3:10
+@tool(description="x")
+def f(h: PyObject) -> int uses pure:
+    return 1
+
+def main() -> None:
+    pass

@@ -1,0 +1,235 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: json
+---
+{
+  "schema_version": "0",
+  "kind": "file",
+  "file": "tests/conformance/explain/tool_and_agent.wys",
+  "functions": [
+    {
+      "name": "add",
+      "async": false,
+      "span": {
+        "file": "tests/conformance/explain/tool_and_agent.wys",
+        "start": {
+          "line": 2,
+          "column": 5,
+          "byte": 64
+        },
+        "end": {
+          "line": 2,
+          "column": 8,
+          "byte": 67
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [
+          {
+            "name": "a",
+            "type": "int"
+          },
+          {
+            "name": "b",
+            "type": "int"
+          }
+        ],
+        "return": "int"
+      },
+      "locals": [
+        {
+          "name": "a",
+          "type": "int",
+          "kind": "param",
+          "span": {
+            "file": "tests/conformance/explain/tool_and_agent.wys",
+            "start": {
+              "line": 2,
+              "column": 9,
+              "byte": 68
+            },
+            "end": {
+              "line": 2,
+              "column": 10,
+              "byte": 69
+            }
+          }
+        },
+        {
+          "name": "b",
+          "type": "int",
+          "kind": "param",
+          "span": {
+            "file": "tests/conformance/explain/tool_and_agent.wys",
+            "start": {
+              "line": 2,
+              "column": 17,
+              "byte": 76
+            },
+            "end": {
+              "line": 2,
+              "column": 18,
+              "byte": 77
+            }
+          }
+        }
+      ],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "add",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ],
+      "effects": {
+        "declared": [],
+        "required": [],
+        "sites": []
+      },
+      "tool": {
+        "description": "Add two integers.",
+        "approval": "required"
+      },
+      "agent": null
+    },
+    {
+      "name": "planner",
+      "async": false,
+      "span": {
+        "file": "tests/conformance/explain/tool_and_agent.wys",
+        "start": {
+          "line": 6,
+          "column": 5,
+          "byte": 194
+        },
+        "end": {
+          "line": 6,
+          "column": 12,
+          "byte": 201
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [],
+        "return": "int"
+      },
+      "locals": [],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "planner",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ],
+      "effects": {
+        "declared": [
+          "llm"
+        ],
+        "required": [],
+        "sites": [
+          {
+            "callee": "add",
+            "span": {
+              "file": "tests/conformance/explain/tool_and_agent.wys",
+              "start": {
+                "line": 7,
+                "column": 12,
+                "byte": 232
+              },
+              "end": {
+                "line": 7,
+                "column": 15,
+                "byte": 235
+              }
+            },
+            "effects": [],
+            "annotated": true
+          }
+        ]
+      },
+      "tool": null,
+      "agent": {
+        "tools": [
+          "add"
+        ],
+        "capabilities": [
+          "llm"
+        ],
+        "model": "m",
+        "max_llm_calls": 3,
+        "max_tool_calls": 0,
+        "max_tokens": 0,
+        "timeout_ms": 0
+      }
+    },
+    {
+      "name": "main",
+      "async": false,
+      "span": {
+        "file": "tests/conformance/explain/tool_and_agent.wys",
+        "start": {
+          "line": 9,
+          "column": 5,
+          "byte": 247
+        },
+        "end": {
+          "line": 9,
+          "column": 9,
+          "byte": 251
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [],
+        "return": "None"
+      },
+      "locals": [],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "main",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ],
+      "effects": {
+        "declared": [
+          "llm"
+        ],
+        "required": [
+          "llm"
+        ],
+        "sites": [
+          {
+            "callee": "planner",
+            "span": {
+              "file": "tests/conformance/explain/tool_and_agent.wys",
+              "start": {
+                "line": 10,
+                "column": 5,
+                "byte": 276
+              },
+              "end": {
+                "line": 10,
+                "column": 12,
+                "byte": 283
+              }
+            },
+            "effects": [
+              "llm"
+            ],
+            "annotated": true
+          }
+        ]
+      },
+      "tool": null,
+      "agent": null
+    }
+  ]
+}

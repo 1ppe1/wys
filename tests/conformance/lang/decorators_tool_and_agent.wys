@@ -1,0 +1,22 @@
+# @tool / @agent はコンパイル時の属性で、呼び出しの意味を変えない（ADR-0022 論点 12）。ツールは普通の関数としても呼べる
+# expect-stdout: 5
+# expect-stdout: ok
+type Step = {name: str}
+
+@tool(description="Add two integers.")
+def add(a: int, b: int) -> int uses pure:
+    return a + b
+
+@tool(description="Describe a step.", approval="required")
+def describe(s: Step) -> Result[str, str] uses pure:
+    if s.name == "":
+        return Err("empty")
+    return Ok(s.name)
+
+@agent(tools=[add, describe], capabilities=["io", "llm"], max_tool_calls=2, timeout_ms=1000)
+def planner() -> str uses io, llm:
+    return "ok"
+
+def main() -> None uses io, llm:
+    print(add(2, 3))
+    print(planner())

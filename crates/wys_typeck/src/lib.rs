@@ -722,6 +722,31 @@ pub struct FuncSig {
     pub effects: Option<EffectSet>,
     /// `async def`（ADR-0020）
     pub is_async: bool,
+    /// `@tool(...)`（ADR-0022 論点 13）
+    pub tool: Option<ToolAttr>,
+    /// `@agent(...)`（ADR-0022 論点 14）
+    pub agent: Option<AgentAttr>,
+}
+
+/// `@tool` の属性（ADR-0022 論点 13）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolAttr {
+    pub description: String,
+    /// `approval="required"`
+    pub approval: bool,
+}
+
+/// `@agent` の属性（ADR-0022 論点 14）。予算の `0` は上限なし。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentAttr {
+    /// ツールの関数の内部名
+    pub tools: Vec<String>,
+    pub capabilities: EffectSet,
+    pub model: String,
+    pub max_llm_calls: i64,
+    pub max_tool_calls: i64,
+    pub max_tokens: i64,
+    pub timeout_ms: i64,
 }
 
 /// 変数の参照で、その地点の型が宣言型と異なる（絞り込まれている）こと。
@@ -776,16 +801,19 @@ pub enum Effect {
     Exit,
     /// Python のコードの実行（ADR-0018 論点 12）。任意の副作用を起こし得る。`io` を含意しない
     Python,
+    /// LLM の呼び出し（`llm_generate`、ADR-0022 論点 8 / ADR-0023 論点 7）
+    Llm,
 }
 
 impl Effect {
-    pub const ALL: [Effect; 3] = [Effect::Io, Effect::Exit, Effect::Python];
+    pub const ALL: [Effect; 4] = [Effect::Io, Effect::Exit, Effect::Python, Effect::Llm];
 
     pub fn name(self) -> &'static str {
         match self {
             Effect::Io => "io",
             Effect::Exit => "exit",
             Effect::Python => "python",
+            Effect::Llm => "llm",
         }
     }
 
@@ -798,6 +826,7 @@ impl Effect {
             Effect::Io => 1,
             Effect::Exit => 2,
             Effect::Python => 4,
+            Effect::Llm => 8,
         }
     }
 }
@@ -1073,8 +1102,11 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
             span: f.name.span,
             effects,
             is_async: f.is_async,
+            tool: None,
+            agent: None,
         });
     }
+    check_decorators(&mut cx, module);
     if require_main || cx.sig_index.contains_key("main") {
         check_main(&mut cx, module);
     }
@@ -1172,6 +1204,294 @@ fn declare_types(cx: &mut Ctx, module: &Module) {
 }
 
 /// `uses` 節を Effect の集合にする。未知の名前（E1101）と、重複や `pure` の併記（E1104）を報告する。
+/// デコレータ（ADR-0022 論点 11〜14）。M5 ではコンパイル時の属性で、`tool` と `agent` だけを解釈する。
+/// 先にすべての `@tool` を読み、次に `@agent` の `tools` をそれと突き合わせる。
+fn check_decorators(cx: &mut Ctx, module: &Module) {
+    let bad_arg = |cx: &mut Ctx, msg: String, span: Span| {
+        cx.diags.push(Diagnostic::error("E1402", msg, span));
+    };
+    let mut agents: Vec<(usize, &FuncDef, &Decorator)> = Vec::new();
+    for (i, f) in module.funcs.iter().enumerate() {
+        if f.decorators.is_empty() {
+            continue;
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        for d in &f.decorators {
+            let name = d.name.name.as_str();
+            if !matches!(name, "tool" | "agent") {
+                cx.diags.push(
+                    Diagnostic::error("E1401", format!("unknown decorator `@{name}`"), d.name.span)
+                        .with_hint("the decorators are `@tool(...)` and `@agent(...)` (ADR-0022)"),
+                );
+                continue;
+            }
+            if seen.contains(&name) {
+                bad_arg(cx, format!("`@{name}` is written more than once"), d.span);
+                continue;
+            }
+            seen.push(name);
+        }
+        let (is_tool, is_agent) = (seen.contains(&"tool"), seen.contains(&"agent"));
+        if !is_tool && !is_agent {
+            continue;
+        }
+        let which = if is_tool { "@tool" } else { "@agent" };
+        let sig_error = |cx: &mut Ctx, msg: String, hint: &str| {
+            cx.diags
+                .push(Diagnostic::error("E1403", msg, f.name.span).with_hint(hint.to_string()));
+        };
+        if is_tool && is_agent {
+            sig_error(
+                cx,
+                format!("`{}` cannot be both `@tool` and `@agent`", f.name.name),
+                "split it into a tool and an agent that lists the tool",
+            );
+            continue;
+        }
+        if f.effects.is_none() {
+            sig_error(
+                cx,
+                format!("a `{which}` function needs a `uses` clause"),
+                "declare its effects, e.g. `uses pure` or `uses io, llm` (ADR-0022)",
+            );
+        }
+        let base = f.name.name.rsplit('.').next().unwrap_or_default();
+        if base == "main" || base.starts_with("test_") {
+            sig_error(
+                cx,
+                format!("`{which}` cannot be put on `{base}`"),
+                "move the work into a separate function",
+            );
+            continue;
+        }
+        let d = f
+            .decorators
+            .iter()
+            .find(|d| d.name.name == if is_tool { "tool" } else { "agent" })
+            .expect("seen above");
+        if is_tool {
+            let mut attr = ToolAttr {
+                description: String::new(),
+                approval: false,
+            };
+            for a in &d.args {
+                let Some(k) = &a.key else {
+                    bad_arg(
+                        cx,
+                        "decorator arguments must be written as `name=value`".into(),
+                        a.span,
+                    );
+                    continue;
+                };
+                match (k.name.as_str(), &a.value) {
+                    ("description", AttrValue::Str(v)) => attr.description = v.clone(),
+                    ("approval", AttrValue::Str(v)) if v == "none" || v == "required" => {
+                        attr.approval = v == "required";
+                    }
+                    ("approval", _) => bad_arg(
+                        cx,
+                        "`approval` must be \"none\" or \"required\"".into(),
+                        a.span,
+                    ),
+                    ("description", _) => {
+                        bad_arg(cx, "`description` must be a string".into(), a.span)
+                    }
+                    (other, _) => bad_arg(cx, format!("`@tool` has no argument `{other}`"), k.span),
+                }
+            }
+            // 引数と戻り値はスキーマ型（E1501）。戻り値の一番外側だけ `Result[T, E]` と `None` を認める
+            let sig = cx.sigs[i].clone();
+            for (p, &t) in f.params.iter().zip(&sig.params) {
+                if cx.types.contains_param(t) || !cx.types.is_schema_type(t, true) {
+                    schema_type_error(cx, t, p.ty.span, "a tool argument");
+                }
+            }
+            let ok_ret = match sig.ret {
+                Ty::None => true,
+                Ty::Result(r) => {
+                    let (o, e) = cx.types.result_args(r);
+                    !cx.types.contains_param(sig.ret)
+                        && cx.types.is_schema_type(o, false)
+                        && cx.types.is_schema_type(e, false)
+                }
+                t => !cx.types.contains_param(t) && cx.types.is_schema_type(t, true),
+            };
+            if !ok_ret {
+                schema_type_error(cx, sig.ret, f.ret.span, "a tool result");
+            }
+            cx.sigs[i].tool = Some(attr);
+        } else {
+            agents.push((i, f, d));
+        }
+    }
+    for (i, f, d) in agents {
+        let mut attr = AgentAttr {
+            tools: Vec::new(),
+            capabilities: EffectSet::default(),
+            model: String::new(),
+            max_llm_calls: 0,
+            max_tool_calls: 0,
+            max_tokens: 0,
+            timeout_ms: 0,
+        };
+        attr.capabilities.insert(Effect::Io);
+        attr.capabilities.insert(Effect::Llm);
+        let mut caps_span = d.span;
+        let mut tool_elems: Vec<(String, Span)> = Vec::new();
+        for a in &d.args {
+            let Some(k) = &a.key else {
+                bad_arg(
+                    cx,
+                    "decorator arguments must be written as `name=value`".into(),
+                    a.span,
+                );
+                continue;
+            };
+            match (k.name.as_str(), &a.value) {
+                ("tools", AttrValue::List(es)) => {
+                    for e in es {
+                        match e {
+                            AttrElem::Name(n, sp) => tool_elems.push((n.clone(), *sp)),
+                            AttrElem::Str(_, sp) => bad_arg(
+                                cx,
+                                "`tools` lists functions by name, not strings".into(),
+                                *sp,
+                            ),
+                        }
+                    }
+                }
+                ("capabilities", AttrValue::List(es)) => {
+                    caps_span = a.span;
+                    attr.capabilities = EffectSet::default();
+                    for e in es {
+                        match e {
+                            AttrElem::Str(n, sp) => match Effect::parse(n) {
+                                Some(eff) => attr.capabilities.insert(eff),
+                                None => cx.diags.push(
+                                    Diagnostic::error("E1101", format!("unknown capability `{n}`"), *sp)
+                                        .with_hint("capabilities are the effect names `io`, `exit`, `python` and `llm` (ADR-0023)"),
+                                ),
+                            },
+                            AttrElem::Name(_, sp) => bad_arg(cx, "`capabilities` lists effect names as strings, e.g. `[\"io\", \"llm\"]`".into(), *sp),
+                        }
+                    }
+                }
+                ("model", AttrValue::Str(v)) => attr.model = v.clone(),
+                (
+                    key @ ("max_llm_calls" | "max_tool_calls" | "max_tokens" | "timeout_ms"),
+                    AttrValue::Int(v),
+                ) => {
+                    if *v < 0 {
+                        bad_arg(
+                            cx,
+                            format!("`{key}` cannot be negative (0 means no limit)"),
+                            a.span,
+                        );
+                        continue;
+                    }
+                    match key {
+                        "max_llm_calls" => attr.max_llm_calls = *v,
+                        "max_tool_calls" => attr.max_tool_calls = *v,
+                        "max_tokens" => attr.max_tokens = *v,
+                        _ => attr.timeout_ms = *v,
+                    }
+                }
+                ("tools" | "capabilities", _) => {
+                    bad_arg(cx, format!("`{}` must be a list", k.name), a.span)
+                }
+                ("model", _) => bad_arg(cx, "`model` must be a string".into(), a.span),
+                ("max_llm_calls" | "max_tool_calls" | "max_tokens" | "timeout_ms", _) => {
+                    bad_arg(cx, format!("`{}` must be an integer", k.name), a.span)
+                }
+                (other, _) => bad_arg(cx, format!("`@agent` has no argument `{other}`"), k.span),
+            }
+        }
+        for (n, sp) in tool_elems {
+            let tool = cx
+                .sig_index
+                .get(&n)
+                .copied()
+                .filter(|&ti| cx.sigs[ti].tool.is_some());
+            let Some(ti) = tool else {
+                cx.diags.push(
+                    Diagnostic::error("E1404", format!("`{n}` is not a `@tool` function"), sp)
+                        .with_hint("put `@tool(description=...)` on the function, or remove it from `tools`"),
+                );
+                continue;
+            };
+            if attr.tools.contains(&n) {
+                cx.diags.push(Diagnostic::error(
+                    "E1404",
+                    format!("tool `{n}` is listed more than once"),
+                    sp,
+                ));
+                continue;
+            }
+            // ツールの `uses` ⊆ agent の `capabilities`（E1405、ADR-0022 論点 14）
+            let tool_effects = cx.sigs[ti].effects.unwrap_or_default();
+            let missing = tool_effects.missing_from(attr.capabilities);
+            if !missing.is_empty() {
+                let names: Vec<&str> = missing.into_iter().map(Effect::name).collect();
+                let tool_span = cx.sigs[ti].span;
+                cx.diags.push(
+                    Diagnostic::error(
+                        "E1405",
+                        format!(
+                            "tool `{n}` uses {} but the agent does not grant it",
+                            names.join(", ")
+                        ),
+                        sp,
+                    )
+                    .with_hint(format!(
+                        "add {} to `capabilities`",
+                        names
+                            .iter()
+                            .map(|x| format!("\"{x}\""))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                    .with_related(RelatedKind::Function, &n, Some(tool_span)),
+                );
+            }
+            attr.tools.push(n);
+        }
+        // `capabilities` ⊆ 自身の `uses`（E1406）
+        if let Some(own) = cx.sigs[i].effects {
+            let extra = attr.capabilities.missing_from(own);
+            if !extra.is_empty() {
+                let names: Vec<&str> = extra.into_iter().map(Effect::name).collect();
+                cx.diags.push(
+                    Diagnostic::error(
+                        "E1406",
+                        format!(
+                            "agent `{}` grants {} but its `uses` clause does not declare it",
+                            f.name.name,
+                            names.join(", ")
+                        ),
+                        caps_span,
+                    )
+                    .with_cause("an agent can cause the effects of the tools it runs, so its signature declares them (ADR-0022 point 14)")
+                    .with_hint(format!("add {} to `uses`, or narrow `capabilities`", names.join(", "))),
+                );
+            }
+        }
+        cx.sigs[i].agent = Some(attr);
+    }
+}
+
+fn schema_type_error(cx: &mut Ctx, t: Ty, span: Span, what: &str) {
+    let found = cx.name(t);
+    cx.diags.push(
+        Diagnostic::error(
+            "E1501",
+            format!("`{found}` is not a schema type, so it cannot be {what}"),
+            span,
+        )
+        .with_cause("tool arguments and results cross the boundary as JSON: `int`, `float`, `bool`, `str`, `Unknown`, and `list`, `dict[str, ..]`, records and unions of them; a tool may also return `Result[T, E]` or `None` (ADR-0022)")
+        .with_hint("declare the JSON shape as a record, or use `Unknown` for parts whose shape is open"),
+    );
+}
+
 fn effect_clause(cx: &mut Ctx, c: &EffectClause) -> EffectSet {
     let mut set = EffectSet::default();
     let mut seen: Vec<&str> = Vec::new();
@@ -1197,7 +1517,7 @@ fn effect_clause(cx: &mut Ctx, c: &EffectClause) -> EffectSet {
             cx.diags.push(
                 Diagnostic::error("E1101", format!("unknown effect `{}`", n.name), n.span)
                     .with_hint(
-                        "the effects are `io`, `exit` and `python`; write `uses pure` for none",
+                        "the effects are `io`, `exit`, `python` and `llm`; write `uses pure` for none",
                     ),
             );
         }

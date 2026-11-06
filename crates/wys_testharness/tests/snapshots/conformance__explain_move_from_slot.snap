@@ -88,7 +88,9 @@ expression: json
         "declared": null,
         "required": [],
         "sites": []
-      }
+      },
+      "tool": null,
+      "agent": null
     },
     {
       "name": "main",
@@ -261,7 +263,9 @@ expression: json
             "annotated": false
           }
         ]
-      }
+      },
+      "tool": null,
+      "agent": null
     }
   ]
 }

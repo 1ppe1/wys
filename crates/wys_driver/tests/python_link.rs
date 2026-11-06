@@ -150,6 +150,8 @@ fn program() -> Program {
             elided_rc: Vec::new(),
             is_async: false,
             effects: None,
+            tool: None,
+            agent: None,
         }],
     };
     arc::insert(&mut p);
@@ -218,6 +220,8 @@ fn programs_without_python_do_not_need_python() {
             elided_rc: Vec::new(),
             is_async: false,
             effects: None,
+            tool: None,
+            agent: None,
         }],
     };
     assert!(!uses_python(&p));

@@ -52,6 +52,7 @@
 | 警告 | ビルドを止めない診断（`W` で始まるコード）。`check` は警告だけなら終了コード 0 | `docs/spec/error-codes.md` |
 | 埋め込み（Python） | 本言語の実行ファイルが CPython を初期化して使う連携の方式。Python を使うプログラムだけが `libpython` をリンクする | ADR-0018 |
 | `PyObject` | Python のオブジェクトを包んだハンドルの型（名目的）。本言語の参照カウントで管理し、最後の release で Python の参照を手放す。表示・比較・`dict` のキーには使えない（E1202） | ADR-0018 |
+| 属性（デコレータ） | `def` の前に書く `@tool(...)` / `@agent(...)`。M5 ではコンパイラが解釈するコンパイル時の属性で、関数値が入ったら同じ構文のままライブラリのデコレータに置き換える | ADR-0022 |
 | スキーマ型 | `validate[T]` / `to_json` / `llm_generate[T]` と `@tool` の引数・戻り値に使える型。JSON への写像が一意に決まる型（スカラー、それらの Union、`list`、`dict[str, ..]`、それらだけを持つレコード、`Unknown`） | ADR-0022 |
 | `JsonError` | `parse_json` の失敗を表す組み込みのレコード `{message, offset}`。`offset` は UTF-8 のバイト位置 | ADR-0021 |
 | `PyError` | Python の例外を表す組み込みのレコード `{kind, message, traceback}`。Python の操作は `Result[.., PyError]` を返す。構造的なので、同じフィールドを持つレコードと同じ型になる | ADR-0018 |

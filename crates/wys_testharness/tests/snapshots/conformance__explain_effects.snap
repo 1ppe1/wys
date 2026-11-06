@@ -91,7 +91,9 @@ expression: json
             "annotated": true
           }
         ]
-      }
+      },
+      "tool": null,
+      "agent": null
     },
     {
       "name": "double",
@@ -152,7 +154,9 @@ expression: json
         "declared": [],
         "required": [],
         "sites": []
-      }
+      },
+      "tool": null,
+      "agent": null
     },
     {
       "name": "helper",
@@ -189,7 +193,9 @@ expression: json
         "declared": null,
         "required": [],
         "sites": []
-      }
+      },
+      "tool": null,
+      "agent": null
     },
     {
       "name": "main",
@@ -285,7 +291,9 @@ expression: json
             "annotated": true
           }
         ]
-      }
+      },
+      "tool": null,
+      "agent": null
     }
   ]
 }

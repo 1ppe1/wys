@@ -1,0 +1,7 @@
+# expect-error: E1401 2:2
+@cached
+def f() -> int uses pure:
+    return 1
+
+def main() -> None:
+    pass

@@ -2080,6 +2080,8 @@ mod tests {
                 elided_rc: Vec::new(),
                 is_async: false,
                 effects: None,
+                tool: None,
+                agent: None,
             }],
         };
         let ll = emit_llvm_ir(&p);
@@ -2123,6 +2125,8 @@ mod tests {
                 elided_rc: Vec::new(),
                 is_async: false,
                 effects: None,
+                tool: None,
+                agent: None,
             }],
         };
         wys_ir::arc::insert(&mut p);

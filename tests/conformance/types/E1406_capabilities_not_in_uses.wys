@@ -1,0 +1,7 @@
+# expect-error: E1406 2:18
+@agent(tools=[], capabilities=["io", "llm"])
+def a() -> None uses llm:
+    pass
+
+def main() -> None:
+    pass

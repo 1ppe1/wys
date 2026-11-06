@@ -1,0 +1,8 @@
+# expect-error: E1403 4:5
+@tool(description="x")
+@agent(tools=[])
+def f() -> None uses io, llm:
+    pass
+
+def main() -> None:
+    pass
