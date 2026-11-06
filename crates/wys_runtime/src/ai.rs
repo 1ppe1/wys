@@ -409,7 +409,8 @@ fn provider_step(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
     let reply = if provider_configured() {
         let line = request_line(s, call);
         match exchange(s, &line) {
-            Ok(v) => match parse_reply(&v) {
+            // 応答の行が届いた（JSON でなくても、届いた応答として数える。Codex のレビュー）
+            Ok(v) => match v.map_err(|m| (m, 0)).and_then(|v| parse_reply(&v)) {
                 Ok(r) => r,
                 Err((m, tokens)) => {
                     // 応答は届いたので、回数とトークンを数える（失敗を繰り返す呼び出しも予算で止まる）
@@ -592,8 +593,9 @@ fn proxy_program(s: &State) -> String {
         .unwrap_or_else(|| "wys".into())
 }
 
-/// 要求の 1 行を送り、応答の 1 行を読む。起動していなければ起動する。
-fn exchange(s: &mut State, line: &str) -> Result<serde_json::Value, String> {
+/// 要求の 1 行を送り、応答の 1 行を読む。起動していなければ起動する。外側の `Err` は応答が届かなかった
+/// （起動できない・子が終わった）、内側の `Err` は届いた行が JSON でなかった。
+fn exchange(s: &mut State, line: &str) -> Result<Result<serde_json::Value, String>, String> {
     use std::io::{BufRead, Write as _};
     if matches!(s.provider, Provider::Idle) {
         let setting = std::env::var("WYS_LLM_PROVIDER").unwrap_or_default();
@@ -649,7 +651,7 @@ fn exchange(s: &mut State, line: &str) -> Result<serde_json::Value, String> {
         s.provider = Provider::Broken("the provider exited".into());
         return Err("the provider exited".into());
     }
-    serde_json::from_str(&reply).map_err(|e| format!("malformed provider response: {e}"))
+    Ok(serde_json::from_str(&reply).map_err(|e| format!("malformed provider response: {e}")))
 }
 
 const SIGPIPE: i32 = 13;

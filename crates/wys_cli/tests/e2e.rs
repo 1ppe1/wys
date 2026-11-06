@@ -1577,3 +1577,38 @@ fn anthropic_provider_finds_the_compiler_that_built_the_program() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn malformed_provider_replies_count_against_the_call_budget() {
+    // JSON でない応答も、届いた応答として max_llm_calls に数える（壊れた応答を返し続けるプロバイダで予算を素通りしない。
+    // Codex のレビュー）
+    let src = r#"@agent(tools=[], capabilities=["io", "llm"], max_llm_calls=1)
+async def ask() -> None uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="hi")], max_tokens=0)
+    for _i in range(2):
+        match await llm_generate[str](req):
+            case Ok(t):
+                print("ok " + t)
+            case Err(e):
+                print(e.kind + ": " + e.message)
+
+async def main() -> None uses io, llm:
+    await ask()
+    for ev in audit_events():
+        if ev.kind == "llm_called" or ev.kind == "budget_exceeded":
+            print(ev.kind + " " + ev.detail)
+"#;
+    let (out, reqs) = run_with_provider(
+        "provider_malformed_budget.wys",
+        src,
+        &["not json", "not json"],
+        &[],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "provider: malformed provider response: expected ident at line 1 column 2\nbudget: max_llm_calls exceeded\nllm_called tokens=0\nbudget_exceeded max_llm_calls\n",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(reqs.len(), 1);
+}
