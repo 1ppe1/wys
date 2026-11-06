@@ -16,6 +16,7 @@ target/debug/wys run examples/fib.wys
 target/debug/wys check --format json examples/type_error.wys
 target/debug/wys test examples/math_test.wys   # test_* 関数を実行（main 不要）
 target/debug/wys fmt examples/fib.wys          # 整形（--check で確認だけ）
+target/debug/wys run examples/agent_demo.wys   # @tool / @agent と型付きの LLM 出力（既定のプロバイダはモック）
 ```
 
 現在の言語機能（M2 時点）:

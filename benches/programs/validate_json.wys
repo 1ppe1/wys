@@ -1,0 +1,26 @@
+# JSON の入力と検証（M5 T6、ADR-0021 / ADR-0022）: 約 1 MB の JSON を 100 回 parse_json して validate[list[Row]] する（文字列の組み立ての時間が小さくなるように回数を多くする）。絶対値だけを記録する
+type Row = {id: int, name: str, score: float, active: bool, tag: str | None}
+
+def build(n: int) -> str:
+    s = "["
+    for i in range(n):
+        if i > 0:
+            s = s + ","
+        s = s + "{\"id\": " + to_json(i) + ", \"name\": \"item-" + to_json(i) + "\", \"score\": 0.5, \"active\": true, \"tag\": null}"
+    return s + "]"
+
+def main() -> None:
+    text = build(12316)
+    total = 0
+    for _ in range(100):
+        match parse_json(text):
+            case Ok(u):
+                match validate[list[Row]](u):
+                    case Ok(rows):
+                        total = total + len(rows)
+                    case Err(e):
+                        print(e.path + ": expected " + e.expected + ", found " + e.found)
+            case Err(e):
+                print(e.message)
+    print(len(text))
+    print(total)

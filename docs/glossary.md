@@ -25,7 +25,7 @@
 | 予算（Budget） | タイムアウト、実行回数、トークン数、費用の上限 | AI-006 |
 | トレース | モデル呼び出し、ツール実行、使用量、失敗の記録 | AI-007, NFR-003 |
 | モック / 再生 | モデル応答を差し替える / 記録済み応答を再利用して、外部呼び出しなしでテストすること | AI-008, AC-009 |
-| 監査イベント | 権限拒否や承認などの、後から追跡できる実行記録 | AC-007, NFR-005 |
+| 監査イベント | 権限拒否や承認などの、後から追跡できる実行記録。M5 ではランタイムが順序付きで持ち（`audit_events()`、`WYS_AUDIT=<path>\|stderr` で JSON 行）、種類は `llm_called` / `tool_called` / `tool_denied` / `capability_denied` / `approval_requested` / `approval_granted` / `approval_denied` / `budget_exceeded` / `schema_rejected`。プロンプトと応答の本文は含めない | AC-007, NFR-005, ADR-0023 論点 15 |
 | 構造化診断 | エラーコード・位置・原因・修正ヒントなどを機械可読形式（JSONなど）で出す診断 | DX-002, AC-005 |
 | 共通IR | フロントエンドと各バックエンドの間にある中間表現 | COMP-001 |
 | Nativeバックエンド | CPU向けの実行ファイルを生成するバックエンド。LLVMが第一候補 | COMP-002, COMP-004 |
@@ -62,6 +62,7 @@
 | トランポリン（ツールの） | lowering が `@tool` ごとに合成する IR の関数 `__wys_tool_entry_<名前>(args: str) -> str`。引数の JSON を検証して型付きの値にし、ツールを呼び、戻り値を JSON にする。ランタイムは検査を通ったツールだけをこれで呼ぶ | ADR-0022 論点 15、`docs/design/ai-sdk.md` 15 章 |
 | agent コンテキストのスタック（タスクごと） | 今どの agent の中にいるかを表すスタック。タスクごとに持ち、`spawn` した子は親のスタックを引き継ぐ（予算は共有して数える） | ADR-0023 の訂正（2026-11-06） |
 | モックのプロバイダ | `WYS_LLM_PROVIDER` を設定しないときの既定のプロバイダ。`llm_mock_push` で積んだ応答を順に返すので、Conformance と CI はネットワークに出ずに決定的に動く | ADR-0022 論点 10、ADR-0023 論点 1 |
+| 承認の方針 | `approval="required"` のツールを実行してよいかを決める配備時の設定 `WYS_APPROVAL`（`deny` が既定 / `allow` / `prompt`: stderr に問い、stdin から 1 行読む）。拒否はツールの結果として LLM に返して続ける（`prompt` で答えがない EOF と、未知の値は `Err(kind="approval")` で中止） | AI-005、ADR-0023 論点 12 |
 | `PyError` | Python の例外を表す組み込みのレコード `{kind, message, traceback}`。Python の操作は `Result[.., PyError]` を返す。構造的なので、同じフィールドを持つレコードと同じ型になる | ADR-0018 |
 | ADR | Architecture Decision Record。設計判断とその理由を記録する文書 | docs/adr/ |
 | タスク | `spawn` が作る、並行に進む処理の単位（`Task[T]`）。単一スレッドの上で協調的に切り替わる | ADR-0020 |
