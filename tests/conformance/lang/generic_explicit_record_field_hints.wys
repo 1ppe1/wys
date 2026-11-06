@@ -1,0 +1,14 @@
+# レコードの構築子に明示した型引数は、フィールドの値の型の手掛かりにもなる（`[]`、`Ok(1)`）
+# expect-stdout: 0
+# expect-stdout: 1
+type Box[T] = {value: T}
+
+def main() -> None:
+    b = Box[list[int]](value=[])
+    print(len(b.value))
+    r = Box[Result[int, str]](value=Ok(1))
+    match r.value:
+        case Ok(v):
+            print(v)
+        case Err(e):
+            print(e)

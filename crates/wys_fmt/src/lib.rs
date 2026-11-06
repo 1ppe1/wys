@@ -146,15 +146,15 @@ fn space_between(prev: &TokenKind, cur: &TokenKind, depth: usize, prev_unary_min
     if matches!(prev, LParen | LBracket | LBrace | Dot) {
         return false;
     }
+    if depth > 0 && (matches!(cur, Assign) || matches!(prev, Assign)) {
+        return false; // キーワード引数 `x=1`、`x=[]`
+    }
     if matches!(cur, LParen | LBracket) {
         // 呼び出し `f(` / 型引数 `f[T]` / `def f[T](`
         return !matches!(prev, Ident(_) | RParen | RBracket);
     }
     if prev_unary_minus {
         return false;
-    }
-    if depth > 0 && (matches!(cur, Assign) || matches!(prev, Assign)) {
-        return false; // キーワード引数 `x=1`
     }
     true
 }
@@ -174,6 +174,14 @@ mod tests {
         assert_eq!(
             fmt(src),
             "def f(x: int, y: int) -> int:\n    if x > -y and not (x == 1):\n        return x + y  # sum\n    return Point(x=1).x\n\n# end\n"
+        );
+    }
+
+    #[test]
+    fn keyword_arguments_starting_with_a_bracket_have_no_space() {
+        assert_eq!(
+            fmt("def main() -> None:\n    b = Box[list[int]](value = [], other = (1))\n"),
+            "def main() -> None:\n    b = Box[list[int]](value=[], other=(1))\n"
         );
     }
 

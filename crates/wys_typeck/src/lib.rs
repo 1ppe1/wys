@@ -3744,7 +3744,26 @@ impl<'a> FnCk<'a> {
         for a in args {
             self.expr(a, env);
         }
-        let kw_tys: Vec<Ty> = kwargs.iter().map(|(_, v)| self.expr(v, env)).collect();
+        // 型引数を明示した Generic なレコードなら、それを入れたフィールドの型を値の手掛かりにする
+        // （`Box[list[int]](value=[])`、`Box[Result[int, str]](value=Ok(1))`）
+        let hints: Vec<Option<Ty>> = match (explicit, self.cx.generics.get(&callee.name).cloned()) {
+            (Some(ts), Some((params, Ty::Record(r)))) => {
+                let map: Subst = params.iter().copied().zip(ts.iter().copied()).collect();
+                kwargs
+                    .iter()
+                    .map(|(k, _)| {
+                        let ft = self.cx.types.record_def(r).field(&k.name).map(|(_, t)| t);
+                        ft.map(|t| self.cx.types.subst(t, &map))
+                    })
+                    .collect()
+            }
+            _ => vec![None; kwargs.len()],
+        };
+        let kw_tys: Vec<Ty> = kwargs
+            .iter()
+            .zip(hints)
+            .map(|((_, v), h)| self.expr_hint(v, env, h))
+            .collect();
         let ty = match self.cx.generics.get(&callee.name).cloned() {
             Some((_, Ty::Error)) => Ty::Error,
             Some((params, body)) => {
