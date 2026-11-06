@@ -1358,6 +1358,11 @@ async def main() -> None uses io, llm:
             "openai",
             "provider: unknown WYS_LLM_PROVIDER value `openai` (use anthropic or cmd:<path>)",
         ),
+        // 実行できないファイル（起動の前に確かめる。エミュレーションの下でも同じ結果になる）
+        (
+            "cmd:/etc/passwd",
+            "provider: cannot start the provider `/etc/passwd`",
+        ),
     ] {
         let out = cli_env(
             &["run", path.to_str().unwrap()],
@@ -1400,4 +1405,175 @@ fn llm_proxy_requires_the_api_key() {
         .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("ANTHROPIC_API_KEY is not set"));
+}
+
+#[test]
+fn a_provider_that_stops_reading_does_not_kill_the_program() {
+    // 要求を読まずに stdin を閉じるプロバイダに書いても、SIGPIPE で落ちずに Err(provider)（Linux の CI で見つけた）
+    let dir = scratch("closing_provider.wys", "")
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let script = dir.join("closing_provider.sh");
+    // 1 回目の要求に答えてから stdin を閉じる（2 回目の要求は必ず閉じたパイプへの書き込みになる）
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nread -r line\nexec 0<&-\nprintf '%s\\n' '{\"text\":\"one\",\"tool_calls\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"stop\":\"end_turn\",\"assistant\":\"one\"}'\nsleep 1\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let src = r#"async def ask() -> None uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="hi")], max_tokens=0)
+    match await llm_generate[str](req):
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind + ": " + e.message)
+
+async def main() -> None uses io, llm:
+    await ask()
+    await ask()
+    print("still running")
+"#;
+    let path = scratch("closing_provider.wys", src);
+    let provider = format!("cmd:{}", script.display());
+    let out = cli_env(
+        &["run", path.to_str().unwrap()],
+        &[("WYS_LLM_PROVIDER", provider.as_str())],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "ok one\nprovider: the provider exited\nstill running\n",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn provider_replies_are_read_leniently_where_the_protocol_allows() {
+    // `"error": null` は失敗ではない、`assistant` がなければ `text` を次の要求に戻す（Proxy に null を渡さない）、
+    // `error` 行の `usage` は数える（拒否でも入力は課金される）。Fable のレビュー
+    let src = r#"async def ask() -> None uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="hi")], max_tokens=0)
+    match await llm_generate[str](req):
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind + ": " + e.message)
+
+@tool(description="Tick.")
+def tick() -> None uses pure:
+    pass
+
+@agent(tools=[tick], capabilities=["io", "llm"])
+async def agent() -> None uses io, llm:
+    await ask()
+
+async def main() -> None uses io, llm:
+    await agent()
+    await ask()
+    for ev in audit_events():
+        if ev.kind == "llm_called":
+            print(ev.kind + " " + ev.detail)
+"#;
+    let replies = [
+        r#"{"text":"","tool_calls":[{"id":"t1","name":"tick","args":{}}],"usage":{"input_tokens":1,"output_tokens":1},"stop":"tool_use"}"#,
+        r#"{"text":"fine","tool_calls":[],"usage":{"input_tokens":1,"output_tokens":1},"stop":"end_turn","error":null}"#,
+        r#"{"error":"the model declined the request (refusal)","usage":{"input_tokens":7,"output_tokens":0}}"#,
+    ];
+    let (out, reqs) = run_with_provider("provider_lenient.wys", src, &replies, &[]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "ok fine\nprovider: the model declined the request (refusal)\nllm_called tokens=2\nllm_called tokens=2\nllm_called tokens=7\n",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        reqs[1]["messages"][1],
+        serde_json::json!({"role": "assistant", "content": ""})
+    );
+}
+
+#[test]
+fn a_provider_that_ignores_end_of_input_does_not_hold_the_exit() {
+    // 終了時に stdin を閉じても終わらない子は、猶予の後に止める（Fable のレビュー）
+    let dir = scratch("lingering_provider.wys", "")
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let script = dir.join("lingering_provider.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nread -r line\nprintf '%s\\n' '{\"text\":\"one\",\"tool_calls\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"stop\":\"end_turn\",\"assistant\":\"one\"}'\nexec sleep 600\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let src = r#"async def main() -> None uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="hi")], max_tokens=0)
+    match await llm_generate[str](req):
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind + ": " + e.message)
+"#;
+    let path = scratch("lingering_provider.wys", src);
+    let exe = path.with_extension("bin");
+    let built = cli(&["build", path.to_str().unwrap(), "-o", exe.to_str().unwrap()]);
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let started = std::time::Instant::now();
+    let out = Command::new(&exe)
+        .env("WYS_LLM_PROVIDER", format!("cmd:{}", script.display()))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "ok one\n");
+    // 新しい実行ファイルの初回の起動は、負荷が高いと数秒かかる（macOS）。子の 600 秒を待たなければよい
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn anthropic_provider_finds_the_compiler_that_built_the_program() {
+    // WYS_LLM_PROXY がなければ、実行ファイルに埋めたコンパイラ（このテストの wys）の `llm-proxy` を起動する
+    // （ADR-0023 論点 4）。API キーを外すので proxy は起動してすぐ終わり、ネットワークには出ない
+    let src = r#"async def main() -> None uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="hi")], max_tokens=0)
+    match await llm_generate[str](req):
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind + ": " + e.message)
+"#;
+    let path = scratch("provider_embedded_compiler.wys", src);
+    let out = wys()
+        .args(["run", path.to_str().unwrap()])
+        .env("WYS_RUNTIME_LIB", runtime_lib())
+        .env("WYS_RUNTIME_PYTHON_LIB", python_runtime_lib())
+        .env("WYS_LLM_PROVIDER", "anthropic")
+        .env_remove("ANTHROPIC_API_KEY")
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "provider: the provider exited\n"
+    );
+    // proxy の stderr は継承される: 起動したのが本物の `wys llm-proxy` だと分かる
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("ANTHROPIC_API_KEY is not set"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

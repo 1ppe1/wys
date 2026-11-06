@@ -411,12 +411,13 @@ fn provider_step(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
         match exchange(s, &line) {
             Ok(v) => match parse_reply(&v) {
                 Ok(r) => r,
-                Err(m) => {
-                    // 応答は届いたので、回数には数える（失敗を繰り返す呼び出しも予算で止まる）
+                Err((m, tokens)) => {
+                    // 応答は届いたので、回数とトークンを数える（失敗を繰り返す呼び出しも予算で止まる）
                     for i in s.chain() {
                         s.arena[i].llm_calls += 1;
+                        s.arena[i].tokens += tokens;
                     }
-                    audit(s, "llm_called", None, "tokens=0".into());
+                    audit(s, "llm_called", None, format!("tokens={tokens}"));
                     return Err(fail(s, "provider", m));
                 }
             },
@@ -606,6 +607,12 @@ fn exchange(s: &mut State, line: &str) -> Result<serde_json::Value, String> {
             ));
             return exchange(s, line);
         };
+        // パスで指したファイルは、起動の前に実行できるかを確かめる（エミュレーションの下などで、存在しない
+        // ファイルの起動が失敗として返らず、子がすぐ終わるだけのことがある。Linux の CI で見つけた）
+        if let Err(why) = check_executable(&program) {
+            s.provider = Provider::Broken(format!("cannot start the provider `{program}`: {why}"));
+            return exchange(s, line);
+        }
         // シェルを通さない。stderr は継承する（proxy は要求や応答を書かない）
         let started = std::process::Command::new(&program)
             .args(args)
@@ -633,10 +640,10 @@ fn exchange(s: &mut State, line: &str) -> Result<serde_json::Value, String> {
         return Err(m.clone());
     };
     let mut reply = String::new();
-    let ok = writeln!(stdin, "{line}")
-        .and_then(|()| stdin.flush())
-        .is_ok()
-        && stdout.read_line(&mut reply).is_ok_and(|n| n > 0);
+    // 子が stdin を閉じていたら、書き込みは SIGPIPE でプログラムごと落とす（生成した実行ファイルは C の main で、
+    // Rust の main のように SIGPIPE を無視していない）。書く間だけ無視して、EPIPE として扱う
+    let written = without_sigpipe(|| writeln!(stdin, "{line}").and_then(|()| stdin.flush()));
+    let ok = written.is_ok() && stdout.read_line(&mut reply).is_ok_and(|n| n > 0);
     if !ok {
         stop_provider(s);
         s.provider = Provider::Broken("the provider exited".into());
@@ -645,33 +652,70 @@ fn exchange(s: &mut State, line: &str) -> Result<serde_json::Value, String> {
     serde_json::from_str(&reply).map_err(|e| format!("malformed provider response: {e}"))
 }
 
-/// プロバイダの応答の 1 行を読む（`text` / `tool_calls` / `usage` / `stop` だけを解釈する）。`error` 行は `Err`。
-fn parse_reply(v: &serde_json::Value) -> Result<Reply, String> {
-    if let Some(e) = v.get("error") {
-        return Err(e.as_str().map_or_else(|| e.to_string(), str::to_string));
+const SIGPIPE: i32 = 13;
+const SIG_IGN: usize = 1;
+
+unsafe extern "C" {
+    fn signal(sig: i32, handler: usize) -> usize;
+}
+
+/// `f` の間だけ SIGPIPE を無視する（閉じたパイプへの書き込みは EPIPE のエラーになる）。
+fn without_sigpipe<R>(f: impl FnOnce() -> R) -> R {
+    // SAFETY: SIGPIPE の扱いを無視に変え、終わったら元に戻す。ランタイムはこの間にほかのスレッドで書かない
+    let old = unsafe { signal(SIGPIPE, SIG_IGN) };
+    let r = f();
+    // SAFETY: 同上。
+    unsafe { signal(SIGPIPE, old) };
+    r
+}
+
+/// `/` を含むパス（`cmd:<path>`、`WYS_LLM_PROXY` など）が実行できるファイルか。`PATH` で探す名前は起動に任せる。
+fn check_executable(program: &str) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    if !program.contains('/') {
+        return Ok(());
     }
+    let meta = std::fs::metadata(program).map_err(|e| e.to_string())?;
+    if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
+        return Err("not an executable file".into());
+    }
+    Ok(())
+}
+
+/// プロバイダの応答の 1 行を読む（`text` / `tool_calls` / `usage` / `stop` だけを解釈する）。`error` 行は `Err`。
+/// 失敗なら理由と、`error` 行に `usage` があればそのトークン数（拒否でも入力は課金されるので予算に数える）。
+fn parse_reply(v: &serde_json::Value) -> Result<Reply, (String, i64)> {
+    let usage = &v["usage"];
+    let tokens =
+        usage["input_tokens"].as_i64().unwrap_or(0) + usage["output_tokens"].as_i64().unwrap_or(0);
+    // `error` は文字列のときだけ失敗（`"error": null` は成功の応答に付く慣習なので無視する。Fable のレビュー）
+    if let Some(e) = v["error"].as_str() {
+        return Err((e.to_string(), tokens));
+    }
+    let malformed = |what: &str| Err((format!("malformed provider response: {what}"), tokens));
     if !v.is_object() || !v["text"].is_string() {
-        return Err("malformed provider response: `text` is missing".into());
+        return malformed("`text` is missing");
     }
     let mut tool_calls = Vec::new();
     for c in v["tool_calls"].as_array().map_or(&[][..], Vec::as_slice) {
         let (Some(id), Some(name)) = (c["id"].as_str(), c["name"].as_str()) else {
-            return Err("malformed provider response: a tool call needs `id` and `name`".into());
+            return malformed("a tool call needs `id` and `name`");
         };
         tool_calls.push((id.to_string(), name.to_string(), c["args"].to_string()));
     }
-    let usage = &v["usage"];
+    let text = v["text"].as_str().unwrap_or_default().to_string();
+    // `assistant` がなければ `text` を戻す（null を次の要求に入れると、Messages API は拒否する）
+    let assistant = match &v["assistant"] {
+        serde_json::Value::Null => serde_json::Value::String(text.clone()),
+        a => a.clone(),
+    };
     Ok(Reply {
-        text: v["text"].as_str().unwrap_or_default().to_string(),
+        text,
         tool_calls,
-        tokens: usage["input_tokens"].as_i64().unwrap_or(0)
-            + usage["output_tokens"].as_i64().unwrap_or(0),
+        tokens,
         latency_ms: 0,
         stop: v["stop"].as_str().unwrap_or_default().to_string(),
-        assistant: v
-            .get("assistant")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null),
+        assistant,
     })
 }
 
@@ -682,6 +726,15 @@ fn stop_provider(s: &mut State) {
     } = std::mem::replace(&mut s.provider, Provider::Idle)
     {
         drop(stdin);
+        // stdin の終わりを無視する子で、プログラムの終了が止まらないように、猶予の後に止める（Fable のレビュー）
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while matches!(child.try_wait(), Ok(None)) {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let _ = child.wait();
     }
 }

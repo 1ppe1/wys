@@ -1018,6 +1018,9 @@ pub extern "C" fn wys_exit(code: i64) -> ! {
         runtime_error("capability exit is not granted");
     }
     let _ = std::io::stdout().flush();
+    // `exit()` でもプロバイダの子プロセスを片付ける（ADR-0023 論点 4。実行時エラーでは借りの途中かもしれないので
+    // 行わない。パイプはプロセスの終了で閉じ、proxy は stdin の終わりで終わる）
+    ai::shutdown();
     std::process::exit(code as i32);
 }
 

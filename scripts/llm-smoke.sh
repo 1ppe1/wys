@@ -32,17 +32,24 @@ async def planner() -> Result[Plan, LlmError] uses io, llm:
     req = LlmRequest(model="", system="Use the add tool to compute 2 + 3, then make a plan whose number of steps is the sum.", messages=[Message(role="user", content="Make the plan.")], max_tokens=4000)
     return await llm_generate[Plan](req)
 
-async def main() -> None uses io, llm:
+async def main() -> None uses io, exit, llm:
     match await planner():
         case Ok(p):
             print(to_json(p))
         case Err(e):
             print("error " + e.kind + ": " + e.message)
+            exit(1)
 EOF
 
 "$wys" build "$dir/smoke.wys" -o "$dir/smoke"
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
 start=$(now_ms)
-WYS_LLM_PROVIDER=anthropic WYS_LLM_PROXY="$wys" WYS_AUDIT=stderr "$dir/smoke"
+# proxy は、実行ファイルに埋めたコンパイラ（target/debug/wys）から探させる（WYS_LLM_PROXY は付けない）
+status=0
+env -u WYS_LLM_PROXY WYS_LLM_PROVIDER=anthropic WYS_AUDIT=stderr "$dir/smoke" || status=$?
 end=$(now_ms)
 echo "llm-smoke: round trip $((end - start)) ms (LLM calls, the tool and the proxy start-up)" >&2
+if [ "$status" -ne 0 ]; then
+  echo "llm-smoke: FAILED (exit $status)" >&2
+  exit "$status"
+fi

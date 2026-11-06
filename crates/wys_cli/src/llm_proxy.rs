@@ -107,7 +107,14 @@ fn reply_line(resp: &serde_json::Value) -> serde_json::Value {
         .collect();
     let stop = resp["stop_reason"].as_str().unwrap_or_default();
     if stop == "refusal" {
-        return serde_json::json!({"error": "the model declined the request (refusal)"});
+        // 拒否でも入力は課金されるので、使用量を添える（ランタイムが予算に数える）
+        return serde_json::json!({
+            "error": "the model declined the request (refusal)",
+            "usage": {
+                "input_tokens": resp["usage"]["input_tokens"],
+                "output_tokens": resp["usage"]["output_tokens"],
+            },
+        });
     }
     serde_json::json!({
         "text": text,
@@ -255,6 +262,8 @@ mod tests {
         assert_eq!(r["assistant"].as_array().map(Vec::len), Some(2));
         let refused = serde_json::json!({"content": [], "stop_reason": "refusal"});
         assert!(reply_line(&refused)["error"].is_string());
+        let refused = serde_json::json!({"content": [], "stop_reason": "refusal", "usage": {"input_tokens": 9, "output_tokens": 0}});
+        assert_eq!(reply_line(&refused)["usage"]["input_tokens"], 9);
     }
 
     #[test]
