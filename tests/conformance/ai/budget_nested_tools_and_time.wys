@@ -1,0 +1,56 @@
+# 入れ子の agent で実行したツールと経過時間も外側に数え、内側の上限が大きくても外側の残りを超えない（AI-006、ADR-0023 論点 9・13・14）
+# expect-stdout: inner budget: max_tool_calls exceeded
+# expect-stdout: outer ok done
+# expect-stdout: inner timeout: timeout_ms exceeded
+# expect-stdout: outer timeout: timeout_ms exceeded
+@tool(description="Tick.")
+def tick() -> None uses pure:
+    pass
+
+@tool(description="Waits.")
+async def wait() -> None uses pure:
+    await sleep_ms(100)
+
+@agent(tools=[tick, wait], capabilities=["llm"], max_tool_calls=10, timeout_ms=1000)
+async def inner() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+@tool(description="Delegate.")
+async def delegate() -> str uses io, llm:
+    match await inner():
+        case Ok(t):
+            print("inner ok " + t)
+        case Err(e):
+            print("inner " + e.kind + ": " + e.message)
+    return ""
+
+@agent(tools=[delegate], capabilities=["io", "llm"], max_tool_calls=2)
+async def tools() -> Result[str, LlmError] uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+@agent(tools=[delegate], capabilities=["io", "llm"], timeout_ms=50)
+async def time() -> Result[str, LlmError] uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+def report(r: Result[str, LlmError]) -> None uses io:
+    match r:
+        case Ok(t):
+            print("outer ok " + t)
+        case Err(e):
+            print("outer " + e.kind + ": " + e.message)
+
+async def main() -> None uses io, llm:
+    delegate_call = MockToolCall(name="delegate", args_json="{}")
+    tick_call = MockToolCall(name="tick", args_json="{}")
+    wait_call = MockToolCall(name="wait", args_json="{}")
+    llm_mock_push(MockResponse(text="", tool_calls=[delegate_call], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="", tool_calls=[tick_call], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="", tool_calls=[tick_call], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="done", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    report(await tools())
+    llm_mock_push(MockResponse(text="", tool_calls=[delegate_call], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="", tool_calls=[wait_call], input_tokens=1, output_tokens=1, latency_ms=0))
+    report(await time())

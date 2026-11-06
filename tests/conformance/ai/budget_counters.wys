@@ -1,0 +1,53 @@
+# 予算の種類ごとの上限（AI-006、AC-008、ADR-0023 論点 13）: max_llm_calls、max_tokens（入力と出力の合計）、拒否したツールは max_tool_calls に数えない
+# expect-stdout: calls budget: max_llm_calls exceeded
+# expect-stdout: tokens budget: max_tokens exceeded
+# expect-stdout: refused ok done
+# expect-stdout: budget_exceeded calls max_llm_calls
+# expect-stdout: budget_exceeded tokens max_tokens
+@tool(description="Tick.")
+def tick() -> None uses pure:
+    pass
+
+@tool(description="Remove.", approval="required")
+def rm() -> None uses pure:
+    pass
+
+@agent(tools=[tick], capabilities=["llm"], max_llm_calls=2)
+async def calls() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+@agent(tools=[tick], capabilities=["llm"], max_tokens=10)
+async def tokens() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+@agent(tools=[rm, tick], capabilities=["llm"], max_tool_calls=1)
+async def refused() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+def report(name: str, r: Result[str, LlmError]) -> None uses io:
+    match r:
+        case Ok(t):
+            print(name + " ok " + t)
+        case Err(e):
+            print(name + " " + e.kind + ": " + e.message)
+
+async def main() -> None uses io, llm:
+    tick_call = MockToolCall(name="tick", args_json="{}")
+    rm_call = MockToolCall(name="rm", args_json="{}")
+    for _i in range(3):
+        llm_mock_push(MockResponse(text="", tool_calls=[tick_call], input_tokens=1, output_tokens=1, latency_ms=0))
+    report("calls", await calls())
+    llm_mock_push(MockResponse(text="", tool_calls=[tick_call], input_tokens=3, output_tokens=3, latency_ms=0))
+    llm_mock_push(MockResponse(text="", tool_calls=[tick_call], input_tokens=3, output_tokens=3, latency_ms=0))
+    report("tokens", await tokens())
+    llm_mock_push(MockResponse(text="", tool_calls=[rm_call], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="", tool_calls=[rm_call], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="", tool_calls=[tick_call], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="done", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    report("refused", await refused())
+    for ev in audit_events():
+        if ev.kind == "budget_exceeded":
+            print(ev.kind + " " + ev.agent + " " + ev.detail)

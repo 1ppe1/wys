@@ -802,6 +802,16 @@ pub fn virtual_time_enabled() -> bool {
     std::env::var("WYS_VIRTUAL_TIME").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
+/// スケジューラの仮想時計（ミリ秒。スケジューラの外なら 0）。`WYS_VIRTUAL_TIME=1` の agent の期限が読む（ADR-0023 論点 14）。
+pub fn virtual_now_ms() -> i64 {
+    if running() {
+        // 仮想時計は u64 で飽和加算するので、i64 に収まらなければ飽和させる（負にしない。Fable のレビュー）
+        i64::try_from(sched().now_ms).unwrap_or(i64::MAX)
+    } else {
+        0
+    }
+}
+
 /// いま動いているタスクの番号（スケジューラの外なら 0 = `main`）。agent コンテキストのスタックを引く（ADR-0023 の訂正）。
 pub fn current_task() -> usize {
     if running() { sched().cur } else { 0 }

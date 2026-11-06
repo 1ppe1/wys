@@ -1,0 +1,35 @@
+# WYS_APPROVAL=allow なら承認の要るツールを実行し、監査 approval_granted を残す（AI-005、ADR-0023 論点 12）
+# expect-env: WYS_APPROVAL=allow
+# expect-stdout: removed /tmp/x
+# expect-stdout: ok done
+# expect-stdout: approval_requested rm WYS_APPROVAL=allow
+# expect-stdout: approval_granted rm WYS_APPROVAL=allow
+# expect-stdout: 1
+@tool(description="Remove.", approval="required")
+def rm(path: str) -> None uses io:
+    print("removed " + path)
+
+@agent(tools=[rm], capabilities=["io", "llm"])
+async def cleaner() -> Result[str, LlmError] uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="rm", args_json="{\"path\": \"/tmp/x\"}")], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="done", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    match await cleaner():
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print("err " + e.kind)
+    n = 0
+    for ev in audit_events():
+        if ev.kind == "approval_requested" or ev.kind == "approval_granted":
+            match ev.tool:
+                case None:
+                    print(ev.kind)
+                case str():
+                    print(ev.kind + " " + ev.tool + " " + ev.detail)
+        if ev.kind == "tool_called":
+            n = n + 1
+    print(n)
