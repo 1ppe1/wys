@@ -143,7 +143,8 @@ fn space_between(prev: &TokenKind, cur: &TokenKind, depth: usize, prev_unary_min
     ) {
         return false;
     }
-    if matches!(prev, LParen | LBracket | LBrace | Dot) {
+    // デコレータ `@tool(...)`（ADR-0022 論点 11）
+    if matches!(prev, LParen | LBracket | LBrace | Dot | At) {
         return false;
     }
     if depth > 0 && (matches!(cur, Assign) || matches!(prev, Assign)) {
@@ -174,6 +175,14 @@ mod tests {
         assert_eq!(
             fmt(src),
             "def f(x: int, y: int) -> int:\n    if x > -y and not (x == 1):\n        return x + y  # sum\n    return Point(x=1).x\n\n# end\n"
+        );
+    }
+
+    #[test]
+    fn decorators_have_no_space_after_the_at_sign() {
+        assert_eq!(
+            fmt("@ tool( description = \"x\" )\ndef f() -> int uses pure:\n    return 1\n"),
+            "@tool(description=\"x\")\ndef f() -> int uses pure:\n    return 1\n"
         );
     }
 

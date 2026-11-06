@@ -1,0 +1,17 @@
+# expect-error: E1402 4:7
+# expect-error: E1402 8:24
+# expect-error: E1402 12:19
+@tool(colour="red")
+def f() -> int uses pure:
+    return 1
+
+@tool(description="x", approval="maybe")
+def g() -> int uses pure:
+    return 1
+
+@agent(tools=[f], max_tokens=-1)
+def h() -> None uses io, llm:
+    pass
+
+def main() -> None:
+    pass

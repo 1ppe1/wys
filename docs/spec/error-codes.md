@@ -80,7 +80,7 @@
 | E1010 | Result | `?` を `Result` 以外に使っている（`T \| None` には使えない。ADR-0006） |
 | E1011 | Result | `Result` を返さない関数（`main` を含む）で `?` を使っている |
 | E1012 | Result | `?` の被演算子のエラー型が、関数が宣言したエラー型に収まらない（収まらない構成要素を列挙する） |
-| E1101 | Effect | 未知の Effect 名（`io` / `exit` / `python` / `pure`。ADR-0014、`python` は ADR-0018） |
+| E1101 | Effect | 未知の Effect 名（`io` / `exit` / `python` / `llm` / `pure`。ADR-0014、`python` は ADR-0018、`llm` は ADR-0022）。`@agent` の `capabilities` の未知の名前も（ADR-0023 論点 7） |
 | E1102 | Effect | 呼び出し先の Effect を、呼び出し元の `uses` が宣言していない（修正案で `uses` 節を書き換える） |
 | E1103 | Effect | `uses` を書いた関数から、`uses` のない関数を呼んでいる |
 | E1104 | Effect | `uses` の並びが正しくない（同じ名前の重複、`pure` とほかの名前の併記） |
@@ -90,7 +90,13 @@
 | E1302 | async | `await` の被演算子が `Task` でも `async def` の関数の呼び出しでもない（同期の関数の呼び出しなら「`await` を外す」） |
 | E1303 | async | `async def` の関数（`sleep_ms` を含む）の呼び出しを、`await` の直下か `spawn` の引数以外（式文、代入、引数、演算）に書いている（ヒント: `await f(...)` か `spawn(f(...))`） |
 | E1304 | async | `spawn` の引数が `async def` の関数の呼び出し 1 つではない（`spawn(t)`、同期の関数の呼び出し、`spawn(await f())`、`spawn(sleep_ms(n))`（組み込みの中断点はタスクにできない）、引数が 1 つでない） |
-| E1501 | JSON・スキーマ | スキーマ型でない型（`Result` / `Task` / `PyObject` / `PyError` / 型パラメータを含む型 / キーが `str` でない `dict` / 一番外側の `None`）を `validate` の型引数か `to_json` の引数に使っている（ADR-0022 論点 4 と訂正。`@tool` の引数と戻り値は T7 から） |
+| E1401 | デコレータ | 未知のデコレータ名（M5 で解釈するのは `tool` / `agent` だけ。ADR-0022 論点 12） |
+| E1402 | デコレータ | デコレータの引数の誤り（未知のキーワード、位置引数、リテラルでも関数名の `list` でもない値、型の不一致、同じデコレータや同じキーワード引数の重複、`approval` が `"none"` / `"required"` 以外、負の予算） |
+| E1403 | デコレータ | `@tool` / `@agent` の関数に `uses` がない、`main` / `test_*` に付けている、両方を同じ関数に付けている、または Generic な関数を `@tool` にしている（ツールは型引数を決める呼び出しなしで呼ばれる） |
+| E1404 | デコレータ | `@agent` の `tools` の要素が `@tool` の関数でない、または同じツールが 2 回ある |
+| E1405 | デコレータ | ツールの `uses` が `@agent` の `capabilities` に含まれない（足りない名前を示し、ツールの定義を `related` に） |
+| E1406 | デコレータ | `@agent` の `capabilities`（既定は `io`, `llm`）が自身の `uses` に含まれない（agent はツールを通してその Effect を起こし得る。ADR-0022 論点 14） |
+| E1501 | JSON・スキーマ | スキーマ型でない型（`Result` / `Task` / `PyObject` / `PyError` / 型パラメータを含む型 / キーが `str` でない `dict` / 一番外側の `None`）を `validate` の型引数か `to_json` の引数、`@tool` の引数・戻り値に使っている（ADR-0022 論点 4 と訂正。ツールの戻り値の一番外側だけ `Result[T, E]` と `None` を認める） |
 | E1502 | JSON・スキーマ | Generic でない関数・組み込み・レコードに型引数を書いている（`double[int](1)`、`len[int](xs)`、`Point[int](x=1)`。ADR-0021 論点 9）。ヒントで型引数を外す修正を示す |
 | E1503 | JSON・スキーマ | 要素（`dict` は値）の型が `Unknown` を含む `list` / `dict` を書き換えている（`append` / `pop` / 添字への代入）。`Unknown` から届く値は変更のできない木で、循環参照を作れない（ADR-0021 論点 4）。Generic な関数の本体は型パラメータのまま検査するので、`T = Unknown` で具体化して書き換える場合は具体化のとき（lowering）に報告する |
 | W0201 | 未使用（警告） | 代入されたが一度も読まれないローカル変数（`for` の変数、`case Ok(x)` の束縛を含む。ADR-0016）。`_` で始まる名前と引数は対象外。読まれたかは関数の中の名前で判定する。エラーのある関数（署名のエラーを含む）では出さない。同じ関数のほかの警告とは位置の順に並ぶ |

@@ -291,6 +291,21 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
         }
         for f in &mut m.ast.funcs {
             f.name.name = defs[mi][&f.name.name].internal.clone();
+            // デコレータの関数名（`@agent(tools=[add, m.f])`、ADR-0022）はローカル変数を見ない
+            r.hidden = HashSet::new();
+            r.locals = HashMap::new();
+            for d in &mut f.decorators {
+                for a in &mut d.args {
+                    if let AttrValue::List(elems) = &mut a.value {
+                        for e in elems {
+                            if let AttrElem::Name(n, span) = e {
+                                let sp = *span;
+                                r.name(n, sp);
+                            }
+                        }
+                    }
+                }
+            }
             r.hidden = f.type_params.iter().map(|p| p.name.clone()).collect();
             r.locals = f.params.iter().map(|p| (p.name.name.clone(), 0)).collect();
             collect_locals(&f.body, &mut r.locals);

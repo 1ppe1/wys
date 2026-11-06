@@ -1,0 +1,10 @@
+# expect-error: E1404 5:15
+def helper() -> int uses pure:
+    return 1
+
+@agent(tools=[helper])
+def a() -> None uses io, llm:
+    pass
+
+def main() -> None:
+    pass

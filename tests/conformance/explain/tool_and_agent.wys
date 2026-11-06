@@ -1,0 +1,10 @@
+@tool(description="Add two integers.", approval="required")
+def add(a: int, b: int) -> int uses pure:
+    return a + b
+
+@agent(tools=[add], capabilities=["llm"], model="m", max_llm_calls=3)
+def planner() -> int uses llm:
+    return add(1, 2)
+
+def main() -> None uses llm:
+    planner()

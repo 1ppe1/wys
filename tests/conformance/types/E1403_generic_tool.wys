@@ -1,0 +1,7 @@
+# expect-error: E1403 3:5
+@tool(description="x")
+def value[T]() -> int uses pure:
+    return 1
+
+def main() -> None:
+    pass

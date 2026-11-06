@@ -1,0 +1,11 @@
+# expect-error: E1405 6:15
+@tool(description="runs python")
+def run() -> int uses python:
+    return 1
+
+@agent(tools=[run])
+def a() -> None uses io, llm:
+    pass
+
+def main() -> None:
+    pass

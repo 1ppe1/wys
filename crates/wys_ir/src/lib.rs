@@ -83,6 +83,25 @@ pub struct TaskId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RecordId(pub u32);
 
+/// `@tool` の属性（ADR-0022 論点 13）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolAttr {
+    pub description: String,
+    pub approval: bool,
+}
+
+/// `@agent` の属性（ADR-0022 論点 14）。`tools` は関数の名前（IR の関数名）。予算の `0` は上限なし。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentAttr {
+    pub tools: Vec<String>,
+    pub capabilities: Vec<Effect>,
+    pub model: String,
+    pub max_llm_calls: i64,
+    pub max_tool_calls: i64,
+    pub max_tokens: i64,
+    pub timeout_ms: i64,
+}
+
 /// Union の構成要素。`None` は中身を持たない構成要素。
 pub type Member = Option<Ty>;
 
@@ -160,6 +179,10 @@ pub struct Function {
     /// `uses` 節で宣言した Effect（ADR-0014）。注釈がなければ `None`、`uses pure` なら空。
     /// バックエンドは読まない（生成コードは変わらない）。
     pub effects: Option<Vec<Effect>>,
+    /// `@tool(...)` の属性（ADR-0022 論点 13・15）。T9 でツール表を作る。いまはバックエンドは読まない
+    pub tool: Option<ToolAttr>,
+    /// `@agent(...)` の属性（ADR-0022 論点 14・15）。T9 で `wys_agent_enter` / `wys_agent_exit` を入れる
+    pub agent: Option<AgentAttr>,
     /// Move 最適化（`arc::optimize`、M4 T3）が取り除いた retain / release の記録。`wys explain` が報告する
     /// （ADR-0017 の見直し条件）。バックエンドは読まない。
     pub elided_rc: Vec<ElidedRcOp>,
@@ -225,6 +248,8 @@ pub enum Effect {
     Exit,
     /// Python のコードの実行（ADR-0018 論点 12）
     Python,
+    /// LLM の呼び出し（ADR-0022 / 0023）
+    Llm,
 }
 
 impl Effect {
@@ -233,6 +258,7 @@ impl Effect {
             Effect::Io => "io",
             Effect::Exit => "exit",
             Effect::Python => "python",
+            Effect::Llm => "llm",
         }
     }
 }
@@ -1574,6 +1600,41 @@ impl fmt::Display for Program {
                 }
                 None => {}
             }
+            // 属性（ADR-0022 論点 16）
+            if let Some(t) = &func.tool {
+                if t.approval {
+                    write!(f, " @tool(approval=required)")?;
+                } else {
+                    write!(f, " @tool")?;
+                }
+            }
+            if let Some(a) = &func.agent {
+                let mut parts = vec![
+                    format!("tools=[{}]", a.tools.join(", ")),
+                    format!(
+                        "capabilities=[{}]",
+                        a.capabilities
+                            .iter()
+                            .map(|e| e.name())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ];
+                if !a.model.is_empty() {
+                    parts.push(format!("model={:?}", a.model));
+                }
+                for (k, v) in [
+                    ("max_llm_calls", a.max_llm_calls),
+                    ("max_tool_calls", a.max_tool_calls),
+                    ("max_tokens", a.max_tokens),
+                    ("timeout_ms", a.timeout_ms),
+                ] {
+                    if v > 0 {
+                        parts.push(format!("{k}={v}"));
+                    }
+                }
+                write!(f, " @agent({})", parts.join(", "))?;
+            }
             writeln!(f, " {{")?;
             for (l, ty) in func
                 .locals
@@ -1838,6 +1899,8 @@ mod tests {
                 elided_rc: Vec::new(),
                 is_async: false,
                 effects: None,
+                tool: None,
+                agent: None,
             }],
         }
     }

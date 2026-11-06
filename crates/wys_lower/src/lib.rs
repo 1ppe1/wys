@@ -401,6 +401,8 @@ fn test_dispatcher(tests: &[FuncId], is_async: bool) -> Function {
         blocks,
         elided_rc: Vec::new(),
         effects: None,
+        tool: None,
+        agent: None,
         is_async,
     }
 }
@@ -502,8 +504,32 @@ impl<'s, 't> FnLower<'s, 't> {
                         wys_typeck::Effect::Io => Effect::Io,
                         wys_typeck::Effect::Exit => Effect::Exit,
                         wys_typeck::Effect::Python => Effect::Python,
+                        wys_typeck::Effect::Llm => Effect::Llm,
                     })
                     .collect()
+            }),
+            tool: sig.tool.as_ref().map(|t| wys_ir::ToolAttr {
+                description: t.description.clone(),
+                approval: t.approval,
+            }),
+            agent: sig.agent.as_ref().map(|a| wys_ir::AgentAttr {
+                tools: a.tools.clone(),
+                capabilities: a
+                    .capabilities
+                    .iter()
+                    .into_iter()
+                    .map(|e| match e {
+                        wys_typeck::Effect::Io => Effect::Io,
+                        wys_typeck::Effect::Exit => Effect::Exit,
+                        wys_typeck::Effect::Python => Effect::Python,
+                        wys_typeck::Effect::Llm => Effect::Llm,
+                    })
+                    .collect(),
+                model: a.model.clone(),
+                max_llm_calls: a.max_llm_calls,
+                max_tool_calls: a.max_tool_calls,
+                max_tokens: a.max_tokens,
+                timeout_ms: a.timeout_ms,
             }),
         }
     }

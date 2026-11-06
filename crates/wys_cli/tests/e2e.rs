@@ -891,3 +891,24 @@ fn validate_and_to_json_follow_the_declared_type() {
     assert!(ir.contains("call @validate("), "{ir}");
     assert!(ir.contains("call @to_json("), "{ir}");
 }
+
+#[test]
+fn decorators_appear_in_dump_ir() {
+    // @tool / @agent はコンパイル時の属性（ADR-0022 論点 12・16）。実行の意味を変えず、dump-ir の署名に出る
+    let src = "@tool(description=\"Add.\", approval=\"required\")\ndef add(a: int, b: int) -> int uses pure:\n    return a + b\n\n@agent(tools=[add], capabilities=[\"llm\"], max_tool_calls=2)\ndef plan() -> int uses llm:\n    return add(1, 2)\n\ndef main() -> None uses io, llm:\n    print(plan())\n";
+    let (code, out, err) = run("decorators", src);
+    assert_eq!((code, out.as_str()), (0, "3\n"), "{err}");
+    let path = scratch("decorators_ir.wys", src);
+    let ir = cli(&["dump-ir", path.to_str().unwrap()]);
+    let ir = String::from_utf8_lossy(&ir.stdout);
+    assert!(
+        ir.contains("add(l0: int, l1: int) -> int uses pure @tool(approval=required) {"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains(
+            "plan() -> int uses llm @agent(tools=[add], capabilities=[llm], max_tool_calls=2) {"
+        ),
+        "{ir}"
+    );
+}

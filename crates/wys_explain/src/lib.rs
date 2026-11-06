@@ -40,6 +40,28 @@ struct FunctionJson<'a> {
     narrowing: Vec<NarrowingJson<'a>>,
     arc: Vec<InstanceJson<'a>>,
     effects: EffectsJson<'a>,
+    /// `@tool(...)` の属性（ADR-0022 論点 16）。付いていなければ `null`
+    tool: Option<ToolJson<'a>>,
+    /// `@agent(...)` の属性（ADR-0022 論点 16）。付いていなければ `null`
+    agent: Option<AgentJson<'a>>,
+}
+
+#[derive(Serialize)]
+struct ToolJson<'a> {
+    description: &'a str,
+    /// `"none"` か `"required"`
+    approval: &'static str,
+}
+
+#[derive(Serialize)]
+struct AgentJson<'a> {
+    tools: &'a [String],
+    capabilities: Vec<&'static str>,
+    model: &'a str,
+    max_llm_calls: i64,
+    max_tool_calls: i64,
+    max_tokens: i64,
+    timeout_ms: i64,
 }
 
 /// Effect（ADR-0014 論点 10）。推論ではない: `required` は組み込み関数と注釈のある関数の分だけ。
@@ -264,6 +286,19 @@ fn function_json<'a>(
         narrowing,
         arc,
         effects,
+        tool: sig.tool.as_ref().map(|t| ToolJson {
+            description: &t.description,
+            approval: if t.approval { "required" } else { "none" },
+        }),
+        agent: sig.agent.as_ref().map(|a| AgentJson {
+            tools: &a.tools,
+            capabilities: a.capabilities.names(),
+            model: &a.model,
+            max_llm_calls: a.max_llm_calls,
+            max_tool_calls: a.max_tool_calls,
+            max_tokens: a.max_tokens,
+            timeout_ms: a.timeout_ms,
+        }),
     }
 }
 

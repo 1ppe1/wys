@@ -9,13 +9,17 @@
  *)
 
 (* ---------- プログラム ---------- *)
-module      = { NEWLINE | import | [ "pub" ] ( type_def | func_def ) } EOF ;
+module      = { NEWLINE | import | [ "pub" ] type_def | { decorator } [ "pub" ] func_def } EOF ;
 import      = ( "import" dotted [ "as" IDENT ] | "from" dotted "import" import_name { "," import_name } ) NEWLINE ;   (* ADR-0010、`as` は ADR-0016 *)
 import_name = IDENT [ "as" IDENT ] ;
 dotted      = IDENT { "." IDENT } ;                     (* a.b は エントリのディレクトリからの a/b.wys *)
 type_def    = "type" IDENT [ type_params ] "=" ( record_type | type ) NEWLINE ;   (* type は予約語ではない（トップレベルの `type 名前 =` のときだけ） *)
 record_type = "{" [ field_decl { "," field_decl } [ "," ] ] "}" ;
 field_decl  = IDENT ":" type ;
+decorator   = "@" IDENT [ "(" [ attr_arg { "," attr_arg } [ "," ] ] ")" ] NEWLINE ;   (* @tool(...) / @agent(...)（ADR-0022 論点 11）。M5 ではコンパイル時の属性。未知の名前は E1401 *)
+attr_arg    = [ IDENT "=" ] attr_value ;                 (* 位置引数は E1402 *)
+attr_value  = [ "-" ] INT | STRING | "True" | "False" | "[" [ attr_elem { "," attr_elem } [ "," ] ] "]" ;
+attr_elem   = STRING | IDENT { "." IDENT } ;             (* 文字列か関数の名前 *)
 func_def    = [ "async" ] "def" IDENT [ type_params ] "(" [ params ] ")" "->" type [ effects ] ":" block ;   (* async def（ADR-0020） *)
 effects     = "uses" IDENT { "," IDENT } ;                (* Effect の宣言（ADR-0014）。名前は io / exit / python（ADR-0018）、Effect なしは pure。
                                                             uses と pure は予約語ではない（この位置でだけ意味を持つ）。`-> uses:` は型名 uses *)

@@ -1,0 +1,7 @@
+# expect-error: E1101 2:32
+@agent(tools=[], capabilities=["net"])
+def a() -> None uses io, llm:
+    pass
+
+def main() -> None:
+    pass
