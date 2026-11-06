@@ -1,0 +1,20 @@
+# WYS_APPROVAL の値が deny / allow / prompt のどれでもなければ、承認の要るツールの要求で Err(approval)（閉じる方向。ADR-0023 論点 12）
+# expect-env: WYS_APPROVAL=yes
+# expect-stdout: approval: unknown WYS_APPROVAL value `yes` (use deny, allow or prompt)
+@tool(description="Remove.", approval="required")
+def rm(path: str) -> None uses io:
+    print("removed " + path)
+
+@agent(tools=[rm], capabilities=["io", "llm"])
+async def cleaner() -> Result[str, LlmError] uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="rm", args_json="{\"path\": \"/tmp/x\"}")], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="done", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    match await cleaner():
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind + ": " + e.message)

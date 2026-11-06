@@ -1,0 +1,37 @@
+# 入れ子の agent は外側の残りの予算を超えて使えず、使った分は外側にも数える（AI-006、ADR-0023 論点 13）
+# expect-stdout: outer budget: max_llm_calls exceeded
+# expect-stdout: llm_called outer tokens=2
+# expect-stdout: llm_called inner tokens=2
+# expect-stdout: budget_exceeded inner max_llm_calls
+# expect-stdout: budget_exceeded outer max_llm_calls
+@agent(tools=[], capabilities=["llm"], max_llm_calls=10)
+async def inner() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    _first = await llm_generate[str](req)?
+    return await llm_generate[str](req)
+
+@tool(description="Delegate.")
+async def delegate() -> str uses llm:
+    match await inner():
+        case Ok(t):
+            return "inner ok " + t
+        case Err(e):
+            return "inner " + e.kind + ": " + e.message
+
+@agent(tools=[delegate], capabilities=["llm"], max_llm_calls=2)
+async def outer() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="delegate", args_json="{}")], input_tokens=1, output_tokens=1, latency_ms=0))
+    for _i in range(3):
+        llm_mock_push(MockResponse(text="x", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    match await outer():
+        case Ok(t):
+            print("outer ok " + t)
+        case Err(e):
+            print("outer " + e.kind + ": " + e.message)
+    for ev in audit_events():
+        if ev.kind == "llm_called" or ev.kind == "budget_exceeded":
+            print(ev.kind + " " + ev.agent + " " + ev.detail)

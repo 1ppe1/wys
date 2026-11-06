@@ -328,8 +328,18 @@ async def main() -> None uses io, llm:
 
 - agent コンテキストのスタックはタスクごとで、`spawn` した子タスクは親のスタックを引き継ぐ（ADR-0023 の訂正）。
 - ツールのトランポリンは IR の関数 `__wys_tool_entry_<名前>(args: str) -> str` として lowering が合成する（`dump-ir` に見える。2 章の `@wys_tool_entry_f{}` は、この関数の記号 `@wys_fn___wys_tool_entry_<名前>` になった）。`async def` のツールなら、トランポリンも `async` で、ランタイムはタスクのスタックの上で呼ぶ（ツールの中の `sleep_ms` でタスクが切り替わってよい）。
-- 承認が要るツール（`approval="required"`）は、T9 では常に拒否する（監査 `approval_requested` → `approval_denied`、LLM には `denied by approver` を失敗として返して続ける）。`WYS_APPROVAL` の `allow` / `prompt` は T10。
+- 承認が要るツール（`approval="required"`）は、T9 では常に拒否する（監査 `approval_requested` → `approval_denied`、LLM には `denied by approver` を失敗として返して続ける）。`WYS_APPROVAL` の `allow` / `prompt` は T10。（T10 で 16 章のとおり実装した）
 - 入口の再検査（ADR-0023 論点 11）: `exit` は Capability がなければ実行時エラー（`capability exit is not granted`）、Python のコードが動き得る入口（`py_import`・属性の取得 `attr`・呼び出し `call`）は `Err(PyError{kind: "CapabilityError"})`。agent の外で import した `PyObject` を渡されても、`python` を持たない agent の中では使えない。値の変換・解放は Python のコードを動かさないので検査しない。どれも監査 `capability_denied`。
 - ツールの結果の印（`tool_err` / `tool_args_rejected`）はランタイムが読んだ瞬間に落とす。ツールの中の `llm_generate` や別のタスクのツールの印を持ち越さない（Fable のレビューで直した）。
 - `@agent` の `tools` に、モジュールが違っても基底名が同じツールを 2 つ並べると E1404（LLM はツールを基底名で呼ぶ）。
 - 監査 `tool_called` の `detail` は `args_len=N`。
+
+## 16. T10 の時点の決定（2026-11-06）
+
+ADR-0023 論点 12〜14 のとおりに実装した。仕様の解釈として決めた細部:
+
+- `WYS_APPROVAL` は承認の要るツールが要求されるたびに読む。空の値は未設定と同じ（`deny`）。`prompt` の答えは前後の空白を除き、大文字小文字を区別しない（`y` / `yes` / `Y` / `YES`）。空の行は拒否。
+- 未知の値と EOF は、監査 `approval_requested` → `approval_denied`（`detail` は方針か `no answer (end of input)`）を残して `Err(kind="approval")`。
+- 承認の答えを待つ間も時間は進むので、許可の後、ツールを実行する前にもう一度期限と予算を検査する。
+- 期限の時計は、実時間のモードでは単調時計、`WYS_VIRTUAL_TIME=1` ではスケジューラの仮想時計（ツールの中の `sleep_ms` も数える）。どちらのモードでも、モックの `latency_ms` は待たずに時計を進める。T9 までは仮想時間のモードで `sleep_ms` を数えておらず、2 つのモードで結果が食い違っていた。
+- 承認の拒否は `max_tool_calls` に数えない（論点 13 の「拒否は数えない」）。

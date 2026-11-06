@@ -1,0 +1,27 @@
+# 期限は仮想時計で数え、ツールの中の sleep_ms も経過時間に入る（実時間のモードと同じ結果。ADR-0023 論点 14）
+# expect-stdout: timeout: timeout_ms exceeded
+# expect-stdout: tool_called wait
+@tool(description="Waits.")
+async def wait() -> None uses pure:
+    await sleep_ms(100)
+
+@agent(tools=[wait], capabilities=["llm"], timeout_ms=50)
+async def slow() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="go")], max_tokens=0)
+    return await llm_generate[str](req)
+
+async def main() -> None uses io, llm:
+    llm_mock_push(MockResponse(text="", tool_calls=[MockToolCall(name="wait", args_json="{}")], input_tokens=1, output_tokens=1, latency_ms=0))
+    llm_mock_push(MockResponse(text="done", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))
+    match await slow():
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind + ": " + e.message)
+    for ev in audit_events():
+        if ev.kind == "tool_called":
+            match ev.tool:
+                case None:
+                    pass
+                case str():
+                    print(ev.kind + " " + ev.tool)

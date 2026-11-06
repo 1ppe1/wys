@@ -5,8 +5,8 @@
 //! - agent コンテキストは**タスクごとのスタック**（ADR-0023 の訂正）。底は根のコンテキスト（ツールなし、Capability は
 //!   すべて ∩ `WYS_CAPABILITIES`、予算なし）。`spawn` した子タスクは親のスタックを引き継ぐ。コンテキストの実体は
 //!   共有の表（`arena`）にあり、スタックは添字の並び。予算の検査と加算はスタック上のすべての agent に行う。
-//! - LLM がツールを要求したら、実行の前に一覧 → Capability → 予算 → 承認の順に検査する（論点 10）。承認は T9 では
-//!   常に拒否（T10 で `WYS_APPROVAL`）。ツールはコンパイラが合成したトランポリンを呼ぶ。トランポリンの中でタスクが
+//! - LLM がツールを要求したら、実行の前に一覧 → Capability → 予算 → 承認の順に検査する（論点 10）。承認は
+//!   `WYS_APPROVAL`（`deny` 既定 / `allow` / `prompt`、論点 12）。ツールはコンパイラが合成したトランポリンを呼ぶ。トランポリンの中でタスクが
 //!   切り替わり得るので、ランタイムの状態の借りはトランポリンを呼ぶ前に必ず返す。
 
 use std::cell::{Cell, RefCell};
@@ -74,7 +74,9 @@ struct Ctx {
     tool_calls: i64,
     tokens: i64,
     started: Instant,
-    /// モックの応答の遅延の合計（`WYS_VIRTUAL_TIME=1` ならこれだけが時間を進める。スケジューラの時計は動かさない）
+    /// 入ったときのスケジューラの仮想時計（`WYS_VIRTUAL_TIME=1` のとき、ツールの中の `sleep_ms` も経過に数える）
+    started_virtual_ms: i64,
+    /// モックの応答の遅延の合計（どちらのモードでも待たずに時計を進める。スケジューラの時計は動かさない）
     virtual_ms: i64,
     /// このコンテキストを持つスタックの数（`spawn` で引き継ぐと増える）。0 になったら表の場所を再利用する
     refs: usize,
@@ -94,18 +96,20 @@ impl Ctx {
             tool_calls: 0,
             tokens: 0,
             started: Instant::now(),
+            started_virtual_ms: crate::task::virtual_now_ms(),
             virtual_ms: 0,
             refs: 1,
         }
     }
 
     fn elapsed_ms(&self) -> i64 {
-        let real = if crate::task::virtual_time_enabled() {
-            0
+        // 実時間のモードは単調時計、仮想時間のモードはスケジューラの仮想時計（ADR-0023 論点 14）
+        let clock = if crate::task::virtual_time_enabled() {
+            crate::task::virtual_now_ms() - self.started_virtual_ms
         } else {
             self.started.elapsed().as_millis() as i64
         };
-        real + self.virtual_ms
+        clock + self.virtual_ms
     }
 }
 
@@ -391,6 +395,65 @@ fn provider_step(s: &mut State) -> Result<Reply, *mut Header> {
     Ok(reply)
 }
 
+/// 承認の方針（ADR-0023 論点 12）。許可なら真、拒否なら偽、答えられない（未知の値・EOF）なら `Err`。
+/// 監査は `approval_requested` → `approval_granted` / `approval_denied`。引数の本文は監査に残さない。
+fn approve(s: &mut State, name: &str, args: &str) -> Result<bool, *mut Header> {
+    let policy = std::env::var("WYS_APPROVAL").unwrap_or_default();
+    let policy = if policy.is_empty() {
+        "deny".to_string()
+    } else {
+        policy
+    };
+    let detail = format!("WYS_APPROVAL={policy}");
+    audit(s, "approval_requested", Some(name), detail.clone());
+    let granted = match policy.as_str() {
+        "deny" => false,
+        "allow" => true,
+        "prompt" => {
+            let agent = s.top().name.clone();
+            let mut err = std::io::stderr();
+            let _ = write!(
+                err,
+                "approve tool {name} (agent {agent}) with args {args}? [y/N] "
+            );
+            let _ = err.flush();
+            let mut line = String::new();
+            match std::io::stdin().read_line(&mut line) {
+                Ok(0) | Err(_) => {
+                    audit(
+                        s,
+                        "approval_denied",
+                        Some(name),
+                        "no answer (end of input)".into(),
+                    );
+                    return Err(fail(
+                        s,
+                        "approval",
+                        format!("no answer to the approval of tool `{name}` (end of input)"),
+                    ));
+                }
+                Ok(_) => {}
+            }
+            matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+        }
+        other => {
+            audit(s, "approval_denied", Some(name), detail);
+            return Err(fail(
+                s,
+                "approval",
+                format!("unknown WYS_APPROVAL value `{other}` (use deny, allow or prompt)"),
+            ));
+        }
+    };
+    let kind = if granted {
+        "approval_granted"
+    } else {
+        "approval_denied"
+    };
+    audit(s, kind, Some(name), detail);
+    Ok(granted)
+}
+
 /// ツールの要求の検査（一覧 → Capability → 予算 → 承認）。実行してよければトランポリンを返す
 enum Gate {
     Run(extern "C" fn(*const Header) -> *mut Header),
@@ -399,7 +462,7 @@ enum Gate {
     Stop(*mut Header),
 }
 
-fn gate(s: &mut State, name: &str) -> Gate {
+fn gate(s: &mut State, name: &str, args: &str) -> Gate {
     let top = s.top();
     let caps = top.caps;
     let Some(ti) = top.tools.iter().copied().find(|&i| s.tools[i].name == name) else {
@@ -435,15 +498,16 @@ fn gate(s: &mut State, name: &str) -> Gate {
         return Gate::Stop(fail(s, kind, format!("{what} exceeded")));
     }
     if s.tools[ti].approval {
-        // T9 では常に拒否（T10 で `WYS_APPROVAL` の `allow` / `prompt`）
-        audit(
-            s,
-            "approval_requested",
-            Some(name),
-            "WYS_APPROVAL=deny".into(),
-        );
-        audit(s, "approval_denied", Some(name), "WYS_APPROVAL=deny".into());
-        return Gate::Refused;
+        match approve(s, name, args) {
+            Ok(true) => {}
+            Ok(false) => return Gate::Refused,
+            Err(p) => return Gate::Stop(p),
+        }
+        // 人の答えを待つ間に期限を過ぎたかもしれない（実時間のモード）
+        if let Some((kind, what)) = over_budget(s, true) {
+            audit(s, "budget_exceeded", Some(name), what.into());
+            return Gate::Stop(fail(s, kind, format!("{what} exceeded")));
+        }
     }
     for i in s.chain() {
         s.arena[i].tool_calls += 1;
@@ -515,7 +579,7 @@ pub unsafe extern "C" fn wys_llm_generate(
         }
         messages.push(serde_json::json!({"role": "assistant", "content": reply.text}));
         for (id, name, args) in &reply.tool_calls {
-            let g = STATE.with(|cell| gate(&mut cell.borrow_mut(), name));
+            let g = STATE.with(|cell| gate(&mut cell.borrow_mut(), name, args));
             let entry = match g {
                 Gate::Stop(p) => return p,
                 Gate::Refused => {

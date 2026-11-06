@@ -1005,3 +1005,68 @@ fn tools_run_after_the_runtime_checks_them() {
     assert!(ir.contains("call @agent_exit()"), "{ir}");
     assert!(ir.contains("__wys_tool_entry_add(l0: str) -> str"), "{ir}");
 }
+
+/// `wys` を、stdin に `input` をつないで実行する（`WYS_APPROVAL=prompt` の検査）。
+fn cli_stdin(args: &[&str], envs: &[(&str, &str)], input: &str) -> Output {
+    use std::io::Write as _;
+    let mut child = wys()
+        .args(args)
+        .env("WYS_RUNTIME_LIB", runtime_lib())
+        .env("WYS_RUNTIME_PYTHON_LIB", python_runtime_lib())
+        .envs(envs.iter().copied())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run wys");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().expect("wait for wys")
+}
+
+#[test]
+fn approval_prompt_reads_the_answer_from_stdin() {
+    // WYS_APPROVAL=prompt（ADR-0023 論点 12、AI-005）: stderr に問い、stdin の 1 行で決める。
+    // y / yes で実行、それ以外は「denied by approver」を LLM に返して続け、EOF は Err(approval)
+    let src = "@tool(description=\"Remove.\", approval=\"required\")\ndef rm(path: str) -> None uses io:\n    print(\"removed \" + path)\n\n@agent(tools=[rm], capabilities=[\"io\", \"llm\"])\nasync def cleaner() -> Result[str, LlmError] uses io, llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm:\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"rm\", args_json=\"{\\\"path\\\": \\\"/tmp/x\\\"}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"done\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    match await cleaner():\n        case Ok(t):\n            print(\"ok \" + t)\n        case Err(e):\n            print(e.kind + \": \" + e.message)\n";
+    let path = scratch("approval_prompt.wys", src);
+    let p = path.to_str().unwrap();
+    let env = [("WYS_APPROVAL", "prompt")];
+    for (input, stdout) in [
+        ("y\n", "removed /tmp/x\nok done\n"),
+        ("YES\n", "removed /tmp/x\nok done\n"),
+        ("no\n", "ok done\n"),
+        ("\n", "ok done\n"),
+        (
+            "",
+            "approval: no answer to the approval of tool `rm` (end of input)\n",
+        ),
+    ] {
+        let out = cli_stdin(&["run", p], &env, input);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            stdout,
+            "input {input:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains(
+                "approve tool rm (agent cleaner) with args {\"path\": \"/tmp/x\"}? [y/N] "
+            ),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
+fn agent_timeout_uses_the_real_clock_without_virtual_time() {
+    // 実時間のモード（WYS_VIRTUAL_TIME なし）でも、ツールの sleep_ms が期限に数えられる（ADR-0023 論点 14、AC-008）
+    let src = "@tool(description=\"Waits.\")\nasync def wait() -> None uses pure:\n    await sleep_ms(60)\n\n@agent(tools=[wait], capabilities=[\"llm\"], timeout_ms=30)\nasync def slow() -> Result[str, LlmError] uses llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm:\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"wait\", args_json=\"{}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"done\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    match await slow():\n        case Ok(t):\n            print(\"ok \" + t)\n        case Err(e):\n            print(e.kind + \": \" + e.message)\n";
+    let (code, stdout, stderr) = run("agent_real_timeout.wys", src);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "timeout: timeout_ms exceeded\n", "{stderr}");
+}
