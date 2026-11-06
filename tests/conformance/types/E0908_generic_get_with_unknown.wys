@@ -1,0 +1,15 @@
+# Generic な関数の d.get(k) を T = Unknown で具体化する（ADR-0021 論点 7）
+# expect-error: E0908 4:12
+def g[T](d: dict[str, T], k: str) -> T | None:
+    return d.get(k)
+
+def main() -> None:
+    match parse_json("{\"a\": 1}"):
+        case Ok(o):
+            match o:
+                case dict():
+                    _x = g(o, "a")
+                case _:
+                    pass
+        case Err(_e):
+            pass

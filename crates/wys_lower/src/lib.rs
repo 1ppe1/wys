@@ -121,6 +121,9 @@ impl Shared<'_> {
         let (k, v) = self.types.dict_args(d);
         let k = self.ir_ty(k).expect("dict keys are int, bool or str");
         let v = self.ir_ty(v).expect("dict values are never None");
+        if let Some(&id) = self.dict_ids.get(&d) {
+            return id; // `ir_list` と同じ（`dict[str, Unknown]`）
+        }
         let id = DictId(self.dicts.len() as u32);
         self.dicts.push((k, v));
         self.dict_ids.insert(d, id);
@@ -145,6 +148,11 @@ impl Shared<'_> {
         }
         let elem = self.types.list_elem(lst);
         let elem = self.ir_ty(elem).expect("list elements are never None");
+        // 要素の型を登録する間に、同じ型が登録されていることがある（`Unknown` を初めて使うと
+        // `list[Unknown]` を登録する。ADR-0021 論点 3）。二重に登録しない
+        if let Some(&id) = self.list_ids.get(&lst) {
+            return id;
+        }
         let id = ListId(self.lists.len() as u32);
         self.lists.push(elem);
         self.list_ids.insert(lst, id);
@@ -669,6 +677,8 @@ impl<'s, 't> FnLower<'s, 't> {
                 let ExprKind::Index { base, index } = &target.kind else {
                     unreachable!("IndexAssign always has an index target")
                 };
+                let bt = self.ty(base);
+                self.violates_unknown_rules(bt, target.span, false);
                 if let TTy::Dict(d) = self.ty(base) {
                     // d[k] = v（ADR-0015）
                     let (kt, vt) = self.sh.types.dict_args(d);
@@ -1186,6 +1196,7 @@ impl<'s, 't> FnLower<'s, 't> {
                     .expect("list and dict methods take a variable");
                 let (dv, dt, direct) = self.receiver(recv, |t| matches!(t, TTy::Dict(_)));
                 let db = self.cur;
+                self.violates_unknown_rules(dt, e.span, false);
                 let TTy::Dict(d) = dt else {
                     unreachable!("receiver returns the requested type")
                 };
@@ -1236,6 +1247,7 @@ impl<'s, 't> FnLower<'s, 't> {
                     .expect("list and dict methods take a variable");
                 let (list, rt, direct) = self.receiver(recv, |t| matches!(t, TTy::List(_)));
                 let lb = self.cur;
+                self.violates_unknown_rules(rt, e.span, false);
                 let TTy::List(l) = rt else {
                     unreachable!("receiver returns the requested type")
                 };
@@ -1698,6 +1710,20 @@ impl<'s, 't> FnLower<'s, 't> {
 
     /// `d.get(k)`: キーがあれば値、なければ `None` の `V | None`（ADR-0015）。
     fn dict_get(&mut self, recv: &str, key: &ast::Expr, e: &ast::Expr) -> TempId {
+        if let Some(t) = self.local_decl.get(recv).copied() {
+            let t = self.sh.types.subst(t, &self.subst);
+            let dict = self
+                .sh
+                .types
+                .members(t)
+                .into_iter()
+                .find(|m| matches!(m, TTy::Dict(_)))
+                .unwrap_or(t);
+            if self.violates_unknown_rules(dict, e.span, true) {
+                // `T | None` は `Unknown` に平坦化されている。IR は捨てられるので、型の合う値を返すだけ
+                return self.make_sum(TTy::Unknown, TTy::None, None);
+            }
+        }
         let (u, out) = self.result_union(e);
         let (dv, dt, direct) = self.receiver(recv, |t| matches!(t, TTy::Dict(_)));
         let TTy::Dict(d) = dt else {
@@ -1931,6 +1957,40 @@ impl<'s, 't> FnLower<'s, 't> {
             args,
         });
         d
+    }
+
+    /// Generic な関数の本体は型パラメータのまま検査するので、`T = Unknown` で具体化したときの規則
+    /// （ADR-0021 論点 4: 要素が `Unknown` のコンテナは読み取り専用、論点 7: `dict[str, Unknown]` の `.get` は使えない）は
+    /// ここで確かめる。破っていれば診断を記録して真を返す（IR は捨てられる）
+    fn violates_unknown_rules(&mut self, container: TTy, span: wys_span::Span, get: bool) -> bool {
+        let inner = match container {
+            TTy::List(l) => self.sh.types.list_elem(l),
+            TTy::Dict(d) => self.sh.types.dict_args(d).1,
+            _ => return false,
+        };
+        if !self.sh.types.contains_unknown(inner) || self.sh.error.is_some() {
+            return false;
+        }
+        let ty = self.sh.types.name(container);
+        let d = if get {
+            wys_diagnostics::Diagnostic::error(
+                "E0908",
+                format!("`get` cannot be used on `{ty}`, whose values may be `None`"),
+                span,
+            )
+            .with_cause("a generic function was instantiated with `Unknown`, which holds JSON `null` (ADR-0021 point 7)")
+            .with_hint("check the key with `in` and then read `d[k]`")
+        } else {
+            wys_diagnostics::Diagnostic::error(
+                "E1503",
+                format!("cannot modify `{ty}`: a list or dict whose elements are `Unknown` is read-only"),
+                span,
+            )
+            .with_cause("a generic function that modifies its argument was instantiated with `Unknown`; data reached from `Unknown` is an immutable tree (ADR-0021 point 4)")
+            .with_hint("validate the data into a concrete type before passing it to a function that changes it")
+        };
+        self.sh.error = Some(d);
+        true
     }
 
     fn result_union(&mut self, e: &ast::Expr) -> (wys_typeck::UnionId, LocalId) {

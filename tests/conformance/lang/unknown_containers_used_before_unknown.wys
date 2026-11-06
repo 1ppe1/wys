@@ -1,0 +1,28 @@
+# list[Unknown] / dict[str, Unknown] を引数に取る関数が、Unknown より先に IR に登録されても同じ型になる
+# expect-stdout: 3
+# expect-stdout: 1
+def size(xs: list[Unknown]) -> int:
+    return len(xs)
+
+def keys(d: dict[str, Unknown]) -> int:
+    return len(d)
+
+def main() -> None:
+    match parse_json("[1, 2, 3]"):
+        case Ok(v):
+            match v:
+                case list():
+                    print(size(v))
+                case _:
+                    print("other")
+        case Err(e):
+            print(e.message)
+    match parse_json("{\"a\": 1}"):
+        case Ok(v):
+            match v:
+                case dict():
+                    print(keys(v))
+                case _:
+                    print("other")
+        case Err(e):
+            print(e.message)
