@@ -177,6 +177,7 @@ pub extern "C" fn wys_runtime_finish() {
     }
 }
 
+pub mod json;
 pub mod task;
 
 // ---------------------------------------------------------------- 別のランタイム（Python、M4 PoC3）向け

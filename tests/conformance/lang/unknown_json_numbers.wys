@@ -1,0 +1,46 @@
+# parse_json の数値（ADR-0021 論点 5）: 小数点も指数もなく i64 に収まれば int（-0 も int）、ほかは float。
+# f64 で表せない値はエラー
+# expect-stdout: int
+# expect-stdout: 0
+# expect-stdout: float
+# expect-stdout: 1.0
+# expect-stdout: float
+# expect-stdout: 100.0
+# expect-stdout: float
+# expect-stdout: -0.0
+# expect-stdout: int
+# expect-stdout: 9223372036854775807
+# expect-stdout: int
+# expect-stdout: -9223372036854775808
+# expect-stdout: float
+# expect-stdout: 9.223372036854776e+18
+# expect-stdout: float
+# expect-stdout: -9.223372036854776e+18
+# expect-stdout: error
+# expect-stdout: number out of range
+def show(s: str) -> None:
+    match parse_json(s):
+        case Ok(v):
+            match v:
+                case int():
+                    print("int")
+                    print(v)
+                case float():
+                    print("float")
+                    print(v)
+                case _:
+                    print("other")
+        case Err(e):
+            print("error")
+            print(e.message)
+
+def main() -> None:
+    show("-0")
+    show("1.0")
+    show("1e2")
+    show("-0.0")
+    show("9223372036854775807")
+    show("-9223372036854775808")
+    show("9223372036854775808")
+    show("-9223372036854775809")
+    show("1e400")

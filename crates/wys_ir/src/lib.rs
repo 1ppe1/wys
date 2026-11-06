@@ -32,7 +32,14 @@ pub enum Ty {
     /// `Task[T]`（タスクのオブジェクトへのポインタ1語、ADR-0020）。結果の型は `Program::tasks`。
     /// 参照カウントの操作は型ごとの関数（最後の release が結果を release してからランタイムに返す）
     Task(TaskId),
+    /// 未検証の外部値 `Unknown`（ADR-0011、ADR-0021 論点 3）。タグ 1 バイト + 1 語（Union と同じ配置）。
+    /// 種類（タグ）は `UNKNOWN_KINDS` の順。`list` / `dict` の種類は `Program::unknown` の型のオブジェクトを指す
+    Unknown,
 }
+
+/// `Unknown` の種類（タグの番号の順、ADR-0021 論点 3）。今までの 5 種類の Union と同じ番号を保ち、`list` / `dict` を足す。
+/// ランタイム（`wys_runtime::json`）のタグの定数と一致させる
+pub const UNKNOWN_KINDS: [&str; 7] = ["int", "bool", "str", "float", "None", "list", "dict"];
 
 impl Ty {
     /// Union 型の ID。Union でなければパニックする。
@@ -55,6 +62,7 @@ impl Ty {
             Ty::Dict(d) => format!("dict{}", d.0),
             Ty::Py => "py".into(),
             Ty::Task(k) => format!("task{}", k.0),
+            Ty::Unknown => "unknown".into(),
         }
     }
 }
@@ -106,11 +114,29 @@ pub struct Program {
     pub dicts: Vec<(Ty, Ty)>,
     /// `Task[T]` の結果の型（`None` なら結果を持たない `Task[None]`）。`Ty::Task(TaskId(i))` は `tasks[i]` を指す。
     pub tasks: Vec<Option<Ty>>,
+    /// `Unknown` のコンテナの種類の型（`list[Unknown]` と `dict[str, Unknown]`）。`Unknown` を使うプログラムだけ `Some`
+    pub unknown: Option<(ListId, DictId)>,
     /// 表示用の情報（`print`、ADR-0016 論点 16）。型の同一性や配置には関係しない。
     pub display: DisplayInfo,
     pub funcs: Vec<Function>,
     /// エントリポイント（引数なし・戻り値なし）。
     pub entry: FuncId,
+}
+
+impl Program {
+    /// `Unknown` の種類ごとの構成要素（`UNKNOWN_KINDS` の順）。`Unknown` を使わないプログラムではパニックする
+    pub fn unknown_members(&self) -> [Member; 7] {
+        let (l, d) = self.unknown.expect("the program uses `Unknown`");
+        [
+            Some(Ty::Int),
+            Some(Ty::Bool),
+            Some(Ty::Str),
+            Some(Ty::Float),
+            None,
+            Some(Ty::List(l)),
+            Some(Ty::Dict(d)),
+        ]
+    }
 }
 
 /// 表示用の情報。IR の型は構造だけを持つので、`print` に要る名前をここに置く。
@@ -342,6 +368,12 @@ pub enum Builtin {
     PyErrTraceback,
     /// `sleep_ms(n)`: 現在のタスクを止める中断点（ADR-0020 論点 10）。`async` の関数の中だけ
     SleepMs,
+    // JSON（ADR-0021 論点 5）。`JsonParse` の後は `JsonFailed` で確かめ、失敗なら `JsonErr*` で理由を読む
+    /// `parse_json` の本体: 成功なら木を +1 所有で返す（失敗なら `None` の種類）
+    JsonParse,
+    JsonFailed,
+    JsonErrMessage,
+    JsonErrOffset,
 }
 
 impl Builtin {
@@ -390,6 +422,10 @@ impl Builtin {
             Builtin::PyErrMessage => "py_err_message",
             Builtin::PyErrTraceback => "py_err_traceback",
             Builtin::SleepMs => "sleep_ms",
+            Builtin::JsonParse => "json_parse",
+            Builtin::JsonFailed => "json_failed",
+            Builtin::JsonErrMessage => "json_err_message",
+            Builtin::JsonErrOffset => "json_err_offset",
         }
     }
 
@@ -419,6 +455,8 @@ impl Builtin {
                 | Builtin::PyErrKind
                 | Builtin::PyErrMessage
                 | Builtin::PyErrTraceback
+                | Builtin::JsonParse
+                | Builtin::JsonErrMessage
         )
     }
 
@@ -460,6 +498,10 @@ impl Builtin {
             | Builtin::PyErrKind
             | Builtin::PyErrMessage
             | Builtin::PyErrTraceback => Some(Ty::Str),
+            Builtin::JsonParse => Some(Ty::Unknown),
+            Builtin::JsonFailed => Some(Ty::Bool),
+            Builtin::JsonErrMessage => Some(Ty::Str),
+            Builtin::JsonErrOffset => Some(Ty::Int),
         }
     }
 
@@ -502,6 +544,8 @@ impl Builtin {
             | Builtin::PyErrKind
             | Builtin::PyErrMessage
             | Builtin::PyErrTraceback => &[],
+            Builtin::JsonParse => &[Ty::Str],
+            Builtin::JsonFailed | Builtin::JsonErrMessage | Builtin::JsonErrOffset => &[],
         }
     }
 }
@@ -552,6 +596,13 @@ pub enum Inst {
         dst: TempId,
         union: UnionId,
         variant: u32,
+        payload: Option<TempId>,
+    },
+    /// 種類 `kind`（`UNKNOWN_KINDS` の番号）の `Unknown` 値を作る（ADR-0021）。`None` の種類なら `payload` は `None`。
+    /// 中身の所有は `MakeUnion` と同じ（+1 で消費する）
+    MakeUnknown {
+        dst: TempId,
+        kind: u32,
         payload: Option<TempId>,
     },
     /// 参照カウントを1増やす（`str` はオブジェクト、Union / レコードは中の参照型すべて）。ARC パスが挿入する。
@@ -699,7 +750,9 @@ impl Inst {
             Inst::Await { task, .. } => vec![*task],
             Inst::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
             Inst::Call { args, .. } => args.clone(),
-            Inst::MakeUnion { payload, .. } => payload.iter().copied().collect(),
+            Inst::MakeUnion { payload, .. } | Inst::MakeUnknown { payload, .. } => {
+                payload.iter().copied().collect()
+            }
             Inst::ListNew { items, .. } => items.clone(),
             Inst::ListGet { src, index, .. } | Inst::DictKeyAt { src, index, .. } => {
                 vec![*src, *index]
@@ -753,6 +806,14 @@ pub fn verify(p: &Program) -> Result<(), String> {
             ));
         }
     }
+    if let Some((l, d)) = p.unknown
+        && (p.lists.get(l.0 as usize) != Some(&Ty::Unknown)
+            || p.dicts.get(d.0 as usize) != Some(&(Ty::Str, Ty::Unknown)))
+    {
+        return Err(
+            "the containers of `unknown` must be list[unknown] and dict[str, unknown]".into(),
+        );
+    }
     if p.display.record_names.len() != p.records.len() {
         return Err("every record type must have a display name".into());
     }
@@ -781,6 +842,23 @@ fn union_member(p: &Program, u: UnionId, variant: u32) -> Result<Member, String>
         .ok_or_else(|| format!("union u{} has no variant {variant}", u.0))
 }
 
+/// Union か `Unknown` の構成要素（`UnionIs` / `UnionPayload` は両方に使える。ADR-0021 論点 3）。
+fn sum_member(p: &Program, t: Ty, variant: u32) -> Result<Member, String> {
+    match t {
+        Ty::Union(u) => union_member(p, u, variant),
+        Ty::Unknown => {
+            if p.unknown.is_none() {
+                return Err("`unknown` is used but its container types are not registered".into());
+            }
+            p.unknown_members()
+                .get(variant as usize)
+                .copied()
+                .ok_or_else(|| format!("unknown has no kind {variant}"))
+        }
+        other => Err(format!("{} is not a union", other.name())),
+    }
+}
+
 fn dict_types(p: &Program, d: DictId) -> Result<(Ty, Ty), String> {
     p.dicts
         .get(d.0 as usize)
@@ -792,7 +870,7 @@ fn dict_types(p: &Program, d: DictId) -> Result<(Ty, Ty), String> {
 fn py_convertible(p: &Program, t: Ty) -> bool {
     match t {
         Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Py => true,
-        Ty::Record(_) | Ty::Task(_) => false,
+        Ty::Record(_) | Ty::Task(_) | Ty::Unknown => false,
         Ty::List(l) => p
             .lists
             .get(l.0 as usize)
@@ -965,6 +1043,20 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                         }
                     }
                     expect("make_union result", temp_ty(*dst)?, Ty::Union(*union))?;
+                    define(*dst, &mut defined_in)?;
+                }
+                Inst::MakeUnknown { dst, kind, payload } => {
+                    let member = sum_member(p, Ty::Unknown, *kind)?;
+                    match (member, payload) {
+                        (None, None) => {}
+                        (Some(want), Some(t)) => {
+                            expect("unknown payload", use_(*t, &defined_in)?, want)?
+                        }
+                        _ => {
+                            return Err(format!("bb{bi}: unknown payload does not match the kind"));
+                        }
+                    }
+                    expect("make_unknown result", temp_ty(*dst)?, Ty::Unknown)?;
                     define(*dst, &mut defined_in)?;
                 }
                 Inst::Retain { src, .. } | Inst::Release { src, .. } => {
@@ -1166,18 +1258,20 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                     define(*dst, &mut defined_in)?;
                 }
                 Inst::UnionIs { dst, src, variant } => {
-                    let Ty::Union(u) = use_(*src, &defined_in)? else {
+                    let st = use_(*src, &defined_in)?;
+                    if !matches!(st, Ty::Union(_) | Ty::Unknown) {
                         return Err(format!("bb{bi}: union_is on a non-union value"));
-                    };
-                    union_member(p, u, *variant)?;
+                    }
+                    sum_member(p, st, *variant)?;
                     expect("union_is result", temp_ty(*dst)?, Ty::Bool)?;
                     define(*dst, &mut defined_in)?;
                 }
                 Inst::UnionPayload { dst, src, variant } => {
-                    let Ty::Union(u) = use_(*src, &defined_in)? else {
+                    let st = use_(*src, &defined_in)?;
+                    if !matches!(st, Ty::Union(_) | Ty::Unknown) {
                         return Err(format!("bb{bi}: union_payload on a non-union value"));
-                    };
-                    let Some(want) = union_member(p, u, *variant)? else {
+                    }
+                    let Some(want) = sum_member(p, st, *variant)? else {
                         return Err(format!("bb{bi}: the None variant has no payload"));
                     };
                     expect("union_payload result", temp_ty(*dst)?, want)?;
@@ -1363,6 +1457,13 @@ impl fmt::Display for Program {
         for (i, r) in self.tasks.iter().enumerate() {
             writeln!(f, "task task{i} = Task[{}]", member_name(*r))?;
         }
+        if let Some((l, d)) = self.unknown {
+            writeln!(
+                f,
+                "unknown = int | bool | str | float | None | list{} | dict{}",
+                l.0, d.0
+            )?;
+        }
         writeln!(f, "entry f{}", self.entry.0)?;
         for (i, func) in self.funcs.iter().enumerate() {
             writeln!(f)?;
@@ -1430,6 +1531,13 @@ impl fmt::Display for Program {
                                 writeln!(f, "t{} = make_union u{}.{variant}()", dst.0, union.0)?
                             }
                         },
+                        Inst::MakeUnknown { dst, kind, payload } => {
+                            let k = UNKNOWN_KINDS[*kind as usize];
+                            match payload {
+                                Some(t) => writeln!(f, "t{} = make_unknown {k}(t{})", dst.0, t.0)?,
+                                None => writeln!(f, "t{} = make_unknown {k}()", dst.0)?,
+                            }
+                        }
                         Inst::UnionIs { dst, src, variant } => {
                             writeln!(f, "t{} = union_is t{}, {variant}", dst.0, src.0)?
                         }
@@ -1617,6 +1725,7 @@ mod tests {
             lists: vec![],
             dicts: vec![],
             tasks: vec![],
+            unknown: None,
             display: DisplayInfo::default(),
             entry: FuncId(0),
             funcs: vec![Function {

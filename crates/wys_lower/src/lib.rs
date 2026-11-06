@@ -29,6 +29,11 @@ struct Shared<'t> {
     /// `Task[T]`（ADR-0020）
     task_ids: HashMap<wys_typeck::TaskId, TaskId>,
     tasks: Vec<Option<Ty>>,
+    /// `Unknown` のコンテナの種類（型検査の `list[Unknown]` と `dict[str, Unknown]`。ADR-0021 論点 1）
+    unknown_containers: (TTy, TTy),
+    /// IR に登録した `Unknown` のコンテナの型（`Unknown` を使うときだけ）。`None` の間に登録中なら `registering_unknown`
+    unknown_ir: Option<(ListId, DictId)>,
+    registering_unknown: bool,
     strings: Vec<String>,
     func_index: HashMap<String, usize>,
     /// (関数の番号, 型引数) → IR の関数。Generic でない関数は型引数が空。
@@ -61,73 +66,23 @@ impl Shared<'_> {
             TTy::Param(_) => {
                 panic!("type parameter reached code generation; monomorphization missed it")
             }
+            // `Unknown` は IR の独自の型（ADR-0021 論点 3）。最初に使ったときにコンテナの種類の型を登録する。
+            // `list[Unknown]` の要素の登録でここに戻るので、登録中は印だけを見て返す
             TTy::Unknown => {
-                let u = self.unknown_union();
-                Some(Ty::Union(self.ir_union(u)))
+                if self.unknown_ir.is_none() && !self.registering_unknown {
+                    self.registering_unknown = true;
+                    let (TTy::List(l), TTy::Dict(d)) = self.unknown_containers else {
+                        unreachable!("the containers are a list and a dict")
+                    };
+                    let l = self.ir_list(l);
+                    let d = self.ir_dict(d);
+                    self.unknown_ir = Some((l, d));
+                }
+                Some(Ty::Unknown)
             }
             TTy::Error => panic!("lowering received a type error; run the type checker first"),
             TTy::Task(k) => Some(Ty::Task(self.ir_task(k))),
         }
-    }
-
-    /// `Unknown` の実行時表現（ADR-0011）: `int | bool | str | float | None` の Union（`float` は ADR-0019）。
-    fn unknown_union(&mut self) -> wys_typeck::UnionId {
-        // `float` は ADR-0019 論点 7 で足した
-        match self
-            .types
-            .union([TTy::Int, TTy::Bool, TTy::Str, TTy::Float, TTy::None])
-        {
-            TTy::Union(u) => u,
-            _ => unreachable!("four members always form a union"),
-        }
-    }
-
-    /// `Unknown` を実行時表現の Union に置き換える（レコードのフィールドや Union の構成要素の中も）。
-    fn norm(&mut self, t: TTy) -> TTy {
-        match t {
-            TTy::Unknown => TTy::Union(self.unknown_union()),
-            TTy::Union(_) if self.types.members(t).contains(&TTy::Unknown) => {
-                let ms: Vec<TTy> = self
-                    .types
-                    .members(t)
-                    .into_iter()
-                    .map(|m| self.norm(m))
-                    .collect();
-                self.types.union(ms)
-            }
-            TTy::List(lst) if self.has_unknown(t) => {
-                let e = self.types.list_elem(lst);
-                let e = self.norm(e);
-                self.types.list(e)
-            }
-            TTy::Dict(d) if self.has_unknown(t) => {
-                let (k, v) = self.types.dict_args(d);
-                let v = self.norm(v);
-                self.types.dict(k, v)
-            }
-            TTy::Result(r) if self.has_unknown(t) => {
-                let (ok, err) = self.types.result_args(r);
-                let (ok, err) = (self.norm(ok), self.norm(err));
-                self.types.result(ok, err)
-            }
-            TTy::Record(r) => {
-                let def = self.types.record_def(r).clone();
-                if !def.fields.iter().any(|(_, ft)| self.has_unknown(*ft)) {
-                    return t;
-                }
-                let fields = def
-                    .fields
-                    .iter()
-                    .map(|(n, ft)| (n.clone(), self.norm(*ft)))
-                    .collect();
-                self.types.record_named(fields, def.name, def.args)
-            }
-            _ => t,
-        }
-    }
-
-    fn has_unknown(&self, t: TTy) -> bool {
-        self.types.contains_unknown(t)
     }
 
     fn ir_union(&mut self, u: wys_typeck::UnionId) -> UnionId {
@@ -166,6 +121,9 @@ impl Shared<'_> {
         let (k, v) = self.types.dict_args(d);
         let k = self.ir_ty(k).expect("dict keys are int, bool or str");
         let v = self.ir_ty(v).expect("dict values are never None");
+        if let Some(&id) = self.dict_ids.get(&d) {
+            return id; // `ir_list` と同じ（`dict[str, Unknown]`）
+        }
         let id = DictId(self.dicts.len() as u32);
         self.dicts.push((k, v));
         self.dict_ids.insert(d, id);
@@ -190,6 +148,11 @@ impl Shared<'_> {
         }
         let elem = self.types.list_elem(lst);
         let elem = self.ir_ty(elem).expect("list elements are never None");
+        // 要素の型を登録する間に、同じ型が登録されていることがある（`Unknown` を初めて使うと
+        // `list[Unknown]` を登録する。ADR-0021 論点 3）。二重に登録しない
+        if let Some(&id) = self.list_ids.get(&lst) {
+            return id;
+        }
         let id = ListId(self.lists.len() as u32);
         self.lists.push(elem);
         self.list_ids.insert(lst, id);
@@ -285,9 +248,14 @@ pub fn lower_with(
     tc: &TypeckResult,
     opts: &LowerOptions<'_>,
 ) -> Result<Program, Box<wys_diagnostics::Diagnostic>> {
+    let mut types = tc.types.clone();
+    let unknown_containers = (types.list(TTy::Unknown), types.dict(TTy::Str, TTy::Unknown));
     let mut sh = Shared {
         tc,
-        types: tc.types.clone(),
+        types,
+        unknown_containers,
+        unknown_ir: None,
+        registering_unknown: false,
         union_ids: HashMap::new(),
         unions: Vec::new(),
         record_ids: HashMap::new(),
@@ -356,6 +324,7 @@ pub fn lower_with(
         lists: sh.lists,
         dicts: sh.dicts,
         tasks: sh.tasks,
+        unknown: sh.unknown_ir,
         display: sh.display,
         funcs,
         entry,
@@ -473,7 +442,7 @@ impl<'s, 't> FnLower<'s, 't> {
             .zip(args.iter().copied())
             .collect();
         let ret = sh.types.subst(sig.ret, &subst);
-        let ret = sh.norm(ret);
+
         let name = if args.is_empty() {
             f.name.name.clone()
         } else {
@@ -496,7 +465,7 @@ impl<'s, 't> FnLower<'s, 't> {
         for (lname, ty) in &info.locals {
             let lid = LocalId(l.locals.len() as u32);
             let decl = l.sh.types.subst(*ty, &l.subst);
-            let decl = l.sh.norm(decl);
+
             let ir = l.sh.ir_ty(decl).expect("locals never have type None");
             l.locals.push(ir);
             l.local_ids.insert(lname.clone(), lid);
@@ -542,8 +511,7 @@ impl<'s, 't> FnLower<'s, 't> {
     /// 式の型（この関数インスタンスの型引数で置き換えた後）。
     fn ty(&mut self, e: &ast::Expr) -> TTy {
         let t = self.sh.tc.ty(e);
-        let t = self.sh.types.subst(t, &self.subst);
-        self.sh.norm(t)
+        self.sh.types.subst(t, &self.subst)
     }
 
     /// 呼び出し先の関数インスタンスと、その引数・戻り値の型。
@@ -567,13 +535,10 @@ impl<'s, 't> FnLower<'s, 't> {
             .collect();
         let params = params
             .iter()
-            .map(|t| {
-                let t = self.sh.types.subst(*t, &map);
-                self.sh.norm(t)
-            })
+            .map(|t| self.sh.types.subst(*t, &map))
             .collect();
         let ret = self.sh.types.subst(ret, &map);
-        let ret = self.sh.norm(ret);
+
         (self.sh.request(index, args, call.span), params, ret)
     }
 
@@ -609,12 +574,22 @@ impl<'s, 't> FnLower<'s, 't> {
         self.blocks[self.cur].term = Some(term);
     }
 
+    /// `Unknown` の値を作るときは、コンテナの種類の型を必ず登録する（型を書かずに `parse_scalar` の結果を
+    /// `match` するだけのプログラムでも `Program::unknown` が決まるように）
+    fn register_unknown(&mut self, ty: Ty) {
+        if ty == Ty::Unknown && self.sh.unknown_ir.is_none() {
+            self.sh.ir_ty(TTy::Unknown);
+        }
+    }
+
     fn temp(&mut self, ty: Ty) -> TempId {
+        self.register_unknown(ty);
         self.temps.push(ty);
         TempId(self.temps.len() as u32 - 1)
     }
 
     fn hidden_local(&mut self, ty: Ty) -> LocalId {
+        self.register_unknown(ty);
         self.locals.push(ty);
         LocalId(self.locals.len() as u32 - 1)
     }
@@ -712,6 +687,8 @@ impl<'s, 't> FnLower<'s, 't> {
                 let ExprKind::Index { base, index } = &target.kind else {
                     unreachable!("IndexAssign always has an index target")
                 };
+                let bt = self.ty(base);
+                self.violates_unknown_rules(bt, target.span, false);
                 if let TTy::Dict(d) = self.ty(base) {
                     // d[k] = v（ADR-0015）
                     let (kt, vt) = self.sh.types.dict_args(d);
@@ -826,22 +803,23 @@ impl<'s, 't> FnLower<'s, 't> {
             };
             let next = self.new_block();
             // 一致しない `case`（絞り込みで被検査値の型から外れた型。型検査は W0301 を出す）は生成しない
+            let is_sum = matches!(st, TTy::Union(_) | TTy::Unknown);
             let never = match (pattern_ty, st) {
                 (None, _) => false,
-                (Some(pt), TTy::Union(u)) => !self.members(u).contains(&pt),
+                (Some(pt), st) if is_sum => !self.sum_members(st).contains(&pt),
                 (Some(pt), st) => pt != st,
             };
             if never {
                 continue;
             }
-            if let (Some(pt), TTy::Union(u), Some(slot)) = (pattern_ty, st, slot) {
+            if let (Some(pt), true, Some(slot)) = (pattern_ty, is_sum, slot) {
                 let val = self.temp(self.locals[slot.0 as usize]);
                 self.emit(Inst::Load {
                     dst: val,
                     src: slot,
                 });
                 let c = self.temp(Ty::Bool);
-                let variant = self.variant(u, pt);
+                let variant = self.variant(st, pt);
                 self.emit(Inst::UnionIs {
                     dst: c,
                     src: val,
@@ -1065,9 +1043,9 @@ impl<'s, 't> FnLower<'s, 't> {
                 let v = self.expr(lhs);
                 let is_none = match lt {
                     TTy::None => self.konst(Const::Bool(true), Ty::Bool),
-                    TTy::Union(u) => {
+                    TTy::Union(_) | TTy::Unknown => {
                         let dst = self.temp(Ty::Bool);
-                        let variant = self.variant(u, TTy::None);
+                        let variant = self.variant(lt, TTy::None);
                         self.emit(Inst::UnionIs {
                             dst,
                             src: v.expect("union values exist"),
@@ -1228,6 +1206,7 @@ impl<'s, 't> FnLower<'s, 't> {
                     .expect("list and dict methods take a variable");
                 let (dv, dt, direct) = self.receiver(recv, |t| matches!(t, TTy::Dict(_)));
                 let db = self.cur;
+                self.violates_unknown_rules(dt, e.span, false);
                 let TTy::Dict(d) = dt else {
                     unreachable!("receiver returns the requested type")
                 };
@@ -1278,6 +1257,7 @@ impl<'s, 't> FnLower<'s, 't> {
                     .expect("list and dict methods take a variable");
                 let (list, rt, direct) = self.receiver(recv, |t| matches!(t, TTy::List(_)));
                 let lb = self.cur;
+                self.violates_unknown_rules(rt, e.span, false);
                 let TTy::List(l) = rt else {
                     unreachable!("receiver returns the requested type")
                 };
@@ -1388,7 +1368,10 @@ impl<'s, 't> FnLower<'s, 't> {
                 Some(d)
             }
             ExprKind::Call { callee, args, .. }
-                if matches!(callee.name.as_str(), "arg_count" | "arg" | "parse_scalar") =>
+                if matches!(
+                    callee.name.as_str(),
+                    "arg_count" | "arg" | "parse_scalar" | "parse_json"
+                ) =>
             {
                 Some(match callee.name.as_str() {
                     "arg_count" => {
@@ -1401,6 +1384,7 @@ impl<'s, 't> FnLower<'s, 't> {
                         d
                     }
                     "arg" => self.lower_arg(&args[0], e),
+                    "parse_json" => self.lower_parse_json(&args[0], e),
                     _ => self.lower_parse_scalar(&args[0], e),
                 })
             }
@@ -1722,20 +1706,34 @@ impl<'s, 't> FnLower<'s, 't> {
         if want(decl) {
             return (v, decl, Some(slot));
         }
-        let TTy::Union(u) = decl else {
+        if !matches!(decl, TTy::Union(_) | TTy::Unknown) {
             panic!("method receiver of type {decl:?} passed type checking")
-        };
+        }
         let m = self
-            .members(u)
+            .sum_members(decl)
             .into_iter()
             .find(|m| want(*m))
             .expect("type checking narrowed the receiver");
-        let p = self.payload(v, u, m).expect("containers have values");
+        let p = self.payload(v, decl, m).expect("containers have values");
         (p, m, None)
     }
 
     /// `d.get(k)`: キーがあれば値、なければ `None` の `V | None`（ADR-0015）。
     fn dict_get(&mut self, recv: &str, key: &ast::Expr, e: &ast::Expr) -> TempId {
+        if let Some(t) = self.local_decl.get(recv).copied() {
+            let t = self.sh.types.subst(t, &self.subst);
+            let dict = self
+                .sh
+                .types
+                .members(t)
+                .into_iter()
+                .find(|m| matches!(m, TTy::Dict(_)))
+                .unwrap_or(t);
+            if self.violates_unknown_rules(dict, e.span, true) {
+                // `T | None` は `Unknown` に平坦化されている。IR は捨てられるので、型の合う値を返すだけ
+                return self.make_sum(TTy::Unknown, TTy::None, None);
+            }
+        }
         let (u, out) = self.result_union(e);
         let (dv, dt, direct) = self.receiver(recv, |t| matches!(t, TTy::Dict(_)));
         let TTy::Dict(d) = dt else {
@@ -1971,6 +1969,40 @@ impl<'s, 't> FnLower<'s, 't> {
         d
     }
 
+    /// Generic な関数の本体は型パラメータのまま検査するので、`T = Unknown` で具体化したときの規則
+    /// （ADR-0021 論点 4: 要素が `Unknown` のコンテナは読み取り専用、論点 7: `dict[str, Unknown]` の `.get` は使えない）は
+    /// ここで確かめる。破っていれば診断を記録して真を返す（IR は捨てられる）
+    fn violates_unknown_rules(&mut self, container: TTy, span: wys_span::Span, get: bool) -> bool {
+        let inner = match container {
+            TTy::List(l) => self.sh.types.list_elem(l),
+            TTy::Dict(d) => self.sh.types.dict_args(d).1,
+            _ => return false,
+        };
+        if !self.sh.types.contains_unknown(inner) || self.sh.error.is_some() {
+            return false;
+        }
+        let ty = self.sh.types.name(container);
+        let d = if get {
+            wys_diagnostics::Diagnostic::error(
+                "E0908",
+                format!("`get` cannot be used on `{ty}`, whose values may be `None`"),
+                span,
+            )
+            .with_cause("a generic function was instantiated with `Unknown`, which holds JSON `null` (ADR-0021 point 7)")
+            .with_hint("check the key with `in` and then read `d[k]`")
+        } else {
+            wys_diagnostics::Diagnostic::error(
+                "E1503",
+                format!("cannot modify `{ty}`: a list or dict whose elements are `Unknown` is read-only"),
+                span,
+            )
+            .with_cause("a generic function that modifies its argument was instantiated with `Unknown`; data reached from `Unknown` is an immutable tree (ADR-0021 point 4)")
+            .with_hint("validate the data into a concrete type before passing it to a function that changes it")
+        };
+        self.sh.error = Some(d);
+        true
+    }
+
     fn result_union(&mut self, e: &ast::Expr) -> (wys_typeck::UnionId, LocalId) {
         let TTy::Union(u) = self.ty(e) else {
             panic!("input builtins return unions")
@@ -2127,8 +2159,9 @@ impl<'s, 't> FnLower<'s, 't> {
     }
 
     /// `parse_scalar(s)`: ランタイムで種類を判定し（0 = int、1 = bool、2 = str、3 = null）、該当する値を詰める。
-    fn lower_parse_scalar(&mut self, text: &ast::Expr, e: &ast::Expr) -> TempId {
-        let (u, out) = self.result_union(e);
+    fn lower_parse_scalar(&mut self, text: &ast::Expr, _e: &ast::Expr) -> TempId {
+        let u = TTy::Unknown;
+        let out = self.hidden_local(Ty::Unknown);
         let s = self.expr(text).expect("the text has a value");
         let s_slot = self.hidden_local(Ty::Str);
         self.emit(Inst::Store {
@@ -2190,7 +2223,7 @@ impl<'s, 't> FnLower<'s, 't> {
                     _ => ls,
                 })
             };
-            let v = self.make_union(u, member, payload);
+            let v = self.make_sum(u, member, payload);
             self.emit(Inst::Store { dst: out, src: v });
             self.terminate(Terminator::Jump(join));
             if let Some(n) = next {
@@ -2198,7 +2231,76 @@ impl<'s, 't> FnLower<'s, 't> {
             }
         }
         self.switch_to(join);
-        let d = self.temp(Ty::Union(self.locals[out.0 as usize].union_id()));
+        let d = self.temp(Ty::Unknown);
+        self.emit(Inst::Load { dst: d, src: out });
+        d
+    }
+
+    /// `parse_json(s)`（ADR-0021 論点 5）: ランタイムが木を作る。失敗したら `JsonError` の `Err`。
+    fn lower_parse_json(&mut self, text: &ast::Expr, e: &ast::Expr) -> TempId {
+        let TTy::Result(r) = self.ty(e) else {
+            panic!("parse_json returns a Result")
+        };
+        let (_, err) = self.sh.types.result_args(r);
+        let union = self.sh.ir_result(r);
+        let out = self.hidden_local(Ty::Union(union));
+        let s = self.expr(text).expect("the text has a value");
+        let v = self.temp(Ty::Unknown);
+        self.emit(Inst::Call {
+            dst: Some(v),
+            callee: Callee::Builtin(Builtin::JsonParse),
+            args: vec![s],
+        });
+        // 失敗したときの値は `None` の種類なので、置いたまま捨ててよい
+        let slot = self.hidden_local(Ty::Unknown);
+        self.emit(Inst::Store { dst: slot, src: v });
+        let failed = self.builtin(Builtin::JsonFailed, vec![]);
+        let (ok_b, err_b, join) = (self.new_block(), self.new_block(), self.new_block());
+        self.terminate(Terminator::Branch {
+            cond: failed,
+            then_block: err_b,
+            else_block: ok_b,
+        });
+        self.switch_to(ok_b);
+        let lv = self.temp(Ty::Unknown);
+        self.emit(Inst::Load { dst: lv, src: slot });
+        let okv = self.temp(Ty::Union(union));
+        self.emit(Inst::MakeUnion {
+            dst: okv,
+            union,
+            variant: 0,
+            payload: Some(lv),
+        });
+        self.emit(Inst::Store { dst: out, src: okv });
+        self.terminate(Terminator::Jump(join));
+        self.switch_to(err_b);
+        let TTy::Record(rid) = err else {
+            panic!("JsonError is a record")
+        };
+        let record = self.sh.ir_record(rid);
+        // フィールドは名前の順（message, offset）に並んでいる
+        let msg = self.builtin(Builtin::JsonErrMessage, vec![]);
+        let off = self.builtin(Builtin::JsonErrOffset, vec![]);
+        let ev = self.temp(Ty::Record(record));
+        self.emit(Inst::MakeRecord {
+            dst: ev,
+            record,
+            fields: vec![msg, off],
+        });
+        let errv = self.temp(Ty::Union(union));
+        self.emit(Inst::MakeUnion {
+            dst: errv,
+            union,
+            variant: 1,
+            payload: Some(ev),
+        });
+        self.emit(Inst::Store {
+            dst: out,
+            src: errv,
+        });
+        self.terminate(Terminator::Jump(join));
+        self.switch_to(join);
+        let d = self.temp(Ty::Union(union));
         self.emit(Inst::Load { dst: d, src: out });
         d
     }
@@ -2209,17 +2311,42 @@ impl<'s, 't> FnLower<'s, 't> {
         self.sh.types.members(TTy::Union(u))
     }
 
-    fn variant(&self, u: wys_typeck::UnionId, m: TTy) -> u32 {
-        self.members(u)
+    /// Union と `Unknown`（ADR-0021 論点 3）の構成要素。`Unknown` は `wys_ir::UNKNOWN_KINDS` の順
+    fn sum_members(&self, t: TTy) -> Vec<TTy> {
+        match t {
+            TTy::Union(u) => self.members(u),
+            TTy::Unknown => {
+                let (l, d) = self.sh.unknown_containers;
+                vec![TTy::Int, TTy::Bool, TTy::Str, TTy::Float, TTy::None, l, d]
+            }
+            other => panic!("{other:?} is not a union"),
+        }
+    }
+
+    fn variant(&self, t: TTy, m: TTy) -> u32 {
+        self.sum_members(t)
             .iter()
             .position(|x| *x == m)
-            .unwrap_or_else(|| panic!("{m:?} is not a member of union {u:?}")) as u32
+            .unwrap_or_else(|| panic!("{m:?} is not a member of {t:?}")) as u32
+    }
+
+    /// Union か `Unknown` の値を作る。
+    fn make_sum(&mut self, t: TTy, m: TTy, payload: Option<TempId>) -> TempId {
+        match t {
+            TTy::Union(u) => self.make_union(u, m, payload),
+            _ => {
+                let kind = self.variant(t, m);
+                let dst = self.temp(Ty::Unknown);
+                self.emit(Inst::MakeUnknown { dst, kind, payload });
+                dst
+            }
+        }
     }
 
     fn make_union(&mut self, u: wys_typeck::UnionId, m: TTy, payload: Option<TempId>) -> TempId {
         let dst_iu = self.sh.ir_union(u);
         let dst = self.temp(Ty::Union(dst_iu));
-        let variant = self.variant(u, m);
+        let variant = self.variant(TTy::Union(u), m);
         self.emit(Inst::MakeUnion {
             dst,
             union: dst_iu,
@@ -2229,7 +2356,7 @@ impl<'s, 't> FnLower<'s, 't> {
         dst
     }
 
-    fn payload(&mut self, v: TempId, u: wys_typeck::UnionId, m: TTy) -> Option<TempId> {
+    fn payload(&mut self, v: TempId, u: TTy, m: TTy) -> Option<TempId> {
         let ty = self.sh.ir_ty(m)?;
         let dst = self.temp(ty);
         let variant = self.variant(u, m);
@@ -2244,20 +2371,24 @@ impl<'s, 't> FnLower<'s, 't> {
     /// 値 `v`（型 `from`）を型 `to` の値に変換する。型検査で `from` の値が `to` に収まることは保証済み
     /// （絞り込みの結果、`to` が `from` より狭い場合を含む）。
     fn coerce(&mut self, v: Option<TempId>, from: TTy, to: TTy) -> Option<TempId> {
-        let (from, to) = (self.sh.norm(from), self.sh.norm(to));
         if from == to {
             return v;
         }
+        let is_sum = |t: TTy| matches!(t, TTy::Union(_) | TTy::Unknown);
         match (from, to) {
-            (TTy::Union(fu), TTy::Union(tu)) => {
-                let v = v.expect("union values exist");
-                Some(self.union_to_union(v, fu, tu))
+            // 値の型そのものが変換先の構成要素（`Unknown` を `Result[Unknown, E]` などに入れる）
+            (_, TTy::Union(tu)) if self.members(tu).contains(&from) => {
+                Some(self.make_union(tu, from, v))
             }
-            (TTy::Union(fu), base) => self.payload(v.expect("union values exist"), fu, base),
-            (base, TTy::Union(tu)) => {
-                let tm = self.target_member(tu, base);
+            (f, t) if is_sum(f) && is_sum(t) => {
+                let v = v.expect("union values exist");
+                Some(self.sum_to_sum(v, f, t))
+            }
+            (f, base) if is_sum(f) => self.payload(v.expect("union values exist"), f, base),
+            (base, t) if is_sum(t) => {
+                let tm = self.target_member(t, base);
                 let p = self.coerce(v, base, tm);
-                Some(self.make_union(tu, tm, p))
+                Some(self.make_sum(t, tm, p))
             }
             (TTy::Record(a), TTy::Record(b)) => {
                 Some(self.record_to_record(v.expect("records have values"), a, b))
@@ -2268,8 +2399,8 @@ impl<'s, 't> FnLower<'s, 't> {
 
     /// Union `tu` の中で、値の型 `m` を受け取る構成要素。同じ型がなければ、`m` を幅部分型として受け取るレコード
     /// （型検査により、1つの Union に入るレコード型は1つまで）。
-    fn target_member(&self, tu: wys_typeck::UnionId, m: TTy) -> TTy {
-        let members = self.members(tu);
+    fn target_member(&self, tu: TTy, m: TTy) -> TTy {
+        let members = self.sum_members(tu);
         if members.contains(&m) {
             return m;
         }
@@ -2323,6 +2454,7 @@ impl<'s, 't> FnLower<'s, 't> {
                     | "arg_count"
                     | "arg"
                     | "parse_scalar"
+                    | "parse_json"
                     | "assert"
                     | "Ok"
                     | "Err"
@@ -2369,32 +2501,32 @@ impl<'s, 't> FnLower<'s, 't> {
     }
 
     /// Union から Union へ: タグで分岐し、共通の構成要素ごとに詰め直す。
-    fn union_to_union(
-        &mut self,
-        v: TempId,
-        fu: wys_typeck::UnionId,
-        tu: wys_typeck::UnionId,
-    ) -> TempId {
-        // 変換元の各構成要素が、変換先のどの構成要素に入るか（同じ型か、レコードの幅部分型）。
+    /// Union / `Unknown` から Union / `Unknown` へ: タグで分岐し、共通の構成要素ごとに詰め直す（ADR-0021 論点 3）。
+    fn sum_to_sum(&mut self, v: TempId, fu: TTy, tu: TTy) -> TempId {
+        // 変換元の各構成要素が、変換先のどの構成要素に入るか（同じ型か、レコードの幅部分型）。変換先そのもの
+        // （`Unknown | R` の `Unknown` を `Unknown` に）なら、中身をそのまま使う（`None` で表す）。
         // 変換先に入らない構成要素は、型検査（絞り込み）によりこの地点には来ない。
-        let target = self.members(tu);
-        let pairs: Vec<(TTy, TTy)> = self
-            .members(fu)
+        let target = self.sum_members(tu);
+        let pairs: Vec<(TTy, Option<TTy>)> = self
+            .sum_members(fu)
             .into_iter()
             .filter_map(|m| {
+                if m == tu {
+                    return Some((m, None));
+                }
                 target
                     .iter()
                     .find(|t| **t == m)
                     .or_else(|| target.iter().find(|t| self.sh.types.member_fits(m, **t)))
-                    .map(|t| (m, *t))
+                    .map(|t| (m, Some(*t)))
             })
             .collect();
         let common: Vec<TTy> = pairs.iter().map(|(m, _)| *m).collect();
-        let src_iu = self.sh.ir_union(fu);
-        let src = self.hidden_local(Ty::Union(src_iu));
+        let src_ty = self.sh.ir_ty(fu).expect("unions have values");
+        let src = self.hidden_local(src_ty);
         self.emit(Inst::Store { dst: src, src: v });
-        let out_iu = self.sh.ir_union(tu);
-        let out = self.hidden_local(Ty::Union(out_iu));
+        let out_ty = self.sh.ir_ty(tu).expect("unions have values");
+        let out = self.hidden_local(out_ty);
         self.for_each_variant(src, fu, &common, |l, val, m| {
             let tm = pairs
                 .iter()
@@ -2402,12 +2534,16 @@ impl<'s, 't> FnLower<'s, 't> {
                 .map(|(_, t)| *t)
                 .expect("paired above");
             let p = l.payload(val, fu, m);
-            let p = l.coerce(p, m, tm);
-            let u = l.make_union(tu, tm, p);
+            let u = match tm {
+                None => p.expect("the target type has values"),
+                Some(tm) => {
+                    let p = l.coerce(p, m, tm);
+                    l.make_sum(tu, tm, p)
+                }
+            };
             l.emit(Inst::Store { dst: out, src: u });
         });
-        let dst_iu = self.sh.ir_union(tu);
-        let dst = self.temp(Ty::Union(dst_iu));
+        let dst = self.temp(out_ty);
         self.emit(Inst::Load { dst, src: out });
         dst
     }
@@ -2417,7 +2553,7 @@ impl<'s, 't> FnLower<'s, 't> {
     fn for_each_variant(
         &mut self,
         src: LocalId,
-        u: wys_typeck::UnionId,
+        u: TTy,
         variants: &[TTy],
         mut f: impl FnMut(&mut Self, TempId, TTy),
     ) {
@@ -2476,9 +2612,9 @@ impl<'s, 't> FnLower<'s, 't> {
                 let src = self.hidden_local(Ty::Union(src_iu));
                 self.emit(Inst::Store { dst: src, src: v });
                 let members = self.members(u);
-                self.for_each_variant(src, u, &members, |l, val, m| {
+                self.for_each_variant(src, TTy::Union(u), &members, |l, val, m| {
                     let p = l
-                        .payload(val, u, m)
+                        .payload(val, TTy::Union(u), m)
                         .expect("printable members have payloads");
                     l.emit(Inst::Call {
                         dst: None,

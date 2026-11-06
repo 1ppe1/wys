@@ -134,6 +134,7 @@ fn program() -> Program {
         lists: vec![Ty::Py],
         dicts: vec![],
         tasks: vec![],
+        unknown: None,
         display: DisplayInfo::default(),
         entry: FuncId(0),
         funcs: vec![Function {
@@ -201,6 +202,7 @@ fn programs_without_python_do_not_need_python() {
         lists: vec![],
         dicts: vec![],
         tasks: vec![],
+        unknown: None,
         display: DisplayInfo::default(),
         entry: FuncId(0),
         funcs: vec![Function {

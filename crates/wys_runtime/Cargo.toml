@@ -12,3 +12,8 @@ workspace = true
 
 [lib]
 crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# parse_json（ADR-0021 論点 5）。純 Rust なので、生成した実行ファイルの依存は変わらない
+serde = "1"
+serde_json = { version = "1", features = ["unbounded_depth"] }

@@ -1,0 +1,13 @@
+# dict[str, Unknown] の d[k] は、キーがなければ実行時エラー（ADR-0021 論点 7。in を先に書く）
+# expect-exit: 101
+# expect-stderr-contains: key not found
+def main() -> None:
+    match parse_json("{\"a\": 1}"):
+        case Ok(v):
+            match v:
+                case dict():
+                    _w = v["zz"]
+                case _:
+                    pass
+        case Err(_e):
+            pass

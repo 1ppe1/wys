@@ -1,0 +1,16 @@
+# Generic な関数を T = Unknown で具体化して、読み取り専用の list を書き換える（ADR-0021 論点 4）
+# expect-error: E1503 4:5
+def push[T](xs: list[T], x: T) -> None:
+    xs.append(x)
+
+def main() -> None:
+    match parse_json("[[]]"):
+        case Ok(o):
+            orig = o
+            match o:
+                case list():
+                    push(o, orig)
+                case _:
+                    pass
+        case Err(_e):
+            pass

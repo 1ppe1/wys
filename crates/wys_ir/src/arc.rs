@@ -40,7 +40,8 @@ impl DropInfo {
     fn needs_drop(&mut self, p: &Program, t: Ty) -> bool {
         match t {
             Ty::Int | Ty::Bool | Ty::Float => false,
-            Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py | Ty::Task(_) => true,
+            // `Unknown` は参照型の種類を持つので常に真（再帰する型なので辿らない、ADR-0021 論点 3）
+            Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py | Ty::Task(_) | Ty::Unknown => true,
             Ty::Union(u) => {
                 if let Some(v) = self.unions[u.0 as usize] {
                     return v;
@@ -70,7 +71,8 @@ impl DropInfo {
     pub fn get(&self, t: Ty) -> bool {
         match t {
             Ty::Int | Ty::Bool | Ty::Float => false,
-            Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py | Ty::Task(_) => true,
+            // `Unknown` は参照型の種類を持つので常に真（再帰する型なので辿らない、ADR-0021 論点 3）
+            Ty::Str | Ty::List(_) | Ty::Dict(_) | Ty::Py | Ty::Task(_) | Ty::Unknown => true,
             Ty::Union(u) => self.unions[u.0 as usize].unwrap_or(false),
             Ty::Record(r) => self.records[r.0 as usize].unwrap_or(false),
         }
@@ -250,7 +252,7 @@ fn insert_function(f: &mut Function, drops: &DropInfo, _rets: &[Option<Ty>]) {
                     }
                     out.push(inst);
                 }
-                Inst::MakeUnion { dst, payload, .. } => {
+                Inst::MakeUnion { dst, payload, .. } | Inst::MakeUnknown { dst, payload, .. } => {
                     if let Some(p) = payload {
                         consume(*p, ConsumeSite::MakeUnion, &mut out, &mut own, &temps);
                     }
@@ -590,6 +592,7 @@ fn consumes(inst: &Inst) -> bool {
         inst,
         Inst::Store { .. }
             | Inst::MakeUnion { .. }
+            | Inst::MakeUnknown { .. }
             | Inst::MakeRecord { .. }
             | Inst::ListNew { .. }
             | Inst::ListSet { .. }
@@ -861,7 +864,8 @@ pub fn verify(p: &Program) -> Result<(), String> {
                     {
                         add(*d, 1, &mut bal)
                     }
-                    Inst::MakeUnion { dst, payload, .. } => {
+                    Inst::MakeUnion { dst, payload, .. }
+                    | Inst::MakeUnknown { dst, payload, .. } => {
                         if let Some(pl) = payload {
                             add(*pl, -1, &mut bal);
                         }
@@ -946,6 +950,7 @@ mod tests {
             lists: vec![],
             dicts: vec![],
             tasks: vec![],
+            unknown: None,
             display: Default::default(),
             entry: FuncId(0),
             funcs: vec![Function {
