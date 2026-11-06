@@ -44,8 +44,24 @@ fn scratch(name: &str, src: &str) -> PathBuf {
     path
 }
 
+/// `wys` のコマンド。開発者のシェルの AI Runtime の設定（ADR-0023）は外す（テストの結果を変えないように）
+fn wys() -> Command {
+    let mut cmd = Command::new(CLI);
+    for (k, _) in std::env::vars() {
+        if k.starts_with("WYS_LLM_")
+            || matches!(
+                k.as_str(),
+                "WYS_CAPABILITIES" | "WYS_APPROVAL" | "WYS_AUDIT"
+            )
+        {
+            cmd.env_remove(k);
+        }
+    }
+    cmd
+}
+
 fn cli(args: &[&str]) -> Output {
-    Command::new(CLI)
+    wys()
         .args(args)
         .env("WYS_RUNTIME_LIB", runtime_lib())
         .env("WYS_RUNTIME_PYTHON_LIB", python_runtime_lib())
@@ -58,7 +74,7 @@ fn python_runtime_lib() -> PathBuf {
 }
 
 fn cli_env(args: &[&str], envs: &[(&str, &str)]) -> Output {
-    Command::new(CLI)
+    wys()
         .args(args)
         .env("WYS_RUNTIME_LIB", runtime_lib())
         .env("WYS_RUNTIME_PYTHON_LIB", python_runtime_lib())

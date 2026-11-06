@@ -1531,7 +1531,8 @@ fn verify_function(p: &Program, f: &Function) -> Result<(), String> {
                         Callee::Builtin(b) => {
                             if matches!(b, Builtin::SleepMs | Builtin::LlmGenerate) && !f.is_async {
                                 return Err(format!(
-                                    "bb{bi}: sleep_ms outside of an async function"
+                                    "bb{bi}: {} outside of an async function",
+                                    b.name()
                                 ));
                             }
                             (b.signature().to_vec(), b.ret())

@@ -1189,6 +1189,16 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
                 ),
                 f.name.span,
             ));
+        } else if BUILTIN_RECORDS.contains(&f.name.name.as_str()) {
+            // `Message(...)` は組み込みのレコードの構築になるので、同じ名前の関数は呼べない
+            cx.diags.push(Diagnostic::error(
+                "E0209",
+                format!(
+                    "`{}` is a built-in type and cannot be redefined as a function",
+                    f.name.name
+                ),
+                f.name.span,
+            ));
         } else if let Some(&prev) = cx.sig_index.get(&f.name.name) {
             let prev_span = cx.sigs[prev].span;
             cx.diags.push(
