@@ -1264,11 +1264,34 @@ fn check_decorators(cx: &mut Ctx, module: &Module) {
             );
             continue;
         }
+        if is_tool && !f.type_params.is_empty() {
+            // ツールは型引数を決める呼び出しなしで LLM から呼ばれるので、Generic にできない
+            sig_error(
+                cx,
+                format!("tool `{}` cannot be generic", f.name.name),
+                "remove the type parameters; tools are called by the model, so their argument types must be concrete",
+            );
+            continue;
+        }
         let d = f
             .decorators
             .iter()
             .find(|d| d.name.name == if is_tool { "tool" } else { "agent" })
             .expect("seen above");
+        // 同じキーワード引数を 2 回書けない（後の値が承認や予算を黙って上書きしないように）
+        let mut keys: Vec<&str> = Vec::new();
+        for a in &d.args {
+            if let Some(k) = &a.key {
+                if keys.contains(&k.name.as_str()) {
+                    bad_arg(
+                        cx,
+                        format!("argument `{}` is given more than once", k.name),
+                        k.span,
+                    );
+                }
+                keys.push(&k.name);
+            }
+        }
         if is_tool {
             let mut attr = ToolAttr {
                 description: String::new(),
