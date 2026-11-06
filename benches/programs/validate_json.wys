@@ -1,4 +1,4 @@
-# JSON の入力と検証（M5 T6、ADR-0021 / ADR-0022）: 約 1 MB の JSON を parse_json して validate[list[Row]] する。絶対値だけを記録する
+# JSON の入力と検証（M5 T6、ADR-0021 / ADR-0022）: 約 1 MB の JSON を 100 回 parse_json して validate[list[Row]] する（文字列の組み立ての時間が小さくなるように回数を多くする）。絶対値だけを記録する
 type Row = {id: int, name: str, score: float, active: bool, tag: str | None}
 
 def build(n: int) -> str:
@@ -12,7 +12,7 @@ def build(n: int) -> str:
 def main() -> None:
     text = build(12316)
     total = 0
-    for _ in range(10):
+    for _ in range(100):
         match parse_json(text):
             case Ok(u):
                 match validate[list[Row]](u):

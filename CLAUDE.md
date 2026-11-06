@@ -45,7 +45,7 @@ WYS_VIRTUAL_TIME=1 target/debug/wys run examples/async_hello.wys  # sleep_ms を
 WYS_AUDIT=stderr target/debug/wys run tests/conformance/ai/llm_text.wys   # 監査イベントを JSON 行で出す（ADR-0023）。WYS_CAPABILITIES=io,llm で Capability を縮める
 target/debug/wys run examples/agent_demo.wys                  # @tool / @agent と llm_generate[T]（既定のプロバイダはモック。CI はネットワークに出ない）
 WYS_APPROVAL=allow target/debug/wys run examples/agent_demo.wys   # 承認の方針: deny（既定）/ allow / prompt（stdin から 1 行読む）
-WYS_LLM_PROVIDER=anthropic target/debug/wys run examples/agent_demo.wys  # 実プロバイダ（wys llm-proxy。ANTHROPIC_API_KEY は各自の環境で。費用がかかる）。cmd:<path> で任意のコマンド
+scripts/llm-smoke.sh   # 実プロバイダ（WYS_LLM_PROVIDER=anthropic、wys llm-proxy）と 1 往復。ANTHROPIC_API_KEY は各自の環境で。費用がかかる。cmd:<path> で任意のコマンドも使える
 target/debug/wys explain examples/fib.wys   # 型・絞り込み・ARC 操作の理由を JSON で（ADR-0017）
 target/debug/wys explain E0201              # エラーコードの説明
 benches/measure.sh                                          # ベンチ計測（倍率は書かない）

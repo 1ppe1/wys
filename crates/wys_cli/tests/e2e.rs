@@ -1649,7 +1649,9 @@ fn agent_demo_runs_with_the_mock_provider() {
         )
     );
     // LLM とツールを使うプログラムも、HTTPS は proxy の側にあるので OS 標準のライブラリだけに依存する（ADR-0023 論点 1）
-    let exe = scratch("agent_demo", "").with_extension("bin");
+    let dir = std::env::temp_dir().join(format!("wys-e2e-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("agent_demo.bin");
     let out = cli(&["build", demo, "-o", exe.to_str().unwrap()]);
     assert!(
         out.status.success(),

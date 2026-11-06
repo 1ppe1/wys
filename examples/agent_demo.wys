@@ -1,6 +1,6 @@
 # AI SDK の核（M5、ADR-0022 / ADR-0023）: 型付きの出力、ツールの実行、承認、予算、監査
 # 既定のプロバイダはランタイム内のモックで、llm_mock_push で積んだ応答を順に返す。
-# WYS_LLM_PROVIDER=anthropic にすると wys llm-proxy を通して実際の API を呼ぶ（モックの応答は使われない）
+# llm_mock_push を使うので、WYS_LLM_PROVIDER を設定すると実行時エラーになる（101）。実 API との往復は scripts/llm-smoke.sh
 type Summary = {title: str, chars: int, saved: bool}
 
 @tool(description="Count the characters in a text.")

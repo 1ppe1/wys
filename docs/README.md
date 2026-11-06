@@ -33,7 +33,7 @@
 | 2 | メモリ/Effect ADR | `docs/adr/` | MEM-001〜006, AI-009 | 型/所有権PoC | メモリは ADR-0005・ADR-0012、Effect は ADR-0014（Phase 1 は注釈）で Accepted |
 | 3 | コンパイラ設計（AST/IR、診断JSONスキーマ、バックエンド境界） | `docs/design/compiler.md` | COMP-001〜008, DX-002 | コンパイラPoC | 未着手 |
 | 4 | AI SDK/API仕様（型付き入出力、Capability、承認、監査イベント） | [`docs/design/ai-sdk.md`](design/ai-sdk.md) | AI-001〜010 | 未決定事項 9, 10 のADR | 確定（M5。ADR-0022 / ADR-0023。AI-007〜010 は M6 以降） |
-| 5 | MVPテスト計画（Conformance、セキュリティ、ベンチマーク） | [`docs/test-plan.md`](test-plan.md) | AC-001〜010, NFR-002 | 1〜4 | v0.1（M1 の受け入れ確認まで） |
+| 5 | MVPテスト計画（Conformance、セキュリティ、ベンチマーク） | [`docs/test-plan.md`](test-plan.md) | AC-001〜010, NFR-002 | 1〜4 | M5 の受け入れ確認まで（AC-001〜008、AC-010） |
 
 ## 推奨する作成順
 
