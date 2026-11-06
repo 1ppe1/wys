@@ -15,7 +15,10 @@ budget: max_tool_calls exceeded
 schema: title: expected str, found int
 timeout: timeout_ms exceeded
 budget: max_tokens exceeded
-runs: add=2 greet=0 forbidden=0 run_py=0
+plan
+3
+budget: max_llm_calls exceeded
+runs: add=1 greet=0 forbidden=0 run_py=0
 llm_called:
 tool_called:add
 llm_called:
@@ -30,7 +33,8 @@ llm_called:
 budget_exceeded:add
 llm_called:
 llm_called:
-tool_called:add
+budget_exceeded:
+llm_called:
 budget_exceeded:
 llm_called:
 budget_exceeded:

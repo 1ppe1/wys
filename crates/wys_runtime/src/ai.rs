@@ -298,6 +298,23 @@ fn audit(s: &mut State, kind: &'static str, tool: &str, detail: String) {
     s.audit.push(ev);
 }
 
+/// 予算を超えた agent（入れ子なら外側も含めて見る。外側の残りを超えて使えない）があれば、その理由。
+fn over_budget(s: &State, tools_next: bool) -> Option<(&'static str, &'static str)> {
+    s.agents.iter().rev().find_map(|a| {
+        if a.timeout_ms > 0 && a.elapsed_ms() >= a.timeout_ms {
+            Some(("timeout", "timeout_ms"))
+        } else if a.max_tokens > 0 && a.tokens > a.max_tokens {
+            Some(("budget", "max_tokens"))
+        } else if !tools_next && a.max_llm_calls > 0 && a.llm_calls >= a.max_llm_calls {
+            Some(("budget", "max_llm_calls"))
+        } else if tools_next && a.max_tool_calls > 0 && a.tool_calls >= a.max_tool_calls {
+            Some(("budget", "max_tool_calls"))
+        } else {
+            None
+        }
+    })
+}
+
 fn fail(s: &mut State, kind: &'static str, message: String) -> *mut Header {
     s.failure = Some((kind, message));
     std::ptr::null_mut()
@@ -413,15 +430,10 @@ pub unsafe extern "C" fn wys_llm_generate(
         }
         let mut messages = vec![serde_json::json!({"role": "user", "content": prompt})];
         loop {
-            // 予算: 呼び出しの前に回数と時間を見る
-            let a = s.agents.last().expect("checked above");
-            if a.max_llm_calls > 0 && a.llm_calls >= a.max_llm_calls {
-                audit(&mut s, "budget_exceeded", "", "max_llm_calls".into());
-                return fail(&mut s, "budget", "max_llm_calls exceeded".into());
-            }
-            if a.timeout_ms > 0 && a.elapsed_ms() >= a.timeout_ms {
-                audit(&mut s, "budget_exceeded", "", "timeout_ms".into());
-                return fail(&mut s, "timeout", "timeout_ms exceeded".into());
+            // 予算: 呼び出しの前に回数と時間を見る（外側の agent も）
+            if let Some((kind, what)) = over_budget(&s, false) {
+                audit(&mut s, "budget_exceeded", "", what.into());
+                return fail(&mut s, kind, format!("{what} exceeded"));
             }
             // `cmd:<path>` は利用者のコマンド、`anthropic` は `wys llm-proxy`（`WYS_LLM_PROXY` か PATH の `wys`）
             let external = provider().map(|p| match p.strip_prefix("cmd:") {
@@ -466,15 +478,19 @@ pub unsafe extern "C" fn wys_llm_generate(
                     None => return fail(&mut s, "mock_exhausted", "no mock response left".into()),
                 },
             };
-            let a = s.agents.last_mut().expect("checked above");
-            a.llm_calls += 1;
-            a.tokens += reply.tokens;
-            a.virtual_ms += reply.latency_ms;
-            let over_tokens = a.max_tokens > 0 && a.tokens > a.max_tokens;
+            // 使った分は外側の agent にも数える
+            for a in &mut s.agents {
+                a.llm_calls += 1;
+                a.tokens += reply.tokens;
+                a.virtual_ms += reply.latency_ms;
+            }
             audit(&mut s, "llm_called", "", format!("tokens={}", reply.tokens));
-            if over_tokens {
-                audit(&mut s, "budget_exceeded", "", "max_tokens".into());
-                return fail(&mut s, "budget", "max_tokens exceeded".into());
+            // 応答を受け取った時点でも、トークンと期限を見る（期限を過ぎた応答は受け取らず、ツールも呼ばない）
+            if let Some((kind, what)) = over_budget(&s, false)
+                .filter(|(_, w)| *w != "max_llm_calls")
+            {
+                audit(&mut s, "budget_exceeded", "", what.into());
+                return fail(&mut s, kind, format!("{what} exceeded"));
             }
             let Some((call_id, name, args)) = reply.tool else {
                 return embed::new_object(reply.text.as_bytes());
@@ -492,9 +508,9 @@ pub unsafe extern "C" fn wys_llm_generate(
                 audit(&mut s, "tool_denied", &name, format!("missing capabilities {missing:#x}"));
                 return fail(&mut s, "denied", format!("tool `{name}` needs capabilities the agent does not have"));
             }
-            if a.max_tool_calls > 0 && a.tool_calls >= a.max_tool_calls {
-                audit(&mut s, "budget_exceeded", &name, "max_tool_calls".into());
-                return fail(&mut s, "budget", "max_tool_calls exceeded".into());
+            if let Some((kind, what)) = over_budget(&s, true) {
+                audit(&mut s, "budget_exceeded", &name, what.into());
+                return fail(&mut s, kind, format!("{what} exceeded"));
             }
             if s.tools[ti].approval && std::env::var("WYS_APPROVAL").as_deref() != Ok("allow") {
                 audit(&mut s, "approval_denied", &name, "WYS_APPROVAL is not allow".into());
@@ -502,7 +518,9 @@ pub unsafe extern "C" fn wys_llm_generate(
                 messages.push(serde_json::json!({"role": "tool", "id": call_id, "content": "denied by approver", "is_error": true}));
                 continue;
             }
-            s.agents.last_mut().expect("checked above").tool_calls += 1;
+            for a in &mut s.agents {
+                a.tool_calls += 1;
+            }
             audit(&mut s, "tool_called", &name, format!("args_len={}", args.len()));
             let entry = s.tools[ti].entry;
             // ツールは本言語のコードなので、借りを返してから呼ぶ（ツールの中から llm_generate を呼べる）

@@ -260,7 +260,7 @@ int main(int argc, char **argv) {
     // 7. タイムアウト（モックの遅延で進める）と、トークンの上限
     AgentCfg slow = {"slow", AGENT_TOOLS, 3, CAP_IO | CAP_LLM, 0, 0, 0, 100};
     wys_agent_enter(&slow);
-    // 1 回目の応答（ツールの要求）の遅延で期限を過ぎるので、2 回目の呼び出しの前に止まる（ツールは期限の前に動く）
+    // 1 回目の応答（ツールの要求）が期限を過ぎて届くので、受け取らずに止まる（ツールは呼ばない）
     wys_llm_mock_push(S(empty), S(t_add), S(a_add), 1, 1, 150);
     generate_plan();
     wys_agent_exit();
@@ -268,6 +268,16 @@ int main(int argc, char **argv) {
     wys_agent_enter(&tight);
     wys_llm_mock_push(S(out_ok), NULL, NULL, 15, 10, 0);
     generate_plan();
+    wys_agent_exit();
+    // 8. 入れ子の agent は、外側の残りの予算を超えて使えない（外側は LLM の呼び出し 1 回まで）
+    AgentCfg outer = {"outer", AGENT_TOOLS, 3, CAP_IO | CAP_LLM, 1, 0, 0, 0};
+    AgentCfg inner = {"inner", AGENT_TOOLS, 3, CAP_IO | CAP_LLM, 0, 0, 0, 0};
+    wys_agent_enter(&outer);
+    wys_agent_enter(&inner);
+    wys_llm_mock_push(S(out_ok), NULL, NULL, 1, 1, 0);
+    generate_plan();
+    generate_plan();
+    wys_agent_exit();
     wys_agent_exit();
     printf("runs: add=%d greet=%d forbidden=%d run_py=%d\n", add_runs, greet_runs, forbidden_runs, py_runs);
     fflush(stdout);
