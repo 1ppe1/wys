@@ -1,0 +1,5 @@
+# expect-error: E0101 4:15
+def main() -> None:
+    xs = [1]
+    xs.append[int](2)
+    print(len(xs))

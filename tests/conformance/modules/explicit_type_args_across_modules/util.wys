@@ -1,0 +1,4 @@
+pub type Pair[A, B] = {first: A, second: B}
+
+pub def size[T](xs: list[T]) -> int:
+    return len(xs)

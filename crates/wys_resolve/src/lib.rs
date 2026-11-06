@@ -670,6 +670,7 @@ impl Resolver<'_> {
             let ExprKind::MethodCall {
                 receiver,
                 method,
+                type_args,
                 args,
                 kwargs,
             } = std::mem::replace(&mut e.kind, ExprKind::None)
@@ -685,6 +686,7 @@ impl Resolver<'_> {
                     ),
                     span: Span::new(receiver.span.start, method.span.end),
                 },
+                type_args,
                 args,
                 kwargs,
             };
@@ -692,10 +694,22 @@ impl Resolver<'_> {
         match &mut e.kind {
             ExprKind::MethodCall {
                 receiver,
+                method,
+                type_args,
                 args,
                 kwargs,
-                ..
             } => {
+                // 組み込みのメソッドに Generic なものはない（ADR-0021 論点 9）
+                if let Some(t) = type_args.first() {
+                    self.diags.push(Diagnostic::error(
+                        "E0101",
+                        format!(
+                            "type arguments cannot be given to the method `{}`",
+                            method.name
+                        ),
+                        t.span,
+                    ));
+                }
                 self.expr(receiver);
                 for a in args {
                     self.expr(a);
@@ -706,11 +720,15 @@ impl Resolver<'_> {
             }
             ExprKind::Call {
                 callee,
+                type_args,
                 args,
                 kwargs,
             } => {
                 let span = callee.span;
                 self.name(&mut callee.name, span);
+                for t in type_args {
+                    self.type_expr(t);
+                }
                 for a in args {
                     self.expr(a);
                 }

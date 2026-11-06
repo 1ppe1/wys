@@ -1794,12 +1794,17 @@ impl<'a> FnCk<'a> {
                     kind:
                         ExprKind::Call {
                             callee,
+                            type_args,
                             args,
                             kwargs,
                         },
                     ..
                 },
-            ) if callee.name == "assert" && args.len() == 1 && kwargs.is_empty() => {
+            ) if callee.name == "assert"
+                && type_args.is_empty()
+                && args.len() == 1
+                && kwargs.is_empty() =>
+            {
                 self.check_effects(callee);
                 let (t, t_env, _) = self.cond(&args[0], env);
                 self.require_condition(t, args[0].span);
@@ -2435,9 +2440,10 @@ impl<'a> FnCk<'a> {
             }
             ExprKind::Call {
                 callee,
+                type_args,
                 args,
                 kwargs,
-            } if is_result_ctor(&callee.name) && kwargs.is_empty() => {
+            } if is_result_ctor(&callee.name) && kwargs.is_empty() && type_args.is_empty() => {
                 let t = self.result_ctor(callee, args, hint, e.span, env);
                 self.record(e, t)
             }
@@ -2778,11 +2784,13 @@ impl<'a> FnCk<'a> {
     fn for_iter(&mut self, iter: &Expr, env: &Env) -> Ty {
         if let ExprKind::Call {
             callee,
+            type_args,
             args,
             kwargs,
         } = &iter.kind
             && callee.name == "range"
             && kwargs.is_empty()
+            && type_args.is_empty()
         {
             if args.is_empty() || args.len() > 2 {
                 self.cx.diags.push(Diagnostic::error(
@@ -3285,6 +3293,7 @@ impl<'a> FnCk<'a> {
                 method,
                 args,
                 kwargs,
+                ..
             } => {
                 let span = Span::new(receiver.span.start, method.span.end);
                 if let Some(n) = receiver.as_name()
@@ -3337,18 +3346,21 @@ impl<'a> FnCk<'a> {
             }
             ExprKind::Call {
                 callee,
+                type_args,
                 args,
                 kwargs,
-            } if is_result_ctor(&callee.name) && kwargs.is_empty() => {
+            } if is_result_ctor(&callee.name) && kwargs.is_empty() && type_args.is_empty() => {
                 self.result_ctor(callee, args, None, e.span, env)
             }
             ExprKind::Call {
                 callee,
+                type_args,
                 args,
                 kwargs,
             } => {
+                let explicit = self.explicit_type_args(callee, type_args);
                 if self.cx.aliases.contains_key(&callee.name) {
-                    self.construct(callee, args, kwargs, e.span, env)
+                    self.construct(callee, explicit.as_deref(), args, kwargs, e.span, env)
                 } else if !kwargs.is_empty() {
                     self.check_effects(callee);
                     for a in args {
@@ -3371,7 +3383,7 @@ impl<'a> FnCk<'a> {
                         None => Ty::Error,
                     }
                 } else {
-                    self.call(callee, args, e.span, e.id, env)
+                    self.call(callee, explicit.as_deref(), args, e.span, e.id, env)
                 }
             }
             ExprKind::Field { base, name } => self.field(e, base, name, env),
@@ -3723,6 +3735,7 @@ impl<'a> FnCk<'a> {
     fn construct(
         &mut self,
         callee: &Ident,
+        explicit: Option<&[Ty]>,
         args: &[Expr],
         kwargs: &[(Ident, Expr)],
         span: Span,
@@ -3731,11 +3744,32 @@ impl<'a> FnCk<'a> {
         for a in args {
             self.expr(a, env);
         }
-        let kw_tys: Vec<Ty> = kwargs.iter().map(|(_, v)| self.expr(v, env)).collect();
+        // 型引数を明示した Generic なレコードなら、それを入れたフィールドの型を値の手掛かりにする
+        // （`Box[list[int]](value=[])`、`Box[Result[int, str]](value=Ok(1))`）
+        let hints: Vec<Option<Ty>> = match (explicit, self.cx.generics.get(&callee.name).cloned()) {
+            (Some(ts), Some((params, Ty::Record(r)))) => {
+                let map: Subst = params.iter().copied().zip(ts.iter().copied()).collect();
+                kwargs
+                    .iter()
+                    .map(|(k, _)| {
+                        let ft = self.cx.types.record_def(r).field(&k.name).map(|(_, t)| t);
+                        ft.map(|t| self.cx.types.subst(t, &map))
+                    })
+                    .collect()
+            }
+            _ => vec![None; kwargs.len()],
+        };
+        let kw_tys: Vec<Ty> = kwargs
+            .iter()
+            .zip(hints)
+            .map(|((_, v), h)| self.expr_hint(v, env, h))
+            .collect();
         let ty = match self.cx.generics.get(&callee.name).cloned() {
             Some((_, Ty::Error)) => Ty::Error,
             Some((params, body)) => {
-                let mut map = Subst::new();
+                let mut map: Subst = explicit
+                    .map(|ts| params.iter().copied().zip(ts.iter().copied()).collect())
+                    .unwrap_or_default();
                 if let Ty::Record(r) = body {
                     for ((k, _), &kt) in kwargs.iter().zip(&kw_tys) {
                         if let Some((_, ft)) = self.cx.types.record_def(r).field(&k.name) {
@@ -4006,6 +4040,58 @@ impl<'a> FnCk<'a> {
         }
     }
 
+    /// 呼び出しに明示した型引数（`f[T](x)`、ADR-0021 論点 9）を解決する。書いていなければ `None`。
+    /// Generic でない関数・組み込み・レコードに書いたら E1502、個数が違えば E0402（どちらも `None` を返し、推論に任せる）。
+    fn explicit_type_args(&mut self, callee: &Ident, type_args: &[TypeExpr]) -> Option<Vec<Ty>> {
+        let first = type_args.first()?;
+        let tys: Vec<Ty> = type_args.iter().map(|t| self.cx.resolve(t)).collect();
+        let span = Span::new(
+            first.span.start,
+            type_args.last().expect("non-empty").span.end,
+        );
+        let expected = if let Some((params, _)) = self.cx.generics.get(&callee.name) {
+            Some(params.len())
+        } else if self.cx.aliases.contains_key(&callee.name) {
+            None
+        } else {
+            self.cx
+                .sig_index
+                .get(&callee.name)
+                .map(|&i| self.cx.sigs[i].type_params.len())
+                .filter(|&n| n > 0)
+        };
+        let Some(n) = expected else {
+            self.cx.diags.push(
+                Diagnostic::error(
+                    "E1502",
+                    format!(
+                        "`{}` is not generic, so it takes no type arguments",
+                        callee.name
+                    ),
+                    span,
+                )
+                .with_hint(format!("remove the type arguments: `{}(...)`", callee.name)),
+            );
+            return None;
+        };
+        if n != tys.len() {
+            self.cx.diags.push(Diagnostic::error(
+                "E0402",
+                format!(
+                    "`{}` takes {n} type argument(s) but {} were given",
+                    callee.name,
+                    tys.len()
+                ),
+                span,
+            ));
+            return None;
+        }
+        if tys.contains(&Ty::Error) {
+            return None;
+        }
+        Some(tys)
+    }
+
     /// 推論できなかった型パラメータを報告し、`Error` で埋める。
     fn require_inferred(&mut self, params: &[ParamId], map: &mut Subst, what: &str, span: Span) {
         let missing: Vec<String> = params
@@ -4023,7 +4109,9 @@ impl<'a> FnCk<'a> {
                     ),
                     span,
                 )
-                .with_hint("pass an argument whose type determines it (a bare `None` does not)"),
+                .with_hint(
+                    "pass an argument whose type determines it (a bare `None` does not), or write the type arguments, e.g. `f[int](...)`",
+                ),
             );
             for p in params {
                 map.entry(*p).or_insert(Ty::Error);
@@ -4267,7 +4355,15 @@ impl<'a> FnCk<'a> {
         Ty::Error
     }
 
-    fn call(&mut self, callee: &Ident, args: &[Expr], span: Span, id: ExprId, env: &Env) -> Ty {
+    fn call(
+        &mut self,
+        callee: &Ident,
+        explicit: Option<&[Ty]>,
+        args: &[Expr],
+        span: Span,
+        id: ExprId,
+        env: &Env,
+    ) -> Ty {
         // `await` の直下・`spawn` の引数であることは、この呼び出しだけに効く（引数の呼び出しには引き継がない）
         let allowed = std::mem::take(&mut self.allow_async_call);
         if callee.name == "spawn" {
@@ -4301,6 +4397,21 @@ impl<'a> FnCk<'a> {
                     && self.cx.sigs[i].params.len() == args.len() =>
             {
                 self.cx.sigs[i].params.iter().map(|t| Some(*t)).collect()
+            }
+            // 型引数を明示した Generic 関数なら、それを入れた仮引数の型（`f[int]([])`）
+            Some(&i) if explicit.is_some() && self.cx.sigs[i].params.len() == args.len() => {
+                let sig = &self.cx.sigs[i];
+                let map: Subst = sig
+                    .type_params
+                    .iter()
+                    .copied()
+                    .zip(explicit.unwrap_or_default().iter().copied())
+                    .collect();
+                let params = sig.params.clone();
+                params
+                    .iter()
+                    .map(|t| Some(self.cx.types.subst(*t, &map)))
+                    .collect()
             }
             _ => vec![None; args.len()],
         };
@@ -4489,7 +4600,16 @@ impl<'a> FnCk<'a> {
         let (params, ret) = if sig.type_params.is_empty() {
             (sig.params.clone(), sig.ret)
         } else {
-            let mut map = Subst::new();
+            // 明示した型引数は推論より優先する（ADR-0021 論点 9）。合わない引数は下の `require` が E0201 にする
+            let mut map: Subst = explicit
+                .map(|ts| {
+                    sig.type_params
+                        .iter()
+                        .copied()
+                        .zip(ts.iter().copied())
+                        .collect()
+                })
+                .unwrap_or_default();
             for (&pt, &at) in sig.params.iter().zip(&arg_tys) {
                 self.unify(pt, at, &sig.type_params, &mut map);
             }

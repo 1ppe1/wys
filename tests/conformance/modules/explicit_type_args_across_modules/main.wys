@@ -1,0 +1,9 @@
+# 修飾した名前の呼び出しにも型引数を書ける（`m.f[T](x)`、`m.Pair[A, B](...)`）
+# expect-stdout: 0
+# expect-stdout: 1
+import util
+
+def main() -> None:
+    print(util.size[int]([]))
+    p = util.Pair[int, str](first=1, second="x")
+    print(p.first)

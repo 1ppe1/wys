@@ -1,0 +1,31 @@
+# 呼び出しに明示した型引数（ADR-0021 論点 9）: 関数、レコードの構築子、推論できない型パラメータ、
+# 空のリストへの手掛かり、Generic な関数の中での型パラメータ
+# expect-stdout: 0
+# expect-stdout: None
+# expect-stdout: 2
+# expect-stdout: a
+# expect-stdout: 1
+type Box[T] = {value: T | None}
+
+def count[T](xs: list[T]) -> int:
+    return len(xs)
+
+def empty[T]() -> Box[T]:
+    return Box[T](value=None)
+
+def wrap[T](x: T) -> Box[T]:
+    return Box[T](value=x)
+
+def main() -> None:
+    print(count[int]([]))
+    b = empty[str]()
+    if b.value is None:
+        print("None")
+    print(count[str | None](["x", None]))
+    w = wrap[str]("a")
+    match w.value:
+        case str():
+            print(w.value)
+        case None:
+            pass
+    print(count[Box[int]]([Box[int](value=None)]))
