@@ -1,7 +1,8 @@
-# validate[T] の引数は Unknown に置ける値ならよい（match で絞り込んだ Unknown、int | None、リテラル）
+# validate[T] の引数は Unknown に置ける値ならよい（match で絞り込んだ Unknown、int | None、リテラル、None）
 # expect-stdout: 3
 # expect-stdout: 4
 # expect-stdout: 5
+# expect-stdout: |int|null
 def main() -> None:
     u = parse_scalar("3")
     match u:
@@ -24,3 +25,8 @@ def main() -> None:
             print(n)
         case Err(e):
             print(e.path)
+    match validate[int](None):
+        case Ok(n):
+            print(n)
+        case Err(e):
+            print(e.path + "|" + e.expected + "|" + e.found)
