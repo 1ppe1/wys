@@ -22,7 +22,7 @@ usage:
   wys dump-llvm <file>                    print the generated LLVM IR
   wys explain <file | CODE>               explain a program (types, narrowing, ARC operations) or
                                           an error code such as E0201, as JSON
-  wys llm-proxy                           (experimental) serve LLM requests as JSON lines on stdin/stdout
+  wys llm-proxy                           serve LLM requests as JSON lines on stdin/stdout
                                           using the Anthropic API (ANTHROPIC_API_KEY)
 ";
 

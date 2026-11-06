@@ -53,10 +53,15 @@ pub struct AgentCfg {
     pub max_tool_calls: i64,
     pub max_tokens: i64,
     pub timeout_ms: i64,
+    /// `@agent(model=)`（空なら指定なし）
+    pub model: *const c_char,
 }
 
 struct Tool {
     name: String,
+    description: String,
+    /// 引数のレコードの JSON Schema（プロバイダに渡す）
+    schema: serde_json::Value,
     effects: u64,
     approval: bool,
     entry: extern "C" fn(*const Header) -> *mut Header,
@@ -78,6 +83,8 @@ struct Ctx {
     started_virtual_ms: i64,
     /// モックの応答の遅延の合計（どちらのモードでも待たずに時計を進める。スケジューラの時計は動かさない）
     virtual_ms: i64,
+    /// `@agent(model=)`（空なら指定なし。要求の `model` が空のときに使う）
+    model: String,
     /// このコンテキストを持つスタックの数（`spawn` で引き継ぐと増える）。0 になったら表の場所を再利用する
     refs: usize,
 }
@@ -98,6 +105,7 @@ impl Ctx {
             started: Instant::now(),
             started_virtual_ms: crate::task::virtual_now_ms(),
             virtual_ms: 0,
+            model: String::new(),
             refs: 1,
         }
     }
@@ -120,6 +128,22 @@ struct Reply {
     tool_calls: Vec<(String, String, String)>,
     tokens: i64,
     latency_ms: i64,
+    /// 終わった理由（`max_tokens` なら切れている）。モックは空
+    stop: String,
+    /// 次の要求の `assistant` の `content` にそのまま戻す値（不透明。ADR-0023 論点 2）
+    assistant: serde_json::Value,
+}
+
+/// 外部のプロバイダ（`WYS_LLM_PROVIDER`、ADR-0023 論点 1・4）。最初の `llm_generate` で起動し、プロセスに 1 つ。
+enum Provider {
+    Idle,
+    Running {
+        child: std::process::Child,
+        stdin: std::process::ChildStdin,
+        stdout: std::io::BufReader<std::process::ChildStdout>,
+    },
+    /// 起動できなかった・終わった。以後の呼び出しも同じ理由で失敗する
+    Broken(String),
 }
 
 struct AuditEvent {
@@ -139,6 +163,9 @@ struct State {
     mock: VecDeque<Reply>,
     audit: Vec<AuditEvent>,
     failure: Option<(&'static str, String)>,
+    provider: Provider,
+    /// ビルドしたコンパイラの絶対パス（生成コードが `wys_llm_set_compiler` で渡す。`wys llm-proxy` の探索に使う）
+    compiler: Option<String>,
 }
 
 impl State {
@@ -153,6 +180,8 @@ impl State {
             mock: VecDeque::new(),
             audit: Vec::new(),
             failure: None,
+            provider: Provider::Idle,
+            compiler: None,
         }
     }
 
@@ -372,13 +401,34 @@ pub(crate) fn task_finished(id: usize) {
 }
 
 /// 1 回のプロバイダの呼び出し（予算の検査、使用量の加算、監査）。失敗なら `Err(null)`
-fn provider_step(s: &mut State) -> Result<Reply, *mut Header> {
+fn provider_step(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
     if let Some((kind, what)) = over_budget(s, false) {
         audit(s, "budget_exceeded", None, what.into());
         return Err(fail(s, kind, format!("{what} exceeded")));
     }
-    let Some(reply) = s.mock.pop_front() else {
-        return Err(fail(s, "mock_exhausted", "no mock response left".into()));
+    let reply = if provider_configured() {
+        let line = request_line(s, call);
+        match exchange(s, &line) {
+            // 応答の行が届いた（JSON でなくても、届いた応答として数える。Codex のレビュー）
+            Ok(v) => match v.map_err(|m| (m, 0)).and_then(|v| parse_reply(&v)) {
+                Ok(r) => r,
+                Err((m, tokens)) => {
+                    // 応答は届いたので、回数とトークンを数える（失敗を繰り返す呼び出しも予算で止まる）
+                    for i in s.chain() {
+                        s.arena[i].llm_calls += 1;
+                        s.arena[i].tokens += tokens;
+                    }
+                    audit(s, "llm_called", None, format!("tokens={tokens}"));
+                    return Err(fail(s, "provider", m));
+                }
+            },
+            Err(m) => return Err(fail(s, "provider", m)),
+        }
+    } else {
+        let Some(reply) = s.mock.pop_front() else {
+            return Err(fail(s, "mock_exhausted", "no mock response left".into()));
+        };
+        reply
     };
     for i in s.chain() {
         let a = &mut s.arena[i];
@@ -480,6 +530,233 @@ fn approve(s: &mut State, name: &str, args: &str) -> Result<bool, *mut Header> {
     Ok(granted)
 }
 
+/// 1 回の `llm_generate` の要求の内容（プロバイダへの 1 行を組み立てる材料）。
+struct Call {
+    req: serde_json::Value,
+    /// 出力スキーマ（`T = str` なら null）
+    schema: serde_json::Value,
+    messages: Vec<serde_json::Value>,
+}
+
+/// プロバイダへの要求の 1 行（ADR-0023 論点 2・3）。
+fn request_line(s: &State, call: &Call) -> String {
+    let top = s.top();
+    let model = [
+        call.req["model"].as_str().unwrap_or_default().to_string(),
+        top.model.clone(),
+        std::env::var("WYS_LLM_MODEL").unwrap_or_default(),
+    ]
+    .into_iter()
+    .find(|m| !m.is_empty())
+    .unwrap_or_default();
+    let tools: Vec<serde_json::Value> = top
+        .tools
+        .iter()
+        .map(|&i| {
+            let t = &s.tools[i];
+            serde_json::json!({"name": t.name, "description": t.description, "input_schema": t.schema})
+        })
+        .collect();
+    // 残り時間はスタック上の agent の最小（0 = 期限なし）。期限の前の検査を通ったので 1 以上
+    let timeout_ms = s
+        .chain()
+        .into_iter()
+        .map(|i| &s.arena[i])
+        .filter(|a| a.timeout_ms > 0)
+        .map(|a| (a.timeout_ms - a.elapsed_ms()).max(1))
+        .min()
+        .unwrap_or(0);
+    serde_json::json!({
+        "v": 1,
+        "model": model,
+        "system": call.req["system"].as_str().unwrap_or_default(),
+        "messages": call.messages,
+        "tools": tools,
+        "schema": call.schema,
+        "max_tokens": call.req["max_tokens"].as_i64().unwrap_or(0).max(0),
+        "timeout_ms": timeout_ms,
+    })
+    .to_string()
+}
+
+/// `wys llm-proxy` の場所: `WYS_LLM_PROXY` → ビルドしたコンパイラ → `PATH` の `wys`（ADR-0023 論点 4）。
+fn proxy_program(s: &State) -> String {
+    if let Some(p) = std::env::var("WYS_LLM_PROXY")
+        .ok()
+        .filter(|p| !p.is_empty())
+    {
+        return p;
+    }
+    s.compiler
+        .clone()
+        .filter(|p| std::path::Path::new(p).is_file())
+        .unwrap_or_else(|| "wys".into())
+}
+
+/// 要求の 1 行を送り、応答の 1 行を読む。起動していなければ起動する。外側の `Err` は応答が届かなかった
+/// （起動できない・子が終わった）、内側の `Err` は届いた行が JSON でなかった。
+fn exchange(s: &mut State, line: &str) -> Result<Result<serde_json::Value, String>, String> {
+    use std::io::{BufRead, Write as _};
+    if matches!(s.provider, Provider::Idle) {
+        let setting = std::env::var("WYS_LLM_PROVIDER").unwrap_or_default();
+        let (program, args): (String, &[&str]) = if setting == "anthropic" {
+            (proxy_program(s), &["llm-proxy"])
+        } else if let Some(path) = setting.strip_prefix("cmd:") {
+            (path.to_string(), &[])
+        } else {
+            s.provider = Provider::Broken(format!(
+                "unknown WYS_LLM_PROVIDER value `{setting}` (use anthropic or cmd:<path>)"
+            ));
+            return exchange(s, line);
+        };
+        // パスで指したファイルは、起動の前に実行できるかを確かめる（エミュレーションの下などで、存在しない
+        // ファイルの起動が失敗として返らず、子がすぐ終わるだけのことがある。Linux の CI で見つけた）
+        if let Err(why) = check_executable(&program) {
+            s.provider = Provider::Broken(format!("cannot start the provider `{program}`: {why}"));
+            return exchange(s, line);
+        }
+        // シェルを通さない。stderr は継承する（proxy は要求や応答を書かない）
+        let started = std::process::Command::new(&program)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn();
+        s.provider = match started {
+            Ok(mut child) => {
+                let stdin = child.stdin.take().expect("piped");
+                let stdout = std::io::BufReader::new(child.stdout.take().expect("piped"));
+                Provider::Running {
+                    child,
+                    stdin,
+                    stdout,
+                }
+            }
+            Err(e) => Provider::Broken(format!("cannot start the provider `{program}`: {e}")),
+        };
+    }
+    let Provider::Running { stdin, stdout, .. } = &mut s.provider else {
+        let Provider::Broken(m) = &s.provider else {
+            unreachable!("started above")
+        };
+        return Err(m.clone());
+    };
+    let mut reply = String::new();
+    // 子が stdin を閉じていたら、書き込みは SIGPIPE でプログラムごと落とす（生成した実行ファイルは C の main で、
+    // Rust の main のように SIGPIPE を無視していない）。書く間だけ無視して、EPIPE として扱う
+    let written = without_sigpipe(|| writeln!(stdin, "{line}").and_then(|()| stdin.flush()));
+    let ok = written.is_ok() && stdout.read_line(&mut reply).is_ok_and(|n| n > 0);
+    if !ok {
+        stop_provider(s);
+        s.provider = Provider::Broken("the provider exited".into());
+        return Err("the provider exited".into());
+    }
+    Ok(serde_json::from_str(&reply).map_err(|e| format!("malformed provider response: {e}")))
+}
+
+const SIGPIPE: i32 = 13;
+const SIG_IGN: usize = 1;
+
+unsafe extern "C" {
+    fn signal(sig: i32, handler: usize) -> usize;
+}
+
+/// `f` の間だけ SIGPIPE を無視する（閉じたパイプへの書き込みは EPIPE のエラーになる）。
+fn without_sigpipe<R>(f: impl FnOnce() -> R) -> R {
+    // SAFETY: SIGPIPE の扱いを無視に変え、終わったら元に戻す。ランタイムはこの間にほかのスレッドで書かない
+    let old = unsafe { signal(SIGPIPE, SIG_IGN) };
+    let r = f();
+    // SAFETY: 同上。
+    unsafe { signal(SIGPIPE, old) };
+    r
+}
+
+/// `/` を含むパス（`cmd:<path>`、`WYS_LLM_PROXY` など）が実行できるファイルか。`PATH` で探す名前は起動に任せる。
+fn check_executable(program: &str) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    if !program.contains('/') {
+        return Ok(());
+    }
+    let meta = std::fs::metadata(program).map_err(|e| e.to_string())?;
+    if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
+        return Err("not an executable file".into());
+    }
+    Ok(())
+}
+
+/// プロバイダの応答の 1 行を読む（`text` / `tool_calls` / `usage` / `stop` だけを解釈する）。`error` 行は `Err`。
+/// 失敗なら理由と、`error` 行に `usage` があればそのトークン数（拒否でも入力は課金されるので予算に数える）。
+fn parse_reply(v: &serde_json::Value) -> Result<Reply, (String, i64)> {
+    let usage = &v["usage"];
+    let tokens =
+        usage["input_tokens"].as_i64().unwrap_or(0) + usage["output_tokens"].as_i64().unwrap_or(0);
+    // `error` は文字列のときだけ失敗（`"error": null` は成功の応答に付く慣習なので無視する。Fable のレビュー）
+    if let Some(e) = v["error"].as_str() {
+        return Err((e.to_string(), tokens));
+    }
+    let malformed = |what: &str| Err((format!("malformed provider response: {what}"), tokens));
+    if !v.is_object() || !v["text"].is_string() {
+        return malformed("`text` is missing");
+    }
+    let mut tool_calls = Vec::new();
+    for c in v["tool_calls"].as_array().map_or(&[][..], Vec::as_slice) {
+        let (Some(id), Some(name)) = (c["id"].as_str(), c["name"].as_str()) else {
+            return malformed("a tool call needs `id` and `name`");
+        };
+        tool_calls.push((id.to_string(), name.to_string(), c["args"].to_string()));
+    }
+    let text = v["text"].as_str().unwrap_or_default().to_string();
+    // `assistant` がなければ `text` を戻す（null を次の要求に入れると、Messages API は拒否する）
+    let assistant = match &v["assistant"] {
+        serde_json::Value::Null => serde_json::Value::String(text.clone()),
+        a => a.clone(),
+    };
+    Ok(Reply {
+        text,
+        tool_calls,
+        tokens,
+        latency_ms: 0,
+        stop: v["stop"].as_str().unwrap_or_default().to_string(),
+        assistant,
+    })
+}
+
+/// 子プロセスの stdin を閉じて終わりを待つ。
+fn stop_provider(s: &mut State) {
+    if let Provider::Running {
+        mut child, stdin, ..
+    } = std::mem::replace(&mut s.provider, Provider::Idle)
+    {
+        drop(stdin);
+        // stdin の終わりを無視する子で、プログラムの終了が止まらないように、猶予の後に止める（Fable のレビュー）
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while matches!(child.try_wait(), Ok(None)) {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = child.wait();
+    }
+}
+
+/// 終了時（`wys_runtime_finish`）: プロバイダの子プロセスを片付ける。
+pub(crate) fn shutdown() {
+    STATE.with(|cell| stop_provider(&mut cell.borrow_mut()));
+}
+
+/// 生成コード: ビルドしたコンパイラの絶対パス（`llm_generate` を使うプログラムだけが呼ぶ）。
+///
+/// # Safety
+/// `path` は NUL 終端の文字列定数。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wys_llm_set_compiler(path: *const c_char) {
+    // SAFETY: 関数の安全条件どおり。
+    let p = unsafe { cstr(path) };
+    STATE.with(|cell| cell.borrow_mut().compiler = Some(p));
+}
+
 /// ツールの要求の検査（一覧 → Capability → 予算 → 承認）。実行してよければトランポリンを返す
 enum Gate {
     Run(extern "C" fn(*const Header) -> *mut Header),
@@ -550,8 +827,8 @@ pub unsafe extern "C" fn wys_llm_generate(
     req: *const Header,
     schema: *const Header,
 ) -> *mut Header {
-    // SAFETY: 関数の安全条件どおり。出力スキーマは実プロバイダ（T11）に渡す。モックは使わない
-    let (req, _schema) = unsafe { (text(req), text(schema)) };
+    // SAFETY: 関数の安全条件どおり。出力スキーマは実プロバイダに渡す（`T = str` なら空）。モックは使わない
+    let (req, schema) = unsafe { (text(req), text(schema)) };
     let first = STATE.with(|cell| {
         let mut s = cell.borrow_mut();
         s.failure = None;
@@ -577,33 +854,38 @@ pub unsafe extern "C" fn wys_llm_generate(
         if let Err(m) = check_request(&req) {
             return Err(fail(&mut s, "provider", m));
         }
-        if provider_configured() {
-            return Err(fail(
-                &mut s,
-                "provider",
-                "external providers (WYS_LLM_PROVIDER) are not available yet".into(),
-            ));
-        }
         Ok(req)
     });
     let req = match first {
         Ok(r) => r,
         Err(p) => return p,
     };
-    // 会話（T11 のプロバイダが読む。モックは読まない）
-    let mut messages: Vec<serde_json::Value> =
-        req["messages"].as_array().cloned().unwrap_or_default();
+    // 会話（外部のプロバイダに毎回すべてを送る。モックは読まない）
+    let messages: Vec<serde_json::Value> = req["messages"].as_array().cloned().unwrap_or_default();
+    let schema = serde_json::from_str(&schema).unwrap_or(serde_json::Value::Null);
+    let mut call = Call {
+        req,
+        schema,
+        messages,
+    };
     loop {
-        let reply = match STATE.with(|cell| provider_step(&mut cell.borrow_mut())) {
+        let reply = match STATE.with(|cell| provider_step(&mut cell.borrow_mut(), &call)) {
             Ok(r) => r,
             Err(p) => return p,
         };
+        let messages = &mut call.messages;
         if reply.tool_calls.is_empty() {
+            if reply.stop == "max_tokens" {
+                return STATE.with(|cell| {
+                    let mut s = cell.borrow_mut();
+                    fail(&mut s, "provider", "response truncated: max_tokens".into())
+                });
+            }
             // ツールの中の `llm_generate` が失敗を残していても、この呼び出しは成功
             STATE.with(|cell| cell.borrow_mut().failure = None);
             return embed::new_object(reply.text.as_bytes());
         }
-        messages.push(serde_json::json!({"role": "assistant", "content": reply.text}));
+        messages.push(serde_json::json!({"role": "assistant", "content": reply.assistant}));
         for (id, name, args) in &reply.tool_calls {
             let g = STATE.with(|cell| gate(&mut cell.borrow_mut(), name, args));
             let entry = match g {
@@ -746,6 +1028,8 @@ pub unsafe extern "C" fn wys_llm_mock_push(resp: *const Header) {
         tool_calls,
         tokens: v["input_tokens"].as_i64().unwrap_or(0) + v["output_tokens"].as_i64().unwrap_or(0),
         latency_ms: v["latency_ms"].as_i64().unwrap_or(0),
+        stop: String::new(),
+        assistant: serde_json::Value::String(v["text"].as_str().unwrap_or_default().to_string()),
     };
     STATE.with(|s| s.borrow_mut().mock.push_back(r));
 }
@@ -778,6 +1062,10 @@ pub unsafe extern "C" fn wys_tools_register(tools: *const ToolDesc, n: i64) {
         .map(|d| Tool {
             // SAFETY: 生成コードの文字列定数。
             name: unsafe { cstr(d.name) },
+            // SAFETY: 同上。
+            description: unsafe { cstr(d.description) },
+            // SAFETY: 同上。スキーマはバックエンドが `json_schema` で書いた JSON
+            schema: serde_json::from_str(&unsafe { cstr(d.schema) }).unwrap_or_default(),
             effects: d.effects,
             approval: d.approval != 0,
             entry: d.entry,
@@ -814,7 +1102,10 @@ pub unsafe extern "C" fn wys_agent_enter(cfg: *const AgentCfg) {
             c.max_tokens,
             c.timeout_ms,
         ];
-        let i = s.alloc(Ctx::new(name, tools, caps, limits));
+        let mut ctx = Ctx::new(name, tools, caps, limits);
+        // SAFETY: 生成コードの文字列定数。
+        ctx.model = unsafe { cstr(c.model) };
+        let i = s.alloc(ctx);
         let task = crate::task::current_task();
         let mut chain = s.chain();
         chain.push(i);

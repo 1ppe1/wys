@@ -1,12 +1,13 @@
 #!/bin/sh
-# PoC4 のテスト用のプロバイダ: 1 回目はツール add の要求、2 回目は最終の JSON を返す。受け取った要求を $FAKE_LOG に書く
+# テスト用のプロバイダ（`WYS_LLM_PROVIDER=cmd:<path>`、ADR-0023 論点 1・2）: 受け取った要求を 1 行ずつ $FAKE_LOG に追記し、
+# n 回目の要求には $FAKE_REPLIES の n 行目をそのまま返す。行が尽きたら何も返さずに終わる（子が死んだときの検査）
 n=0
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$FAKE_LOG"
   n=$((n + 1))
-  if [ "$n" = 1 ]; then
-    printf '%s\n' '{"text":"","tool_calls":[{"id":"t1","name":"add","args":{"a":2,"b":3}}],"usage":{"input_tokens":10,"output_tokens":5},"stop":"tool_use","assistant":[{"type":"thinking","thinking":"","signature":"sig"},{"type":"tool_use","id":"t1","name":"add","input":{"a":2,"b":3}}]}'
-  else
-    printf '%s\n' '{"text":"{\"title\":\"plan\",\"steps\":5}","tool_calls":[],"usage":{"input_tokens":20,"output_tokens":8},"stop":"end_turn","assistant":[{"type":"text","text":"{\"title\":\"plan\",\"steps\":5}"}]}'
+  reply=$(sed -n "${n}p" "$FAKE_REPLIES")
+  if [ -z "$reply" ]; then
+    exit 0
   fi
+  printf '%s\n' "$reply"
 done

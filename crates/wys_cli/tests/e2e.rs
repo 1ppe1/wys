@@ -1169,3 +1169,446 @@ fn approval_without_an_answer_is_audited() {
 const PY_STDIN: &str = "@tool(description=\"Remove.\", approval=\"required\")\ndef rm(path: str) -> None uses io:\n    print(\"removed \" + path)\n\ndef read_impl() -> Result[str, PyError] uses python:\n    sys = py_import(\"sys\")?\n    stdin = sys.attr(\"stdin\")?\n    f = stdin.attr(\"readline\")?\n    r = f.call([])?\n    return r.to_str()\n\n@tool(description=\"Reads a line from stdin via Python.\")\ndef readline() -> str uses io, python:\n    match read_impl():\n        case Ok(s):\n            print(\"python read: [\" + s + \"]\")\n            return s\n        case Err(e):\n            print(\"python err: \" + e.message)\n            return \"\"\n\n@agent(tools=[rm, readline], capabilities=[\"io\", \"llm\", \"python\"])\nasync def cleaner() -> Result[str, LlmError] uses io, llm, python:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm, python:\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"rm\", args_json=\"{\\\"path\\\": \\\"/tmp/x\\\"}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"readline\", args_json=\"{}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"done\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    match await cleaner():\n        case Ok(t):\n            print(\"ok \" + t)\n        case Err(e):\n            print(e.kind + \": \" + e.message)\n";
 
 const APPROVAL_THEN_TIMEOUT: &str = "@tool(description=\"Remove.\", approval=\"required\")\ndef rm(path: str) -> None uses io:\n    print(\"removed \" + path)\n\n@agent(tools=[rm], capabilities=[\"io\", \"llm\"], timeout_ms=30)\nasync def cleaner() -> Result[str, LlmError] uses io, llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm:\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"rm\", args_json=\"{\\\"path\\\": \\\"/tmp/x\\\"}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"done\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    match await cleaner():\n        case Ok(t):\n            print(\"ok \" + t)\n        case Err(e):\n            print(e.kind + \": \" + e.message)\n    for ev in audit_events():\n        print(ev.kind + \" \" + ev.detail)\n";
+
+// ---------------------------------------------------------------- 実プロバイダ（M5 T11、ADR-0023 論点 1〜6）
+
+const FAKE_PROVIDER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_provider.sh");
+
+/// `src` を、`replies` を順に返すテスト用のプロバイダ（`fake_provider.sh`）につないで実行する。
+/// 戻り値は実行結果と、プロバイダが受け取った要求（1 行ずつの JSON）。
+fn run_with_provider(
+    name: &str,
+    src: &str,
+    replies: &[&str],
+    envs: &[(&str, &str)],
+) -> (Output, Vec<serde_json::Value>) {
+    let path = scratch(name, src);
+    let log = path.with_extension("requests.jsonl");
+    let replies_path = path.with_extension("replies.jsonl");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(&replies_path, replies.join("\n") + "\n").unwrap();
+    let provider = format!("cmd:{FAKE_PROVIDER}");
+    let mut all: Vec<(&str, &str)> = vec![
+        ("WYS_LLM_PROVIDER", provider.as_str()),
+        ("FAKE_LOG", log.to_str().unwrap()),
+        ("FAKE_REPLIES", replies_path.to_str().unwrap()),
+    ];
+    all.extend_from_slice(envs);
+    let out = cli_env(&["run", path.to_str().unwrap()], &all);
+    let requests = std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("the runtime sends one JSON object per line"))
+        .collect();
+    (out, requests)
+}
+
+const PLANNER: &str = r#"type Plan = {title: str, steps: int}
+
+@tool(description="Adds two integers.")
+def add(a: int, b: int) -> int uses pure:
+    return a + b
+
+@agent(tools=[add], capabilities=["llm"], model="agent-model", timeout_ms=600000)
+async def planner() -> Result[Plan, LlmError] uses llm:
+    req = LlmRequest(model="", system="Be brief.", messages=[Message(role="user", content="plan")], max_tokens=100)
+    return await llm_generate[Plan](req)
+
+async def main() -> None uses io, llm:
+    match await planner():
+        case Ok(p):
+            print(p.title)
+            print(p.steps)
+        case Err(e):
+            print(e.kind + ": " + e.message)
+    for ev in audit_events():
+        print(ev.kind + " " + ev.detail)
+"#;
+
+const TOOL_USE_REPLY: &str = r#"{"text":"","tool_calls":[{"id":"t1","name":"add","args":{"a":2,"b":3}}],"usage":{"input_tokens":10,"output_tokens":5},"stop":"tool_use","assistant":[{"type":"thinking","thinking":"","signature":"sig"},{"type":"tool_use","id":"t1","name":"add","input":{"a":2,"b":3}}]}"#;
+const PLAN_REPLY: &str = r#"{"text":"{\"title\":\"plan\",\"steps\":5}","tool_calls":[],"usage":{"input_tokens":20,"output_tokens":8},"stop":"end_turn","assistant":[{"type":"text","text":"{\"title\":\"plan\",\"steps\":5}"}]}"#;
+
+#[test]
+fn provider_round_trip_carries_tools_schema_and_the_opaque_assistant() {
+    // ADR-0023 論点 2・3: 要求に v・model（agent の既定）・system・ツールの定義・出力スキーマ・max_tokens・残り時間が入り、
+    // 前の応答の assistant は手を加えずに次の要求に戻る。ツールの結果には呼び出しの ID が付く。使用量は usage を数える
+    let (out, reqs) = run_with_provider(
+        "provider_round_trip.wys",
+        PLANNER,
+        &[TOOL_USE_REPLY, PLAN_REPLY],
+        &[],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "plan\n5\nllm_called tokens=15\ntool_called args_len=13\nllm_called tokens=28\n",
+        "{stderr}"
+    );
+    assert_eq!(reqs.len(), 2, "{reqs:?}");
+    let first = &reqs[0];
+    assert_eq!(first["v"], 1);
+    assert_eq!(first["model"], "agent-model");
+    assert_eq!(first["system"], "Be brief.");
+    assert_eq!(first["max_tokens"], 100);
+    assert_eq!(first["tools"][0]["name"], "add");
+    assert_eq!(first["tools"][0]["description"], "Adds two integers.");
+    assert_eq!(first["tools"][0]["input_schema"]["type"], "object");
+    assert_eq!(first["schema"]["type"], "object");
+    let t = first["timeout_ms"].as_i64().unwrap();
+    assert!(t > 0 && t <= 600000, "{t}");
+    assert_eq!(
+        first["messages"],
+        serde_json::json!([{"role": "user", "content": "plan"}])
+    );
+    let second = &reqs[1]["messages"];
+    let tool_use: serde_json::Value = serde_json::from_str(TOOL_USE_REPLY).unwrap();
+    assert_eq!(
+        second[1],
+        serde_json::json!({"role": "assistant", "content": tool_use["assistant"]})
+    );
+    assert_eq!(
+        second[2],
+        serde_json::json!({"role": "tool", "id": "t1", "content": "5", "is_error": false})
+    );
+}
+
+#[test]
+fn provider_model_falls_back_to_the_environment_outside_agents() {
+    // 根のコンテキスト: ツールは空、T = str ならスキーマは null、model は WYS_LLM_MODEL（ADR-0023 論点 3）
+    let src = r#"async def main() -> None uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="hi")], max_tokens=0)
+    match await llm_generate[str](req):
+        case Ok(t):
+            print(t)
+        case Err(e):
+            print(e.kind + ": " + e.message)
+"#;
+    let reply = r#"{"text":"hello","tool_calls":[],"usage":{"input_tokens":1,"output_tokens":1},"stop":"end_turn","assistant":"hello"}"#;
+    let (out, reqs) = run_with_provider(
+        "provider_root.wys",
+        src,
+        &[reply],
+        &[("WYS_LLM_MODEL", "env-model")],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "hello\n",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(reqs[0]["model"], "env-model");
+    assert_eq!(reqs[0]["tools"], serde_json::json!([]));
+    assert_eq!(reqs[0]["schema"], serde_json::Value::Null);
+    assert_eq!(reqs[0]["timeout_ms"], 0);
+}
+
+#[test]
+fn provider_failures_are_err_provider() {
+    // error 行・max_tokens で切れた応答・壊れた応答・子プロセスの終了・起動できないコマンド・未知のプロバイダは
+    // すべて Err(kind="provider") で、パニックにしない（ADR-0023 論点 4、ai-sdk.md 5.3）
+    let src = r#"async def ask() -> None uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="hi")], max_tokens=0)
+    match await llm_generate[str](req):
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind + ": " + e.message)
+
+async def main() -> None uses io, llm:
+    await ask()
+    await ask()
+"#;
+    let cases: [(&[&str], &str); 4] = [
+        (
+            &[r#"{"error":"HTTP 529 overloaded_error: Overloaded"}"#],
+            "provider: HTTP 529 overloaded_error: Overloaded\nprovider: the provider exited\n",
+        ),
+        (
+            &[
+                r#"{"text":"cut","tool_calls":[],"usage":{"input_tokens":1,"output_tokens":1},"stop":"max_tokens","assistant":"cut"}"#,
+            ],
+            "provider: response truncated: max_tokens\nprovider: the provider exited\n",
+        ),
+        (
+            &["not json"],
+            "provider: malformed provider response: expected ident at line 1 column 2\nprovider: the provider exited\n",
+        ),
+        (
+            &[],
+            "provider: the provider exited\nprovider: the provider exited\n",
+        ),
+    ];
+    for (i, (replies, expected)) in cases.into_iter().enumerate() {
+        let (out, _) = run_with_provider(&format!("provider_fail_{i}.wys"), src, replies, &[]);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            expected,
+            "case {i}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(out.status.code(), Some(0));
+    }
+    let path = scratch("provider_bad_cmd.wys", src);
+    for (provider, expected) in [
+        (
+            "cmd:/nonexistent/provider",
+            "provider: cannot start the provider `/nonexistent/provider`",
+        ),
+        (
+            "openai",
+            "provider: unknown WYS_LLM_PROVIDER value `openai` (use anthropic or cmd:<path>)",
+        ),
+        // 実行できないファイル（起動の前に確かめる。エミュレーションの下でも同じ結果になる）
+        (
+            "cmd:/etc/passwd",
+            "provider: cannot start the provider `/etc/passwd`",
+        ),
+    ] {
+        let out = cli_env(
+            &["run", path.to_str().unwrap()],
+            &[("WYS_LLM_PROVIDER", provider)],
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.starts_with(expected), "{provider}: {stdout}");
+        assert_eq!(out.status.code(), Some(0));
+    }
+}
+
+#[test]
+fn anthropic_provider_starts_the_proxy_named_by_wys_llm_proxy() {
+    // WYS_LLM_PROVIDER=anthropic は `<wys> llm-proxy` を起動する。探索の先頭は WYS_LLM_PROXY（ADR-0023 論点 4）
+    let (out, reqs) = run_with_provider(
+        "provider_anthropic.wys",
+        PLANNER,
+        &[TOOL_USE_REPLY, PLAN_REPLY],
+        &[
+            ("WYS_LLM_PROVIDER", "anthropic"),
+            ("WYS_LLM_PROXY", FAKE_PROVIDER),
+        ],
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).starts_with("plan\n5\n"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(reqs.len(), 2);
+}
+
+#[test]
+fn llm_proxy_requires_the_api_key() {
+    // API キーを読むのは proxy だけ（ADR-0023 論点 6）。なければ起動時に失敗し、キーの値は出さない
+    let out = wys()
+        .arg("llm-proxy")
+        .env_remove("ANTHROPIC_API_KEY")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ANTHROPIC_API_KEY is not set"));
+}
+
+#[test]
+fn a_provider_that_stops_reading_does_not_kill_the_program() {
+    // 要求を読まずに stdin を閉じるプロバイダに書いても、SIGPIPE で落ちずに Err(provider)（Linux の CI で見つけた）
+    let dir = scratch("closing_provider.wys", "")
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let script = dir.join("closing_provider.sh");
+    // 1 回目の要求に答えてから stdin を閉じる（2 回目の要求は必ず閉じたパイプへの書き込みになる）
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nread -r line\nexec 0<&-\nprintf '%s\\n' '{\"text\":\"one\",\"tool_calls\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"stop\":\"end_turn\",\"assistant\":\"one\"}'\nsleep 1\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let src = r#"async def ask() -> None uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="hi")], max_tokens=0)
+    match await llm_generate[str](req):
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind + ": " + e.message)
+
+async def main() -> None uses io, llm:
+    await ask()
+    await ask()
+    print("still running")
+"#;
+    let path = scratch("closing_provider.wys", src);
+    let provider = format!("cmd:{}", script.display());
+    let out = cli_env(
+        &["run", path.to_str().unwrap()],
+        &[("WYS_LLM_PROVIDER", provider.as_str())],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "ok one\nprovider: the provider exited\nstill running\n",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn provider_replies_are_read_leniently_where_the_protocol_allows() {
+    // `"error": null` は失敗ではない、`assistant` がなければ `text` を次の要求に戻す（Proxy に null を渡さない）、
+    // `error` 行の `usage` は数える（拒否でも入力は課金される）。Fable のレビュー
+    let src = r#"async def ask() -> None uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="hi")], max_tokens=0)
+    match await llm_generate[str](req):
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind + ": " + e.message)
+
+@tool(description="Tick.")
+def tick() -> None uses pure:
+    pass
+
+@agent(tools=[tick], capabilities=["io", "llm"])
+async def agent() -> None uses io, llm:
+    await ask()
+
+async def main() -> None uses io, llm:
+    await agent()
+    await ask()
+    for ev in audit_events():
+        if ev.kind == "llm_called":
+            print(ev.kind + " " + ev.detail)
+"#;
+    let replies = [
+        r#"{"text":"","tool_calls":[{"id":"t1","name":"tick","args":{}}],"usage":{"input_tokens":1,"output_tokens":1},"stop":"tool_use"}"#,
+        r#"{"text":"fine","tool_calls":[],"usage":{"input_tokens":1,"output_tokens":1},"stop":"end_turn","error":null}"#,
+        r#"{"error":"the model declined the request (refusal)","usage":{"input_tokens":7,"output_tokens":0}}"#,
+    ];
+    let (out, reqs) = run_with_provider("provider_lenient.wys", src, &replies, &[]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "ok fine\nprovider: the model declined the request (refusal)\nllm_called tokens=2\nllm_called tokens=2\nllm_called tokens=7\n",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        reqs[1]["messages"][1],
+        serde_json::json!({"role": "assistant", "content": ""})
+    );
+}
+
+#[test]
+fn a_provider_that_ignores_end_of_input_does_not_hold_the_exit() {
+    // 終了時に stdin を閉じても終わらない子は、猶予の後に止める（Fable のレビュー）
+    let dir = scratch("lingering_provider.wys", "")
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let script = dir.join("lingering_provider.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nread -r line\nprintf '%s\\n' '{\"text\":\"one\",\"tool_calls\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"stop\":\"end_turn\",\"assistant\":\"one\"}'\nexec sleep 600\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let src = r#"async def main() -> None uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="hi")], max_tokens=0)
+    match await llm_generate[str](req):
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind + ": " + e.message)
+"#;
+    let path = scratch("lingering_provider.wys", src);
+    let exe = path.with_extension("bin");
+    let built = cli(&["build", path.to_str().unwrap(), "-o", exe.to_str().unwrap()]);
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let started = std::time::Instant::now();
+    let out = Command::new(&exe)
+        .env("WYS_LLM_PROVIDER", format!("cmd:{}", script.display()))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "ok one\n");
+    // 新しい実行ファイルの初回の起動は、負荷が高いと数秒かかる（macOS）。子の 600 秒を待たなければよい
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn anthropic_provider_finds_the_compiler_that_built_the_program() {
+    // WYS_LLM_PROXY がなければ、実行ファイルに埋めたコンパイラ（このテストの wys）の `llm-proxy` を起動する
+    // （ADR-0023 論点 4）。API キーを外すので proxy は起動してすぐ終わり、ネットワークには出ない
+    let src = r#"async def main() -> None uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="hi")], max_tokens=0)
+    match await llm_generate[str](req):
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind + ": " + e.message)
+"#;
+    let path = scratch("provider_embedded_compiler.wys", src);
+    let out = wys()
+        .args(["run", path.to_str().unwrap()])
+        .env("WYS_RUNTIME_LIB", runtime_lib())
+        .env("WYS_RUNTIME_PYTHON_LIB", python_runtime_lib())
+        .env("WYS_LLM_PROVIDER", "anthropic")
+        .env_remove("ANTHROPIC_API_KEY")
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "provider: the provider exited\n"
+    );
+    // proxy の stderr は継承される: 起動したのが本物の `wys llm-proxy` だと分かる
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("ANTHROPIC_API_KEY is not set"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn malformed_provider_replies_count_against_the_call_budget() {
+    // JSON でない応答も、届いた応答として max_llm_calls に数える（壊れた応答を返し続けるプロバイダで予算を素通りしない。
+    // Codex のレビュー）
+    let src = r#"@agent(tools=[], capabilities=["io", "llm"], max_llm_calls=1)
+async def ask() -> None uses io, llm:
+    req = LlmRequest(model="", system="", messages=[Message(role="user", content="hi")], max_tokens=0)
+    for _i in range(2):
+        match await llm_generate[str](req):
+            case Ok(t):
+                print("ok " + t)
+            case Err(e):
+                print(e.kind + ": " + e.message)
+
+async def main() -> None uses io, llm:
+    await ask()
+    for ev in audit_events():
+        if ev.kind == "llm_called" or ev.kind == "budget_exceeded":
+            print(ev.kind + " " + ev.detail)
+"#;
+    let (out, reqs) = run_with_provider(
+        "provider_malformed_budget.wys",
+        src,
+        &["not json", "not json"],
+        &[],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "provider: malformed provider response: expected ident at line 1 column 2\nbudget: max_llm_calls exceeded\nllm_called tokens=0\nbudget_exceeded max_llm_calls\n",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(reqs.len(), 1);
+}

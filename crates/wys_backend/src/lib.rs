@@ -212,6 +212,7 @@ declare ptr @wys_llm_json_rejected()
 declare ptr @wys_llm_schema_rejected()
 declare void @wys_llm_mock_push(ptr)
 declare void @wys_tools_register(ptr, i64)
+declare void @wys_llm_set_compiler(ptr)
 declare void @wys_agent_enter(ptr)
 declare void @wys_agent_exit()
 declare void @wys_tool_err()
@@ -537,10 +538,11 @@ fn emit_ai_tables(out: &mut String, p: &Program) -> String {
             );
             format!("@.agent.tools.{i}")
         };
+        c_string(out, &format!("@.agent.model.{i}"), &a.model);
         let caps: u64 = a.capabilities.iter().map(|e| effect_bit(*e)).sum();
         let _ = writeln!(
             out,
-            "@.agent.{i} = private constant {{ ptr, ptr, i64, i64, i64, i64, i64, i64 }} {{ ptr @.agent.name.{i}, ptr {tools_ptr}, i64 {}, i64 {caps}, i64 {}, i64 {}, i64 {}, i64 {} }}",
+            "@.agent.{i} = private constant {{ ptr, ptr, i64, i64, i64, i64, i64, i64, ptr }} {{ ptr @.agent.name.{i}, ptr {tools_ptr}, i64 {}, i64 {caps}, i64 {}, i64 {}, i64 {}, i64 {}, ptr @.agent.model.{i} }}",
             idx.len(),
             a.max_llm_calls,
             a.max_tool_calls,
@@ -548,14 +550,38 @@ fn emit_ai_tables(out: &mut String, p: &Program) -> String {
             a.timeout_ms
         );
     }
-    if rows.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "  call void @wys_tools_register(ptr @wys_tools, i64 {})\n",
+    let mut init = String::new();
+    if !rows.is_empty() {
+        let _ = writeln!(
+            init,
+            "  call void @wys_tools_register(ptr @wys_tools, i64 {})",
             rows.len()
-        )
+        );
     }
+    // `wys llm-proxy` の探索に使うコンパイラの場所（ADR-0023 論点 4）。`llm_generate` を使うプログラムだけに埋める
+    let uses_llm = p
+        .funcs
+        .iter()
+        .flat_map(|f| &f.blocks)
+        .flat_map(|b| &b.insts)
+        .any(|i| {
+            matches!(
+                i,
+                Inst::Call {
+                    callee: Callee::Builtin(Builtin::LlmGenerate),
+                    ..
+                }
+            )
+        });
+    if uses_llm
+        && let Some(exe) = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.to_str().map(String::from))
+    {
+        c_string(out, "@.wys.compiler", &exe);
+        init.push_str("  call void @wys_llm_set_compiler(ptr @.wys.compiler)\n");
+    }
+    init
 }
 
 /// Python のランタイム（`wys_runtime_python`）の関数の宣言。
