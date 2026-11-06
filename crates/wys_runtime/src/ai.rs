@@ -395,6 +395,28 @@ fn provider_step(s: &mut State) -> Result<Reply, *mut Header> {
     Ok(reply)
 }
 
+/// `prompt` の答えを 1 行読む（改行を含まない）。EOF で何も読めなければ `None`。
+/// fd 0 から 1 バイトずつ読み、先読みしない: `std::io::stdin()` のバッファは 1 行より多く読み込むので、
+/// 残りが Python のツール（`sys.stdin`）など、fd を直接読むものから見えなくなる（Fable のレビュー）。
+fn read_answer() -> Option<String> {
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    // SAFETY: fd 0 はプロセスの標準入力。ManuallyDrop で閉じない。
+    let mut fd0 = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+    let mut line = Vec::new();
+    let mut b = [0u8; 1];
+    loop {
+        match fd0.read(&mut b) {
+            Ok(0) => break,
+            Ok(_) if b[0] == b'\n' => return Some(String::from_utf8_lossy(&line).into_owned()),
+            Ok(_) => line.push(b[0]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    (!line.is_empty()).then(|| String::from_utf8_lossy(&line).into_owned())
+}
+
 /// 承認の方針（ADR-0023 論点 12）。許可なら真、拒否なら偽、答えられない（未知の値・EOF）なら `Err`。
 /// 監査は `approval_requested` → `approval_granted` / `approval_denied`。引数の本文は監査に残さない。
 fn approve(s: &mut State, name: &str, args: &str) -> Result<bool, *mut Header> {
@@ -417,9 +439,13 @@ fn approve(s: &mut State, name: &str, args: &str) -> Result<bool, *mut Header> {
                 "approve tool {name} (agent {agent}) with args {args}? [y/N] "
             );
             let _ = err.flush();
-            let mut line = String::new();
-            match std::io::stdin().read_line(&mut line) {
-                Ok(0) | Err(_) => {
+            let answer = read_answer();
+            // 端末でなければ答えはエコーされないので、続く出力（監査の行など）が問いの行に連ならないように改行する
+            if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                let _ = writeln!(err);
+            }
+            let line = match answer {
+                None => {
                     audit(
                         s,
                         "approval_denied",
@@ -432,8 +458,8 @@ fn approve(s: &mut State, name: &str, args: &str) -> Result<bool, *mut Header> {
                         format!("no answer to the approval of tool `{name}` (end of input)"),
                     ));
                 }
-                Ok(_) => {}
-            }
+                Some(line) => line,
+            };
             matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
         }
         other => {

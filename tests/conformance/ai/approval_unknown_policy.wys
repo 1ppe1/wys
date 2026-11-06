@@ -1,6 +1,8 @@
 # WYS_APPROVAL の値が deny / allow / prompt のどれでもなければ、承認の要るツールの要求で Err(approval)（閉じる方向。ADR-0023 論点 12）
 # expect-env: WYS_APPROVAL=yes
 # expect-stdout: approval: unknown WYS_APPROVAL value `yes` (use deny, allow or prompt)
+# expect-stdout: approval_requested WYS_APPROVAL=yes
+# expect-stdout: approval_denied WYS_APPROVAL=yes
 @tool(description="Remove.", approval="required")
 def rm(path: str) -> None uses io:
     print("removed " + path)
@@ -18,3 +20,6 @@ async def main() -> None uses io, llm:
             print("ok " + t)
         case Err(e):
             print(e.kind + ": " + e.message)
+    for ev in audit_events():
+        if ev.kind != "llm_called":
+            print(ev.kind + " " + ev.detail)

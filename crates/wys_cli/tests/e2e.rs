@@ -1070,3 +1070,102 @@ fn agent_timeout_uses_the_real_clock_without_virtual_time() {
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(stdout, "timeout: timeout_ms exceeded\n", "{stderr}");
 }
+
+/// stdin に `input` をつなぐが、stderr に承認の問いが出てから `delay` 待って書く（承認の後の再検査）。
+fn cli_answer_late(
+    args: &[&str],
+    envs: &[(&str, &str)],
+    input: &str,
+    delay: std::time::Duration,
+) -> Output {
+    use std::io::{Read as _, Write as _};
+    let mut child = wys()
+        .args(args)
+        .env("WYS_RUNTIME_LIB", runtime_lib())
+        .env("WYS_RUNTIME_PYTHON_LIB", python_runtime_lib())
+        .envs(envs.iter().copied())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run wys");
+    let mut err = child.stderr.take().unwrap();
+    let mut seen = Vec::new();
+    let mut b = [0u8; 1];
+    while !seen.ends_with(b"[y/N] ") {
+        if err.read(&mut b).unwrap() == 0 {
+            break;
+        }
+        seen.push(b[0]);
+    }
+    std::thread::sleep(delay);
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let mut out = child.wait_with_output().expect("wait for wys");
+    err.read_to_end(&mut seen).unwrap();
+    out.stderr = seen;
+    out
+}
+
+#[test]
+fn approval_prompt_reads_only_its_own_line() {
+    // prompt の答えは 1 行だけ読む（先読みしない）。残りは Python のツールの sys.stdin から読める（Fable のレビュー）。
+    // stdin が端末でなければ、答えの後に stderr を改行して、続く出力が問いの行に連ならない
+    let src = PY_STDIN;
+    let path = scratch("approval_prompt_py_stdin.wys", src);
+    let out = cli_stdin(
+        &["run", path.to_str().unwrap()],
+        &[("WYS_APPROVAL", "prompt"), ("WYS_AUDIT", "stderr")],
+        "y\nsecret line\n",
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "removed /tmp/x\npython read: [secret line\n]\nok done\n",
+        "{stderr}"
+    );
+    assert!(stderr.contains("[y/N] \n{"), "{stderr}");
+}
+
+#[test]
+fn approval_is_followed_by_a_deadline_check() {
+    // 答えを待つ間に期限を過ぎたら、許可してもツールを実行しない（ai-sdk.md 16 章、ADR-0023 論点 14）
+    let path = scratch("approval_then_timeout.wys", APPROVAL_THEN_TIMEOUT);
+    let out = cli_answer_late(
+        &["run", path.to_str().unwrap()],
+        &[("WYS_APPROVAL", "prompt")],
+        "y\n",
+        std::time::Duration::from_millis(300),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "timeout: timeout_ms exceeded\nllm_called tokens=2\napproval_requested WYS_APPROVAL=prompt\napproval_granted WYS_APPROVAL=prompt\nbudget_exceeded timeout_ms\n",
+        "{stderr}"
+    );
+}
+
+#[test]
+fn approval_without_an_answer_is_audited() {
+    // EOF は Err(approval)、監査は approval_requested → approval_denied（no answer）
+    let path = scratch("approval_eof_audit.wys", APPROVAL_THEN_TIMEOUT);
+    let out = cli_stdin(
+        &["run", path.to_str().unwrap()],
+        &[("WYS_APPROVAL", "prompt")],
+        "",
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "approval: no answer to the approval of tool `rm` (end of input)\nllm_called tokens=2\napproval_requested WYS_APPROVAL=prompt\napproval_denied no answer (end of input)\n",
+        "{stderr}"
+    );
+}
+
+const PY_STDIN: &str = "@tool(description=\"Remove.\", approval=\"required\")\ndef rm(path: str) -> None uses io:\n    print(\"removed \" + path)\n\ndef read_impl() -> Result[str, PyError] uses python:\n    sys = py_import(\"sys\")?\n    stdin = sys.attr(\"stdin\")?\n    f = stdin.attr(\"readline\")?\n    r = f.call([])?\n    return r.to_str()\n\n@tool(description=\"Reads a line from stdin via Python.\")\ndef readline() -> str uses io, python:\n    match read_impl():\n        case Ok(s):\n            print(\"python read: [\" + s + \"]\")\n            return s\n        case Err(e):\n            print(\"python err: \" + e.message)\n            return \"\"\n\n@agent(tools=[rm, readline], capabilities=[\"io\", \"llm\", \"python\"])\nasync def cleaner() -> Result[str, LlmError] uses io, llm, python:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm, python:\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"rm\", args_json=\"{\\\"path\\\": \\\"/tmp/x\\\"}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"readline\", args_json=\"{}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"done\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    match await cleaner():\n        case Ok(t):\n            print(\"ok \" + t)\n        case Err(e):\n            print(e.kind + \": \" + e.message)\n";
+
+const APPROVAL_THEN_TIMEOUT: &str = "@tool(description=\"Remove.\", approval=\"required\")\ndef rm(path: str) -> None uses io:\n    print(\"removed \" + path)\n\n@agent(tools=[rm], capabilities=[\"io\", \"llm\"], timeout_ms=30)\nasync def cleaner() -> Result[str, LlmError] uses io, llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm:\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"rm\", args_json=\"{\\\"path\\\": \\\"/tmp/x\\\"}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"done\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    match await cleaner():\n        case Ok(t):\n            print(\"ok \" + t)\n        case Err(e):\n            print(e.kind + \": \" + e.message)\n    for ev in audit_events():\n        print(ev.kind + \" \" + ev.detail)\n";
