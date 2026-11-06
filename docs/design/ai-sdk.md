@@ -93,6 +93,8 @@
 | オブジェクト | レコード（宣言したフィールドをすべて要求する。**宣言にないキーは無視する**（幅部分型、ADR-0007））、`dict[str, T]`（値を順に検証） |
 | 何でも | `Unknown`（木をそのまま共有する。ADR-0021 論点 4） |
 
+`validate` の引数は `Unknown` に置ける値（`Unknown`、`match` でスカラーに絞り込んだ値、スカラーとその Union、`None`）。`case list():` / `case dict():` で絞り込んだ値は `list[Unknown]` / `dict[str, Unknown]` 型で `Unknown` に戻せないので渡せない（E0201）。絞り込む前の変数を渡す（ADR-0021 論点 2。2026-11-06 にユーザーが現状のままと決めた。必要になったら ADR-0021 を見直す）。
+
 Union は構成要素の順（型検査がそろえた順: `int`、`bool`、`str`、`float`、レコード、`list`、`dict`、`Unknown`、`None`）に試し、最初に合ったものにする（`int | float` に `3` は `int`）。構成要素の内側の失敗は Union の段の失敗として報告する。失敗は最初の不一致 1 つを `SchemaError` で返す: `path` は根からの経路（`""`、`title`、`steps[2].name`、`dict` は `.key`）、`expected` は本言語の型の表記（`str`、`int | None`、`list[int]`、レコードはその名前。Generic なレコードは型引数なし）、`found` は JSON の種類（`null` / `bool` / `int` / `float` / `str` / `list` / `dict`）か `missing`（フィールドがない）。途中で失敗したときは作りかけの値をすべて release する（3 つのモードで生存数 0 を検査する）。
 
 ### 4.4 `to_json`
