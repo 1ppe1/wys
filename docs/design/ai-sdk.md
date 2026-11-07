@@ -36,12 +36,13 @@
 |---|---|---|
 | `Message` | `{role: str, content: str}` | 会話の 1 発話。`role` は `user` / `assistant` |
 | `LlmRequest` | `{model: str, system: str, messages: list[Message], max_tokens: int}` | `llm_generate` の要求。`model=""` は既定（`@agent(model=)` → `WYS_LLM_MODEL` → proxy の既定）。`max_tokens=0` は proxy の既定（**1 応答の出力の上限**。`@agent` の予算の `max_tokens`（合計）とは別） |
-| `LlmError` | `{kind: str, message: str}` | `kind` は `provider` / `schema` / `budget` / `timeout` / `denied` / `approval` / `mock_exhausted`（5.3） |
+| `LlmError` | `{kind: str, message: str}` | `kind` は `provider` / `schema` / `budget` / `timeout` / `denied` / `approval` / `mock_exhausted` / `replay`（5.3。`replay` は M6） |
 | `SchemaError` | `{path: str, expected: str, found: str}` | `validate` の失敗。`path` は `steps[2].name`（根は `""`） |
 | `JsonError` | `{message: str, offset: int}` | `parse_json` の失敗（ADR-0021） |
 | `AuditEvent` | `{seq: int, kind: str, agent: str, tool: str \| None, detail: str}` | 監査イベント（9 章） |
 | `MockResponse` | `{text: str, tool_calls: list[MockToolCall], input_tokens: int, output_tokens: int, latency_ms: int}` | モックの応答 1 つ |
 | `MockToolCall` | `{name: str, args_json: str}` | モックが要求するツールの呼び出し |
+| `LlmUsage` | `{llm_calls: int, tool_calls: int, input_tokens: int, output_tokens: int, cost_usd: float}` | 使用量の集計（M6、§18） |
 
 | 関数 | 型 | Effect | 内容 |
 |---|---|---|---|
@@ -51,6 +52,7 @@
 | `parse_json(s: str)` | `Result[Unknown, JsonError]` | なし | ADR-0021 |
 | `llm_mock_push(r: MockResponse)` | `None` | なし | モックの応答を末尾に積む。実プロバイダが設定されていれば実行時エラー（8.1） |
 | `audit_events()` | `list[AuditEvent]` | なし | これまでの監査イベント（順序付き、`seq` 昇順） |
+| `llm_usage()` | `LlmUsage` | なし | 現在のコンテキスト（根なら全体）の使用量（M6、§18） |
 
 ## 4. スキーマ型と JSON（AI-002）
 
@@ -125,11 +127,12 @@ Union は構成要素の順（型検査がそろえた順: `int`、`bool`、`str
 |---|---|
 | `provider` | proxy を起動できない、応答が壊れている、`error` 行（HTTP の失敗、`refusal`）、要求が不正、`max_tokens` で切れた |
 | `schema` | 出力かツールの引数が型に合わない（`message` に経路） |
-| `budget` | `max_llm_calls` / `max_tool_calls` / `max_tokens` を超えた |
+| `budget` | `max_llm_calls` / `max_tool_calls` / `max_tokens` / `max_cost_usd`（M6）を超えた。上限のある agent で費用の分からない応答が来た |
 | `timeout` | `timeout_ms` を超えた（呼び出しの境界で判定） |
 | `denied` | 一覧にないツール、Capability の不足、`llm` のないコンテキストからの呼び出し |
 | `approval` | `WYS_APPROVAL=prompt` で stdin から回答を読めない、`WYS_APPROVAL` が未知の値 |
 | `mock_exhausted` | モックの応答が尽きた |
+| `replay` | 記録の再生で、要求が記録と一致しない、記録が尽きた、記録が読めない（M6、§19） |
 
 承認の拒否は `kind` にならない（LLM に返して続ける）。パニックにするのは agent コンテキストの不整合（コンパイラの誤り）だけ。
 
@@ -203,8 +206,7 @@ attr_elem  = STRING | IDENT { "." IDENT } ;
 | `max_tool_calls` | ツールを実行するたびに 1（拒否・承認の拒否は数えない） | 実行の前 |
 | `max_tokens` | 応答の `usage.input_tokens + output_tokens` の合計 | 呼ぶ前と、応答の直後 |
 | `timeout_ms` | 7.6 | 呼ぶ前、応答の直後、ツールの前 |
-
-費用（`max_cost_usd`）は価格表が要るので M6（proxy の adapter に置く）。
+| `max_cost_usd`（M6） | 応答の `cost_usd` の合計（費用の分からない応答は超過として扱い、以後も超過のまま。§21） | 呼ぶ前と、応答の直後 |
 
 ### 7.6 タイムアウト
 
@@ -240,7 +242,7 @@ attr_elem  = STRING | IDENT { "." IDENT } ;
 {"text": "...", "tool_calls": [{"id": "t1", "name": "add", "args": {...}}], "usage": {"input_tokens": 10, "output_tokens": 5}, "stop": "end_turn", "assistant": "<不透明な値>"}
 ```
 
-失敗なら `{"error": "..."}`。ランタイムは `text` / `tool_calls` / `usage` / `stop` だけを読み、`assistant` は解釈せず次の要求に戻す（Claude Opus 5.5 の thinking のブロックは会話に結び付いていて、編集すると拒否され得る。PoC4）。
+失敗なら `{"error": "..."}`。任意の項目（M6、ADR-0025 論点 12。`v` は 1 のまま）: 応答と `error` 行の `cost_usd`（数値、USD）、`usage` の `cache_read_input_tokens` / `cache_creation_input_tokens`。ランタイムは `text` / `tool_calls` / `usage` / `stop` だけを読み、`assistant` は解釈せず次の要求に戻す（Claude Opus 5.5 の thinking のブロックは会話に結び付いていて、編集すると拒否され得る。PoC4）。
 
 ### 8.3 `wys llm-proxy`（Anthropic Messages API の adapter）
 
@@ -290,13 +292,16 @@ async def main() -> None uses io, llm:
 
 | 変数 | 読む側 | 意味 |
 |---|---|---|
-| `WYS_LLM_PROVIDER` | ランタイム | 未設定 = モック / `anthropic` / `cmd:<path>` |
+| `WYS_LLM_PROVIDER` | ランタイム | 未設定 = モック / `anthropic` / `cmd:<path>` / `replay:<path>`（M6、§19） |
 | `WYS_LLM_PROXY` | ランタイム | `wys` の実行ファイルの場所（任意） |
 | `WYS_LLM_MODEL` | ランタイム・proxy | 既定のモデル |
 | `WYS_CAPABILITIES` | ランタイム | 配備時の Capability の縮小 |
 | `WYS_APPROVAL` | ランタイム | `deny`（既定）/ `allow` / `prompt` |
 | `WYS_AUDIT` | ランタイム | 監査イベントの出力先 |
 | `WYS_VIRTUAL_TIME` | ランタイム | 実時間を数えない（ADR-0020） |
+| `WYS_TRACE` | ランタイム | トレースの出力先（`<path>` か `stderr`。M6、§18） |
+| `WYS_TRACE_CONTENT` | ランタイム | `1` でトレースに本文を含める（M6、§18） |
+| `WYS_LLM_RECORD` | ランタイム | 要求と応答の記録先（M6、§19） |
 | `ANTHROPIC_API_KEY` | **proxy だけ** | API キー |
 
 ## 12. 初版の制限と M6 以降
@@ -306,7 +311,7 @@ async def main() -> None uses io, llm:
 - `llm_generate` の呼び出しをまたぐと thinking のブロックは引き継がれない（利用者の `Message` は文字列だけ）。
 - `dict[str, T]` と `Unknown` のスキーマは Anthropic の構造化出力に乗らない（4.2）。
 - `python` を付与したツールは Python の内側で何でもできる（サンドボックスではない。ADR-0018 論点 12、ADR-0023 論点 17）。
-- 費用の上限、トレース、記録済み応答の再生、ストリーミング、ほかの adapter、`python` の隔離は M6 以降（`docs/plans/m5.md` 範囲外）。
+- 費用の上限、トレース、記録済み応答の再生は M6（§18〜§21、ADR-0025）。ストリーミング、ほかの adapter、`python` の隔離はその後（`docs/plans/m6.md` 範囲外）。
 
 ## 13. 用語（用語集に追加する）
 
@@ -383,3 +388,42 @@ ADR-0023 論点 1〜6 のとおりに実装した。仕様の解釈として決�
   - 要求の `max_tokens` が 0 なら 16000。
   - 要求全体のタイムアウトは、要求の `timeout_ms` と 600 秒の小さいほう。
 - **実 API との往復:** `scripts/llm-smoke.sh` は本言語のプログラムを `WYS_LLM_PROVIDER=anthropic` で実行する（手元だけ、CI では動かさない）。proxy は、実行ファイルに埋めたコンパイラの場所から探す（`WYS_LLM_PROXY` を付けない）。`Err` なら 0 以外で終わる。
+
+## 18. トレース（M6、ADR-0025 論点 1〜5、AI-007）
+
+`WYS_TRACE=<path>|stderr` で、スパンとイベントを JSON 行で出す（`path` は追記、開けなければ無視）。監査（§9）とは別の流れで、監査の形は変えない。
+
+```json
+{"kind":"span","span":2,"parent":1,"task":0,"name":"llm_call","agent":"planner","tool":null,"start_ms":0,"end_ms":5,"result":"ok","usage":{"input_tokens":20,"output_tokens":5},"cost_usd":null}
+{"kind":"event","span":3,"t_ms":5,"seq":1,"event":"tool_called","agent":"planner","tool":"add","detail":"args_len=16"}
+```
+
+- スパンの `name` は `agent`（`wys_agent_enter` から `wys_agent_exit` まで）/ `llm_call`（1 回のプロバイダの呼び出し）/ `tool_call`（1 回のツールの実行）。終わったときに 1 行出すので、親は子の後に出る。`result` は `ok` か `error:<kind>`（`denied` / `budget` / `schema` / `replay` など）。
+- イベントは監査イベント（§9）と同じ内容に、`span` と `t_ms` を足したもの。監査イベントの `kind` は、行の種類の `kind` と区別するため `event` に入れる。
+- 時計はプロセスの開始からのミリ秒。`WYS_VIRTUAL_TIME=1` では、スケジューラの仮想時計にモックと再生の `latency_ms` の累計を足した値（決定的）。
+- 本文は含めない。`WYS_TRACE_CONTENT=1` のときだけ、`llm_call` に `request` / `reply`、`tool_call` に `args` / `output`（戻り値の JSON。`result` は実行の結果）を足す。
+- `llm_usage() -> LlmUsage`（`{llm_calls, tool_calls, input_tokens, output_tokens, cost_usd}`）で、現在のコンテキスト（根なら全体）の集計を読める。Effect なし。
+
+## 19. 記録と再生（M6、ADR-0025 論点 6〜10、AI-008 / AC-009）
+
+`WYS_LLM_RECORD=<path>` で、どのプロバイダでも要求と応答の対を記録する（最初の呼び出しで作り直す）。
+
+```json
+{"kind":"header","v":1,"provider":"cmd"}
+{"kind":"exchange","seq":1,"request":{"v":1,"model":"...","system":"...","messages":[...],"tools":[...],"schema":{...},"max_tokens":0,"timeout_ms":0},"reply":{"text":"","tool_calls":[...],"usage":{...},"stop":"tool_use","assistant":...},"latency_ms":812}
+```
+
+`WYS_LLM_PROVIDER=replay:<path>` で、子プロセスを起動せずに記録から順に返す。n 回目の呼び出しの要求の指紋（`v` と `timeout_ms` を除いた要求）が n 回目の記録と一致しなければ `Err(kind="replay")`。`latency_ms` は待たずに経過時間を進める。ツールは実際に実行し、承認・Capability・予算の検査もそのまま行う。記録には本文が入る（API キーは入らない）。
+
+## 20. 評価ケース（M6、ADR-0025 論点 11、AI-008）
+
+```text
+evals/<name>/case.wys                     test_* 関数が agent / llm_generate を呼び、assert する
+evals/<name>/recordings/<test>.jsonl      テスト関数ごとの記録（wys test はテストごとに別プロセス）
+```
+
+`wys eval <dir>...` は記録を再生して各テストを実行し、合否・使用量・成功率をまとめる（`--format json`）。`wys eval --record <dir>...` は環境のプロバイダで実行して記録を書き直す。終了コードは 0（すべて合格）/ 1（失敗あり）/ 2（ケースか記録が読めない）。
+
+## 21. 費用（M6、ADR-0025 論点 12〜14、AI-006）
+
+proxy が価格表から応答に `cost_usd` を足す（未知のモデルは付けない）。`usage` に任意の `cache_read_input_tokens` / `cache_creation_input_tokens`。どちらも任意の項目なのでプロトコルの `v` は 1 のまま。`@agent(max_cost_usd=float)` はほかの予算と同じ場所で検査し、超えたら `Err(kind="budget")`。上限のある agent の中で費用の分からない応答（モック、未知のモデル）が来たら、超過として扱う。
