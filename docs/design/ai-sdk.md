@@ -401,7 +401,7 @@ ADR-0023 論点 1〜6 のとおりに実装した。仕様の解釈として決�
 - スパンの `name` は `agent`（`wys_agent_enter` から `wys_agent_exit` まで）/ `llm_call`（1 回のプロバイダの呼び出し）/ `tool_call`（1 回のツールの実行）。終わったときに 1 行出すので、親は子の後に出る。`result` は `ok` か `error:<kind>`（`denied` / `budget` / `schema` / `replay` など）。
 - イベントは監査イベント（§9）と同じ内容に、`span` と `t_ms` を足したもの。監査イベントの `kind` は、行の種類の `kind` と区別するため `event` に入れる。
 - 時計はプロセスの開始からのミリ秒。`WYS_VIRTUAL_TIME=1` では、スケジューラの仮想時計にモックと再生の `latency_ms` の累計を足した値（決定的）。
-- 本文は含めない。`WYS_TRACE_CONTENT=1` のときだけ、`llm_call` に `request` / `reply`、`tool_call` に `args` / `result` を足す。
+- 本文は含めない。`WYS_TRACE_CONTENT=1` のときだけ、`llm_call` に `request` / `reply`、`tool_call` に `args` / `output`（戻り値の JSON。`result` は実行の結果）を足す。
 - `llm_usage() -> LlmUsage`（`{llm_calls, tool_calls, input_tokens, output_tokens, cost_usd}`）で、現在のコンテキスト（根なら全体）の集計を読める。Effect なし。
 
 ## 19. 記録と再生（M6、ADR-0025 論点 6〜10、AI-008 / AC-009）
