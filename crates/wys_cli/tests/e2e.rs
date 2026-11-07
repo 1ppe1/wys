@@ -1695,3 +1695,32 @@ fn effects_of_unannotated_functions_are_inferred() {
     assert!(v["functions"][1]["effects"]["inferred"].is_null());
     assert_eq!(v["functions"][2]["effects"]["inferred"][0], "io");
 }
+
+#[test]
+fn unused_effects_are_warned_with_one_fix() {
+    // 宣言したが使われない Effect は W0203。修正案を適用すると警告が消える（ADR-0024 論点 7）
+    let src = "def report(n: int) -> None uses python, io, exit:\n    print(n)\n\ndef main() -> None:\n    report(1)\n";
+    let path = scratch("unused_effects", src);
+    let out = cli(&["check", "--format", "json", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let ds = v["diagnostics"].as_array().unwrap();
+    assert_eq!(ds.len(), 2);
+    assert!(ds.iter().all(|d| d["code"] == "W0203"));
+    let fix = &ds[0]["hints"][0]["replacement"];
+    assert_eq!(fix, &ds[1]["hints"][0]["replacement"]);
+    assert_eq!(fix["text"], "io");
+    let (start, end) = (
+        fix["span"]["start"]["byte"].as_u64().unwrap() as usize,
+        fix["span"]["end"]["byte"].as_u64().unwrap() as usize,
+    );
+    let fixed = format!("{}{}{}", &src[..start], "io", &src[end..]);
+    assert!(
+        fixed.starts_with("def report(n: int) -> None uses io:\n"),
+        "{fixed}"
+    );
+    let path = scratch("unused_effects_fixed", &fixed);
+    let out = cli(&["check", "--format", "json", path.to_str().unwrap()]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["diagnostics"], serde_json::json!([]));
+}

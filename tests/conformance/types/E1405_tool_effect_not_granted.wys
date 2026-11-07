@@ -1,4 +1,5 @@
-# expect-error: E1405 6:15
+# expect-error: E1405 7:15
+# expect-warning: W0203 4:23
 @tool(description="runs python")
 def run() -> int uses python:
     return 1
