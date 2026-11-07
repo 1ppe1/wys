@@ -2840,7 +2840,7 @@ impl<'a> FnCk<'a> {
         let mut live = Vec::new();
         for arm in arms {
             let mut pattern_failed = false;
-            let mut error_binding: Option<String> = None;
+            let mut error_binding: Option<(String, Span)> = None;
             let covered: Vec<Ty> = match &arm.pattern.kind {
                 PatternKind::Wildcard => remaining.clone(),
                 PatternKind::Bind(name, b) => {
@@ -2849,7 +2849,7 @@ impl<'a> FnCk<'a> {
                     if let Some(b) = b
                         && !self.vars.contains_key(&b.name)
                     {
-                        error_binding = Some(b.name.clone());
+                        error_binding = Some((b.name.clone(), b.span));
                     }
                     if st != Ty::Error {
                         self.bad_binding(name, st, arm.pattern.span);
@@ -2994,7 +2994,7 @@ impl<'a> FnCk<'a> {
                 };
                 b.insert(n.clone(), narrowed);
             }
-            if let Some(n) = &error_binding {
+            if let Some((n, span)) = &error_binding {
                 self.vars.insert(
                     n.clone(),
                     Var {
@@ -3002,11 +3002,13 @@ impl<'a> FnCk<'a> {
                         decl: arm.pattern.span,
                     },
                 );
+                // エラーのあるパターンの束縛も記録する（LSP の定義ジャンプ。型は `Error`）
+                self.bindings.push((n.clone(), Ty::Error, *span));
                 b.insert(n.clone(), Ty::Error);
                 Self::forget_paths(&mut b, n);
             }
             let returns = self.block(&arm.body, &mut b);
-            if let Some(n) = &error_binding {
+            if let Some((n, _)) = &error_binding {
                 self.vars.remove(n);
                 b.remove(n);
                 Self::forget_paths(&mut b, n);
