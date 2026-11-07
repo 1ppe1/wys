@@ -1,0 +1,13 @@
+# 推論は注釈のない関数の呼び出しをたどる（2 段）。E1102 は直接の呼び出しの位置に出る（ADR-0024 論点 2・5）
+# expect-error: E1102 10:5
+def leaf() -> None:
+    exit(3)
+
+def middle() -> None:
+    leaf()
+
+def run() -> None uses io:
+    middle()
+
+def main() -> None:
+    run()

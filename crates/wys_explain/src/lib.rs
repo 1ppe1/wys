@@ -64,12 +64,15 @@ struct AgentJson<'a> {
     timeout_ms: i64,
 }
 
-/// Effect（ADR-0014 論点 10）。推論ではない: `required` は組み込み関数と注釈のある関数の分だけ。
+/// Effect（ADR-0014 論点 10、ADR-0024 論点 11）。`required` は本体の呼び出しの Effect の和集合
+/// （注釈のない呼び出し先は推論した Effect で数え、自分自身への呼び出しは除く）。
 #[derive(Serialize)]
 struct EffectsJson<'a> {
     /// `uses` 節で宣言した Effect。注釈がなければ `null`。
     declared: Option<Vec<&'static str>>,
     required: Vec<&'static str>,
+    /// 注釈のない関数の推論した Effect（`required` に等しい）。注釈があれば `null`。
+    inferred: Option<Vec<&'static str>>,
     sites: Vec<EffectSiteJson<'a>>,
 }
 
@@ -77,7 +80,7 @@ struct EffectsJson<'a> {
 struct EffectSiteJson<'a> {
     callee: &'a str,
     span: SpanJson<'a>,
-    /// 呼び出し先の Effect（注釈のない関数なら空で、`annotated` が偽）。
+    /// 呼び出し先の Effect（注釈のない関数なら推論した Effect で、`annotated` が偽）。
     effects: Vec<&'static str>,
     annotated: bool,
 }
@@ -253,11 +256,13 @@ fn function_json<'a>(
     let required = info
         .effect_sites
         .iter()
+        .filter(|site| site.callee != sig.name)
         .filter_map(|site| site.effects)
         .fold(wys_typeck::EffectSet::default(), |a, b| a.union(b));
     let effects = EffectsJson {
         declared: sig.effects.map(|e| e.names()),
         required: required.names(),
+        inferred: sig.inferred_effects.map(|e| e.names()),
         sites: info
             .effect_sites
             .iter()
@@ -265,7 +270,7 @@ fn function_json<'a>(
                 callee: &site.callee,
                 span: span_json(map, site.span),
                 effects: site.effects.map(|e| e.names()).unwrap_or_default(),
-                annotated: site.effects.is_some(),
+                annotated: site.annotated,
             })
             .collect(),
     };
@@ -552,23 +557,26 @@ mod tests {
     #[test]
     fn reports_declared_and_required_effects() {
         let v = report(
-            "def log(x: int) -> None uses io:\n    print(x)\n\ndef helper() -> None:\n    pass\n\ndef main() -> None:\n    log(1)\n    helper()\n    exit(0)\n",
+            "def log(x: int) -> None uses io:\n    print(x)\n\ndef helper() -> None:\n    print(2)\n\ndef main() -> None:\n    log(1)\n    helper()\n    exit(0)\n",
         );
         let log = &func(&v, "log")["effects"];
         assert_eq!(log["declared"], serde_json::json!(["io"]));
         assert_eq!(log["required"], serde_json::json!(["io"]));
         let main = &func(&v, "main")["effects"];
         assert!(main["declared"].is_null());
-        // 注釈のない関数の分は含まない（推論ではない）
+        // 注釈のない関数は推論する（ADR-0024 論点 11）
         assert_eq!(main["required"], serde_json::json!(["io", "exit"]));
+        assert_eq!(main["inferred"], serde_json::json!(["io", "exit"]));
+        assert!(log["inferred"].is_null());
         let sites = main["sites"].as_array().unwrap();
         assert_eq!(sites.len(), 3);
         assert_eq!(sites[1]["callee"], "helper");
         assert_eq!(sites[1]["annotated"], false);
+        assert_eq!(sites[1]["effects"], serde_json::json!(["io"]));
         assert_eq!(sites[2]["effects"], serde_json::json!(["exit"]));
         assert_eq!(
             func(&v, "helper")["effects"]["required"],
-            serde_json::json!([])
+            serde_json::json!(["io"])
         );
     }
 

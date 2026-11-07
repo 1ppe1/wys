@@ -410,11 +410,12 @@
       ]
     },
     "effects": {
-      "description": "Effect（ADR-0014 論点 10）。推論ではない: `required` は本体の呼び出しのうち、組み込み関数と注釈のある関数の Effect の和集合。",
+      "description": "Effect（ADR-0014 論点 10、ADR-0024 論点 11）。`required` は本体の呼び出しの Effect の和集合（注釈のない呼び出し先は推論した Effect で数え、自分自身への呼び出しは除く）。",
       "type": "object",
       "required": [
         "declared",
         "required",
+        "inferred",
         "sites"
       ],
       "additionalProperties": false,
@@ -440,6 +441,21 @@
             "$ref": "#/$defs/effect_name"
           },
           "uniqueItems": true
+        },
+        "inferred": {
+          "description": "注釈のない関数の推論した Effect（`required` に等しい）。注釈があれば null（ADR-0024）。",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/effect_name"
+              },
+              "uniqueItems": true
+            }
+          ]
         },
         "sites": {
           "description": "関数の呼び出し（位置の順）。",
@@ -469,7 +485,7 @@
           "$ref": "#/$defs/span"
         },
         "effects": {
-          "description": "呼び出し先の Effect。注釈のない関数なら空。",
+          "description": "呼び出し先の Effect。注釈のない関数なら推論した Effect（ADR-0024）。",
           "type": "array",
           "items": {
             "$ref": "#/$defs/effect_name"

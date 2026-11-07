@@ -180,9 +180,12 @@ pub struct Function {
     pub ret: Option<Ty>,
     pub temps: Vec<Ty>,
     pub blocks: Vec<Block>,
-    /// `uses` 節で宣言した Effect（ADR-0014）。注釈がなければ `None`、`uses pure` なら空。
-    /// バックエンドは読まない（生成コードは変わらない）。
+    /// 関数の Effect: `uses` 節で宣言した集合（ADR-0014）か、注釈がなければ推論した集合（ADR-0024。`effects_inferred`）。
+    /// `uses pure` と推論した空の集合は空。lowering が合成する関数（ツールのトランポリン、`wys test` の入口）は `None`。
+    /// バックエンドはツール表の Effect のビットに使う（`@tool` は `uses` が必須なので、常に宣言した集合）。
     pub effects: Option<Vec<Effect>>,
+    /// `effects` が推論した集合か（`dump-ir` では `uses(inferred) io`）。
+    pub effects_inferred: bool,
     /// `@tool(...)` の属性（ADR-0022 論点 13・15）。T9 でツール表を作る。いまはバックエンドは読まない
     pub tool: Option<ToolAttr>,
     /// `@agent(...)` の属性（ADR-0022 論点 14・15）。T9 で `wys_agent_enter` / `wys_agent_exit` を入れる
@@ -1666,11 +1669,16 @@ impl fmt::Display for Program {
             if let Some(r) = func.ret {
                 write!(f, " -> {}", r.name())?;
             }
+            let uses = if func.effects_inferred {
+                "uses(inferred)"
+            } else {
+                "uses"
+            };
             match &func.effects {
-                Some(es) if es.is_empty() => write!(f, " uses pure")?,
+                Some(es) if es.is_empty() => write!(f, " {uses} pure")?,
                 Some(es) => {
                     let names: Vec<&str> = es.iter().map(|e| e.name()).collect();
-                    write!(f, " uses {}", names.join(", "))?
+                    write!(f, " {uses} {}", names.join(", "))?
                 }
                 None => {}
             }
@@ -1976,6 +1984,7 @@ mod tests {
                 elided_rc: Vec::new(),
                 is_async: false,
                 effects: None,
+                effects_inferred: false,
                 tool: None,
                 agent: None,
             }],

@@ -1660,3 +1660,36 @@ fn agent_demo_runs_with_the_mock_provider() {
     );
     assert_only_system_libraries(&exe);
 }
+
+#[test]
+fn effects_of_unannotated_functions_are_inferred() {
+    // 注釈のない関数を経由した Effect も、注釈のある呼び出し元で E1102 になる（ADR-0024）
+    let bad = scratch(
+        "inferred_bad",
+        "def note(x: int) -> None:\n    print(x)\n\n@tool(description=\"Double.\")\ndef double(x: int) -> int uses pure:\n    note(x)\n    return x * 2\n\ndef main() -> None:\n    print(double(1))\n",
+    );
+    let out = cli(&["check", "--format", "json", bad.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let d = &v["diagnostics"][0];
+    assert_eq!(d["code"], "E1102");
+    assert_eq!(d["related"][0]["name"], "note");
+    assert_eq!(d["related"][1]["name"], "print");
+    assert_eq!(d["hints"][0]["replacement"]["text"], "io");
+    // 推論した集合が宣言に収まれば通り、IR と `wys explain` に推論した Effect が出る
+    let ok = scratch(
+        "inferred_ok",
+        "def note(x: int) -> None:\n    print(x)\n\ndef log(x: int) -> None uses io:\n    note(x)\n\ndef main() -> None:\n    log(1)\n",
+    );
+    let out = cli(&["run", ok.to_str().unwrap()]);
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "1\n");
+    let out = cli(&["dump-ir", ok.to_str().unwrap()]);
+    let ir = String::from_utf8(out.stdout).unwrap();
+    assert!(ir.contains("note(l0: int) uses(inferred) io {"), "{ir}");
+    assert!(ir.contains("log(l0: int) uses io {"), "{ir}");
+    let out = cli(&["explain", ok.to_str().unwrap()]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["functions"][0]["effects"]["inferred"][0], "io");
+    assert!(v["functions"][1]["effects"]["inferred"].is_null());
+    assert_eq!(v["functions"][2]["effects"]["inferred"][0], "io");
+}

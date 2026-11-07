@@ -69,6 +69,7 @@ expression: json
         "required": [
           "io"
         ],
+        "inferred": null,
         "sites": [
           {
             "callee": "print",
@@ -153,6 +154,7 @@ expression: json
       "effects": {
         "declared": [],
         "required": [],
+        "inferred": null,
         "sites": []
       },
       "tool": null,
@@ -192,6 +194,7 @@ expression: json
       "effects": {
         "declared": null,
         "required": [],
+        "inferred": [],
         "sites": []
       },
       "tool": null,
@@ -231,6 +234,9 @@ expression: json
       "effects": {
         "declared": null,
         "required": [
+          "io"
+        ],
+        "inferred": [
           "io"
         ],
         "sites": [
