@@ -21,7 +21,7 @@ wys lsp（wys_cli の副コマンド）── wys_lsp::run_stdio ── serve(&C
 
 | メソッド | 状態 | 内容 |
 |---|---|---|
-| `initialize` / `initialized` | M6 T9 | `positionEncoding`（UTF-8 か UTF-16）、`textDocumentSync: Full` を返す |
+| `initialize` / `initialized` | M6 T9 | `positionEncoding`（UTF-8 か UTF-16）、`textDocumentSync: Full` を返す。T11 で `hoverProvider` / `definitionProvider` / `codeActionProvider`（`quickfix`）/ `documentFormattingProvider` を足す |
 | `textDocument/didOpen` / `didChange` / `didClose` | M6 T9 | 開いているすべての文書を解析し直し、診断を配る（3 章） |
 | `textDocument/publishDiagnostics` | M6 T9 | サーバー → クライアント |
 | `textDocument/hover` | M6 T11 | 4 章 |
@@ -29,7 +29,7 @@ wys lsp（wys_cli の副コマンド）── wys_lsp::run_stdio ── serve(&C
 | `textDocument/codeAction` | M6 T11 | 診断の `replacement` を quickfix に（6 章） |
 | `textDocument/formatting` | M6 T11 | `wys fmt` と同じ整形（全文の置き換え） |
 | `shutdown` / `exit` | M6 T9 | `shutdown` なしの `exit` は終了コード 1 |
-| それ以外 | — | 要求は `MethodNotFound`、通知は無視 |
+| それ以外 | — | 要求は `MethodNotFound`、壊れた通知は無視して `window/logMessage` |
 
 ## 3. 診断
 
@@ -40,31 +40,31 @@ wys lsp（wys_cli の副コマンド）── wys_lsp::run_stdio ── serve(&C
 
 ## 4. ホバー（T11）
 
-位置にある最も内側の要素について、Markdown の 1 つのコードブロックと説明の行を返す。型の表記は `wys explain` と同じ。
+位置 `p` を含む最も小さい式（`span.start <= p < span.end`）について、Markdown の 1 つのコードブロックと説明の行を返す（式でない名前の規則は ADR-0026 論点 10）。型の表記は `wys explain` と同じ。キーワード・空白・コメント・文字列の中・型注釈の上は `null`。
 
 | 位置 | 表示 |
 |---|---|
 | 式 | 絞り込み後の型（例 `int`、`Plan`、`list[str]`） |
 | ローカル変数 | `name: 宣言の型`。絞り込まれていれば `（ここでは T）` |
-| 関数の名前・呼び出し | 署名（`def f(x: int) -> str uses io`。推論した Effect は `uses(inferred) io`）、`@tool` / `@agent` の属性 |
+| 関数の名前・呼び出し | 署名（内部名で `def a.b.f(x: int) -> str uses io`。推論した Effect は `uses(inferred) io`）、`pub` / `async` / `@tool` / `@agent`。組み込みの関数は呼び出しの型と Effect、メソッドは結果の型だけ |
 | レコードのフィールド | フィールドの型 |
 
-型が `Error` の式には出さない。エラーのあるファイルでも、構文エラーがなければ型検査まで進めた結果を使う（ADR-0026 論点 9）。
+型が `Error` の式には出さない。エラーのあるファイルでも、構文エラーと名前解決のエラーがなければ型検査まで進めた結果（`Frontend.analysis`）を使う（ADR-0026 論点 9）。import 先の構文が壊れている間は `null`。
 
 ## 5. 定義ジャンプ（T11）
 
-関数 → 名前の位置（モジュールの関数は import 先のファイル）、ローカル変数 → 宣言、型 → `type` の定義、`import m` → モジュールのファイルの先頭。組み込みには定義がない（空の応答）。
+関数（`m.f` を含む）→ 名前の位置（モジュールの関数は import 先のファイル）、ローカル変数（`case` の束縛を含む）→ 宣言、型 → `type` の定義、`import m` / `import m as n` → モジュールのファイルの先頭、`from m import f` / `f as g` → `f` の定義、`@agent(tools=[...])` の関数名 → その関数。組み込みの関数・組み込みのレコード・型パラメータには定義がない（空の応答）。
 
 ## 6. quickfix（T11）
 
-診断の `hints` のうち `replacement` のあるものを、その診断の `quickfix`（`WorkspaceEdit` の 1 つの置き換え）にする。CLI の修正案（`check --format json` の `hints[].replacement`）と同じ。
+診断の `hints` のうち `replacement` のあるものごとに `quickfix` を作る（いまは E0103 / E0104 / E1102 / W0203）。修正は配る診断の `data` に入れ（`{fixes: [{title, uri, range, text}]}`）、`codeAction` はクライアントが送り返す `context.diagnostics[].data` から `WorkspaceEdit` を作る。編集先の URI は `replacement` の位置のファイル。CLI の修正案（`check --format json` の `hints[].replacement`）と同じ。
 
 ## 7. 検査
 
 | 層 | 内容 |
 |---|---|
 | 単体テスト | 位置の変換、`diagnostics`、URI とパス、`serve` を `Connection::memory()` で（同じモジュールを import する文書、`didClose`、壊れた通知、`exit`） |
-| Conformance（T11） | `tests/conformance/lsp/`。`# expect-hover: 行:列 <文字列>`、`# expect-definition: 行:列 -> ファイル:行:列` |
+| Conformance（T11） | `tests/conformance/lsp/<ケース>/main.wys`。`# expect-hover: 行:列 <コードブロックの 1 行目>`、`# expect-definition: 行:列 -> ファイル:行:列`（ファイルはケースのディレクトリからの相対。行・列は 1 始まり、列は Unicode スカラー値）。実行せず、LSP と同じ入口で解析だけ行う |
 | e2e | `wys lsp` を子プロセスにして JSON-RPC の全手順（`lsp_publishes_diagnostics_over_json_rpc`） |
 
 遅延の計測は `benches/lsp_latency.py`（絶対値だけ）。
