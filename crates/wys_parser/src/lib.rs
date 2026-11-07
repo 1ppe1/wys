@@ -334,7 +334,7 @@ impl Parser<'_> {
                     format!("expected a literal or a list of names as a decorator argument, found {found}"),
                     p.span(),
                 )
-                .with_hint("decorator arguments are integers, strings, `True` / `False`, or lists of strings and function names"),
+                .with_hint("decorator arguments are numbers, strings, `True` / `False`, or lists of strings and function names"),
             );
             Reported
         };
@@ -349,6 +349,17 @@ impl Parser<'_> {
                     unreachable!("checked above")
                 };
                 AttrValue::Int(-v)
+            }
+            TokenKind::Float(bits) => {
+                self.bump();
+                AttrValue::Float(f64::from_bits(bits))
+            }
+            TokenKind::Minus if matches!(self.peek_at(1), TokenKind::Float(_)) => {
+                self.bump();
+                let TokenKind::Float(bits) = self.bump().kind.clone() else {
+                    unreachable!("checked above")
+                };
+                AttrValue::Float(-f64::from_bits(bits))
             }
             TokenKind::Str(s) => {
                 self.bump();

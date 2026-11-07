@@ -111,7 +111,7 @@
         "agent": {
           "description": "`@agent(...)` の属性（ADR-0022 論点 16）。付いていなければ null。予算の 0 は上限なし。",
           "type": ["object", "null"],
-          "required": ["tools", "capabilities", "model", "max_llm_calls", "max_tool_calls", "max_tokens", "timeout_ms"],
+          "required": ["tools", "capabilities", "model", "max_llm_calls", "max_tool_calls", "max_tokens", "timeout_ms", "max_cost_usd"],
           "additionalProperties": false,
           "properties": {
             "tools": {"type": "array", "items": {"type": "string"}},
@@ -120,7 +120,8 @@
             "max_llm_calls": {"type": "integer", "minimum": 0},
             "max_tool_calls": {"type": "integer", "minimum": 0},
             "max_tokens": {"type": "integer", "minimum": 0},
-            "timeout_ms": {"type": "integer", "minimum": 0}
+            "timeout_ms": {"type": "integer", "minimum": 0},
+            "max_cost_usd": {"type": "number", "minimum": 0, "description": "費用の上限（USD。0 は上限なし。ADR-0025 論点 13）"}
           }
         },
         "span": {

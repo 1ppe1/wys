@@ -92,8 +92,50 @@ fn request_body(req: &serde_json::Value, env_model: Option<&str>) -> serde_json:
     body
 }
 
-/// Messages API の応答を、ランタイムへの 1 行にする。
-fn reply_line(resp: &serde_json::Value) -> serde_json::Value {
+/// 価格表（100 万トークンあたりの USD: 入力、出力、キャッシュの書き込み（5 分の TTL、入力の 1.25 倍）、
+/// キャッシュの読み込み）。ADR-0025 論点 12。価格は古くなるので、ランタイムではなくここに置く。
+/// 2026-10 時点の Anthropic の API の単価（claude-api のスキルの表）。モデルの ID は完全一致で引き、知らない
+/// モデルには費用を付けない（ランタイムは「費用が分からない」として扱う）。`claude-haiku-5-5` は 10 万トークン
+/// までの単価（それを超える要求の単価は表に入れていない）
+const PRICES: &[(&str, [f64; 4])] = &[
+    ("claude-fable-5-1", [10.0, 50.0, 12.5, 0.25]),
+    ("claude-opus-5-5", [4.0, 20.0, 5.0, 0.20]),
+    ("claude-sonnet-5-5", [2.0, 10.0, 2.5, 0.20]),
+    ("claude-haiku-5-5", [0.10, 0.50, 0.125, 0.01]),
+];
+
+/// 応答の `usage` の費用（USD）。知らないモデルなら `None`
+fn cost_usd(model: &str, usage: &serde_json::Value) -> Option<f64> {
+    let (_, [input, output, write, read]) = PRICES.iter().find(|(m, _)| *m == model)?;
+    let n = |k: &str| usage[k].as_f64().unwrap_or(0.0);
+    Some(
+        (n("input_tokens") * input
+            + n("output_tokens") * output
+            + n("cache_creation_input_tokens") * write
+            + n("cache_read_input_tokens") * read)
+            / 1_000_000.0,
+    )
+}
+
+/// ランタイムへの `usage`（キャッシュの内訳は、あれば任意の項目として添える）と費用
+fn usage_and_cost(resp: &serde_json::Value, model: &str) -> (serde_json::Value, serde_json::Value) {
+    let u = &resp["usage"];
+    let mut usage = serde_json::json!({
+        "input_tokens": u["input_tokens"],
+        "output_tokens": u["output_tokens"],
+    });
+    for k in ["cache_creation_input_tokens", "cache_read_input_tokens"] {
+        if u[k].is_number() {
+            usage[k] = u[k].clone();
+        }
+    }
+    let model = resp["model"].as_str().unwrap_or(model);
+    let cost = cost_usd(model, u).map_or(serde_json::Value::Null, serde_json::Value::from);
+    (usage, cost)
+}
+
+/// Messages API の応答を、ランタイムへの 1 行にする（`model` は要求したモデル。応答に `model` がなければ使う）。
+fn reply_line(resp: &serde_json::Value, model: &str) -> serde_json::Value {
     let content = resp["content"].as_array().cloned().unwrap_or_default();
     let text: String = content
         .iter()
@@ -106,26 +148,26 @@ fn reply_line(resp: &serde_json::Value) -> serde_json::Value {
         .map(|b| serde_json::json!({"id": b["id"], "name": b["name"], "args": b["input"]}))
         .collect();
     let stop = resp["stop_reason"].as_str().unwrap_or_default();
-    if stop == "refusal" {
+    let (usage, cost) = usage_and_cost(resp, model);
+    let mut line = if stop == "refusal" {
         // 拒否でも入力は課金されるので、使用量を添える（ランタイムが予算に数える）
-        return serde_json::json!({
+        serde_json::json!({
             "error": "the model declined the request (refusal)",
-            "usage": {
-                "input_tokens": resp["usage"]["input_tokens"],
-                "output_tokens": resp["usage"]["output_tokens"],
-            },
-        });
+            "usage": usage,
+        })
+    } else {
+        serde_json::json!({
+            "text": text,
+            "tool_calls": tool_calls,
+            "usage": usage,
+            "stop": stop,
+            "assistant": content,
+        })
+    };
+    if !cost.is_null() {
+        line["cost_usd"] = cost;
     }
-    serde_json::json!({
-        "text": text,
-        "tool_calls": tool_calls,
-        "usage": {
-            "input_tokens": resp["usage"]["input_tokens"],
-            "output_tokens": resp["usage"]["output_tokens"],
-        },
-        "stop": stop,
-        "assistant": content,
-    })
+    line
 }
 
 /// 要求全体のタイムアウト: 要求の `timeout_ms`（agent の残り時間。0 = なし）と上限の小さいほう。
@@ -155,7 +197,7 @@ fn call(agent: &ureq::Agent, key: &str, req: &serde_json::Value) -> serde_json::
             .into_string()
             .map(|t| serde_json::from_str::<serde_json::Value>(&t))
         {
-            Ok(Ok(v)) => reply_line(&v),
+            Ok(Ok(v)) => reply_line(&v, body["model"].as_str().unwrap_or_default()),
             Ok(Err(e)) => serde_json::json!({"error": format!("malformed API response: {e}")}),
             Err(e) => serde_json::json!({"error": format!("cannot read the API response: {e}")}),
         },
@@ -255,15 +297,45 @@ mod tests {
             "stop_reason": "tool_use",
             "usage": {"input_tokens": 5, "output_tokens": 7},
         });
-        let r = reply_line(&resp);
+        let r = reply_line(&resp, "claude-opus-5-5");
         assert_eq!(r["text"], "ok");
         assert_eq!(r["tool_calls"][0]["name"], "add");
         assert_eq!(r["usage"]["output_tokens"], 7);
         assert_eq!(r["assistant"].as_array().map(Vec::len), Some(2));
         let refused = serde_json::json!({"content": [], "stop_reason": "refusal"});
-        assert!(reply_line(&refused)["error"].is_string());
+        assert!(reply_line(&refused, "claude-opus-5-5")["error"].is_string());
         let refused = serde_json::json!({"content": [], "stop_reason": "refusal", "usage": {"input_tokens": 9, "output_tokens": 0}});
-        assert_eq!(reply_line(&refused)["usage"]["input_tokens"], 9);
+        assert_eq!(
+            reply_line(&refused, "claude-opus-5-5")["usage"]["input_tokens"],
+            9
+        );
+    }
+
+    #[test]
+    fn replies_carry_the_cost_of_known_models() {
+        // 入力 1,000,000 と出力 100,000、キャッシュの読み込み 1,000,000（claude-opus-5-5: $4 + $2 + $0.20）
+        let resp = serde_json::json!({
+            "model": "claude-opus-5-5",
+            "content": [{"type": "text", "text": "x"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1_000_000, "output_tokens": 100_000, "cache_read_input_tokens": 1_000_000}
+        });
+        let r = reply_line(&resp, "ignored");
+        let cost = r["cost_usd"].as_f64().unwrap();
+        assert!((cost - 6.2).abs() < 1e-9, "{cost}");
+        assert_eq!(r["usage"]["cache_read_input_tokens"], 1_000_000);
+        // 応答に `model` がなければ要求のモデルで引く。知らないモデルには費用を付けない
+        let mut no_model = resp.clone();
+        no_model.as_object_mut().unwrap().remove("model");
+        assert!(reply_line(&no_model, "claude-haiku-5-5")["cost_usd"].is_number());
+        assert!(
+            reply_line(&no_model, "some-other-model")
+                .get("cost_usd")
+                .is_none()
+        );
+        // 拒否の行にも費用を付ける（入力は課金される）
+        let refused = serde_json::json!({"model": "claude-sonnet-5-5", "content": [], "stop_reason": "refusal", "usage": {"input_tokens": 1_000_000, "output_tokens": 0}});
+        assert_eq!(reply_line(&refused, "x")["cost_usd"], 2.0);
     }
 
     #[test]

@@ -104,6 +104,8 @@ pub struct AgentAttr {
     pub max_tool_calls: i64,
     pub max_tokens: i64,
     pub timeout_ms: i64,
+    /// `max_cost_usd`（100 万分の 1 USD 単位。0 は上限なし）
+    pub max_cost_micro_usd: i64,
 }
 
 /// Union の構成要素。`None` は中身を持たない構成要素。
@@ -1720,6 +1722,12 @@ impl fmt::Display for Program {
                     if v > 0 {
                         parts.push(format!("{k}={v}"));
                     }
+                }
+                if a.max_cost_micro_usd > 0 {
+                    parts.push(format!(
+                        "max_cost_usd={}",
+                        a.max_cost_micro_usd as f64 / 1e6
+                    ));
                 }
                 write!(f, " @agent({})", parts.join(", "))?;
             }

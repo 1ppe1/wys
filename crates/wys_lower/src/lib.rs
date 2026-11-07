@@ -801,6 +801,7 @@ impl<'s, 't> FnLower<'s, 't> {
                 max_tool_calls: a.max_tool_calls,
                 max_tokens: a.max_tokens,
                 timeout_ms: a.timeout_ms,
+                max_cost_micro_usd: a.max_cost_micro_usd,
             }),
         }
     }

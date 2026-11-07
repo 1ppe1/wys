@@ -1,0 +1,21 @@
+# `max_cost_usd` は 0 以上の数（USD。整数のリテラルも受け付ける。ADR-0025 論点 13）
+# expect-error: E1402 4:8
+# expect-error: E1402 8:8
+@agent(max_cost_usd=-0.5)
+async def a() -> None uses io, llm:
+    pass
+
+@agent(max_cost_usd="1")
+async def b() -> None uses io, llm:
+    pass
+
+@agent(max_cost_usd=2)
+async def c() -> None uses io, llm:
+    pass
+
+@agent(max_cost_usd=0.25)
+async def d() -> None uses io, llm:
+    pass
+
+def main() -> None:
+    pass
