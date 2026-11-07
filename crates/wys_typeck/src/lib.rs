@@ -1118,6 +1118,7 @@ fn effect_diagnostics(cx: &Ctx, f: &FuncDef, index: usize, funcs: &[FuncInfo]) -
                             funcs[j]
                                 .effect_sites
                                 .iter()
+                                .filter(|s| s.callee != site.callee)
                                 .find(|s| s.effects.unwrap_or_default().contains(e))
                         })
                         .collect()
@@ -1154,9 +1155,11 @@ fn effect_diagnostics(cx: &Ctx, f: &FuncDef, index: usize, funcs: &[FuncInfo]) -
         {
             let mut seen: Vec<Span> = Vec::new();
             for &e in &missing {
+                // 呼び出し先の自己再帰は由来ではない（不動点は自己呼び出し以外から生まれる）
                 if let Some(o) = funcs[j]
                     .effect_sites
                     .iter()
+                    .filter(|s| s.callee != site.callee)
                     .find(|s| s.effects.unwrap_or_default().contains(e))
                     && !seen.contains(&o.span)
                 {
@@ -5670,7 +5673,7 @@ mod tests {
         assert_eq!(run(&with_main(panics)), Vec::<&str>::new());
         let both_missing = "def f() -> None uses pure:\n    print(1)\n    exit(1)\n";
         assert_eq!(run(&with_main(both_missing)), vec!["E1102", "E1102"]);
-        // 未知の名前があれば本体は検査しない（E1102 を連鎖させない）
+        // 未知の名前があれば E1102 を出さない（連鎖させない）
         let unknown = "def f() -> None uses foo:\n    print(1)\n";
         assert_eq!(run(&with_main(unknown)), vec!["E1101"]);
     }
@@ -5708,6 +5711,19 @@ mod tests {
         let related: Vec<&str> = d.related.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(related, vec!["g", "exit"]);
         assert_eq!(d.hints[0].replacement.as_ref().unwrap().1, ", exit");
+    }
+
+    #[test]
+    fn the_origin_skips_the_callee_calling_itself() {
+        let src = with_main(
+            "def show(x: int) -> None:\n    print(x)\n\ndef again(n: int) -> None:\n    if n > 0:\n        again(n - 1)\n    show(n)\n\ndef run() -> None uses pure:\n    again(1)\n",
+        );
+        let (m, _) = wys_parser::parse_source(&src);
+        let diags = check(&m).1;
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        let related: Vec<&str> = diags[0].related.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(related, vec!["again", "show"]);
+        assert!(diags[0].cause.as_deref().unwrap_or("").contains("`show`"));
     }
 
     #[test]
