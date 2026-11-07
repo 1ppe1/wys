@@ -18,6 +18,7 @@
 | [design/ir.md](design/ir.md) | 草案 | 共通IRの構造・値のルール・テキスト形式 |
 | [design/memory-model.md](design/memory-model.md) | 草案 | メモリモデル（ARC + Move）、保証範囲、Union の値表現 |
 | [design/ai-sdk.md](design/ai-sdk.md) | 確定 | AI SDK の設計（M5）: 組み込みの型と関数、スキーマ型と JSON Schema、`llm_generate`、`@tool` / `@agent`、ランタイムの強制、プロバイダ、監査 |
+| [design/lsp.md](design/lsp.md) | 草案（ADR-0026 は Proposed） | LSP の設計（M6）: `wys lsp` の構成、対応する要求、診断の配り方、ホバー・定義・quickfix・整形、検査、クライアントの設定例 |
 | [poc/poc3-results.md](poc/poc3-results.md) | 成功 | PoC3: CPython の埋め込み（M4 T1、INTEROP-001 / 002 の試作） |
 | [poc/poc4-results.md](poc/poc4-results.md) | 成功 | PoC4: AI 安全性のランタイム（M5 T1、ツール表・agent のコンテキスト・予算・監査・実プロバイダの proxy） |
 | [poc/poc5-results.md](poc/poc5-results.md) | 準備済み・未計測 | PoC5: AI 修正ループの成功率（DX-005） |
