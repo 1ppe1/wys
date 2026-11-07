@@ -24,6 +24,11 @@ echo "==> bench programs (check)"
 for f in benches/programs/*.wys; do
   ./target/debug/wys check "$f" >/dev/null
 done
+echo "==> evaluation cases (replay, ADR-0025)"
+./target/debug/wys eval tests/evals/*/
+for f in tests/evals/*/case.wys; do
+  ./target/debug/wys fmt --check "$f"
+done
 echo "==> poc5 cases"
 ./scripts/poc5/verify.sh
 echo "==> OK"

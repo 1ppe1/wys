@@ -5,6 +5,7 @@
 //! 終了コード: 0 = 成功、1 = ソースに診断エラーがある、2 = 使い方・入出力・ツールのエラー。
 //! `run` はプログラム自身の終了コードを返す。
 
+mod eval;
 mod llm_proxy;
 
 use std::path::{Path, PathBuf};
@@ -17,6 +18,10 @@ usage:
   wys build <file> [-o <output>]          build a native executable (--release: optimize with -O2)
   wys run <file> [-- <args>...]           build and run (arguments after -- go to the program)
   wys test <file>                         run the functions named test_* (no main needed)
+  wys eval [--record] [--format text|json] <dir>...
+                                          run evaluation cases (<dir>/case.wys) against their
+                                          recordings and report the success rate (--record:
+                                          rerun them with WYS_LLM_PROVIDER and rewrite the recordings)
   wys fmt [--check] <file>                format a file in place (--check: only report)
   wys dump-ir <file>                      print the wys IR
   wys dump-llvm <file>                    print the generated LLVM IR
@@ -51,6 +56,9 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
     if cmd == "llm-proxy" {
         llm_proxy::run()?;
         return Ok(ExitCode::SUCCESS);
+    }
+    if cmd == "eval" {
+        return eval::run(rest);
     }
     let mut format_arg: Option<Format> = None;
     let mut check_only = false;
