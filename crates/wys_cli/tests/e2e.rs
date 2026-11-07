@@ -1754,3 +1754,37 @@ fn traces_are_deterministic_under_the_virtual_clock() {
     assert_eq!(lines[3]["args"], "{\"a\": 2, \"b\": 3}");
     assert_eq!(lines[3]["output"], "5");
 }
+
+const NESTED_IN_TOOL: &str = "@agent(capabilities=[\"io\"])\nasync def inner() -> Result[str, LlmError] uses io, llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"x\")], max_tokens=0)\n    return await llm_generate[str](req)\n\n@tool(description=\"Delegate.\")\nasync def delegate() -> str uses io, llm:\n    match await inner():\n        case Ok(t):\n            return t\n        case Err(e):\n            return e.kind\n\n@agent(tools=[delegate])\nasync def outer() -> Result[str, LlmError] uses io, llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm:\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"delegate\", args_json=\"{}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"done\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    match await outer():\n        case Ok(t):\n            print(t)\n        case Err(e):\n            print(e.kind)\n";
+
+#[test]
+fn events_of_an_agent_inside_a_tool_belong_to_that_agent() {
+    // ツールの中で入った agent のイベントは、外側の `tool_call` ではなくその agent のスパンに付く（Fable のレビュー）
+    let path = scratch("nested_in_tool", NESTED_IN_TOOL);
+    let trace = path.with_extension("trace.jsonl");
+    let _ = std::fs::remove_file(&trace);
+    let out = cli_env(
+        &["run", path.to_str().unwrap()],
+        &[
+            ("WYS_VIRTUAL_TIME", "1"),
+            ("WYS_TRACE", trace.to_str().unwrap()),
+        ],
+    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "done\n");
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(&trace)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let denied = lines
+        .iter()
+        .find(|v| v["event"] == "capability_denied")
+        .unwrap();
+    let inner = lines
+        .iter()
+        .find(|v| v["name"] == "agent" && v["agent"] == "inner")
+        .unwrap();
+    let tool = lines.iter().find(|v| v["name"] == "tool_call").unwrap();
+    assert_eq!(denied["span"], inner["span"]);
+    assert_eq!(inner["parent"], tool["parent"]);
+}

@@ -398,9 +398,9 @@ ADR-0023 論点 1〜6 のとおりに実装した。仕様の解釈として決�
 {"kind":"event","span":3,"t_ms":5,"seq":1,"event":"tool_called","agent":"planner","tool":"add","detail":"args_len=16"}
 ```
 
-- スパンの `name` は `agent`（`wys_agent_enter` から `wys_agent_exit` まで）/ `llm_call`（1 回のプロバイダの呼び出し）/ `tool_call`（1 回のツールの実行）。終わったときに 1 行出すので、親は子の後に出る。`result` は `ok` か `error:<kind>`（`denied` / `budget` / `schema` / `replay` など）。
+- スパンの `name` は `agent`（`wys_agent_enter` から `wys_agent_exit` まで）/ `llm_call`（1 回のプロバイダの呼び出し）/ `tool_call`（1 回のツールの実行）。終わったときに 1 行出す。親の agent が先に出ることもある（`spawn` した子）ので、順序ではなく `parent` でたどる。`result` は `llm_call` なら `ok` / `error:<kind>`、`tool_call` なら `ok` / `tool_error`（ツールが `Err` を返した）/ `refused`（承認の拒否）/ `error:<kind>`。`agent` は `result` を持たない。
 - イベントは監査イベント（§9）と同じ内容に、`span` と `t_ms` を足したもの。監査イベントの `kind` は、行の種類の `kind` と区別するため `event` に入れる。
-- 時計はプロセスの開始からのミリ秒。`WYS_VIRTUAL_TIME=1` では、スケジューラの仮想時計にモックと再生の `latency_ms` の累計を足した値（決定的）。
+- 時計は、有効な時計（`WYS_VIRTUAL_TIME=1` ならスケジューラの仮想時計、それ以外はランタイムの初期化からの単調時計）に、プロセス全体のモックと再生の `latency_ms` の累計を足したミリ秒（両方のモードで同じ式。仮想時計のもとでは決定的）。
 - 本文は含めない。`WYS_TRACE_CONTENT=1` のときだけ、`llm_call` に `request` / `reply`、`tool_call` に `args` / `output`（戻り値の JSON。`result` は実行の結果）を足す。
 - `llm_usage() -> LlmUsage`（`{llm_calls, tool_calls, input_tokens, output_tokens, cost_usd}`）で、現在のコンテキスト（根なら全体）の集計を読める。Effect なし。
 

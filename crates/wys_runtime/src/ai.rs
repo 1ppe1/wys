@@ -211,8 +211,11 @@ struct Trace {
     next_span: u64,
     /// プロセス全体のモック（と再生）の応答の `latency_ms` の累計（トレースの時計に足す）
     latency_ms: i64,
-    /// タスクごとの、いま開いている `llm_call` / `tool_call` のスパン（イベントをどのスパンに付けるか）
+    /// タスクごとの、いま開いているスパン（イベントをどのスパンに付けるか）
     active: HashMap<usize, Vec<u64>>,
+    /// `WYS_TRACE=<path>` のファイル（最初の 1 行で開き、開けなければ以後は出さない）
+    file: Option<std::fs::File>,
+    file_failed: bool,
 }
 
 impl Trace {
@@ -223,6 +226,8 @@ impl Trace {
             next_span: 0,
             latency_ms: 0,
             active: HashMap::new(),
+            file: None,
+            file_failed: false,
         }
     }
 }
@@ -406,7 +411,8 @@ fn span_ref(span: u64) -> serde_json::Value {
     }
 }
 
-/// イベントを付けるスパン: 開いている `llm_call` / `tool_call`、なければ現在の agent のスパン
+/// イベントを付けるスパン: このタスクで開いている最内のスパン（agent / `llm_call` / `tool_call`）。なければ
+/// 現在のコンテキストの agent のスパン（`spawn` した子は親の agent のスパン）
 fn current_span(s: &State) -> u64 {
     s.trace
         .active
@@ -439,24 +445,33 @@ fn close_span(s: &mut State, id: u64) {
     }
 }
 
-fn trace_write(s: &State, line: &serde_json::Value) {
-    let Some(dest) = &s.trace.dest else {
+fn trace_write(s: &mut State, line: &serde_json::Value) {
+    let t = &mut s.trace;
+    let Some(dest) = &t.dest else {
         return;
     };
     let line = line.to_string();
     if dest == "stderr" {
         eprintln!("{line}");
-    } else if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dest)
-    {
+        return;
+    }
+    if t.file.is_none() && !t.file_failed {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dest)
+        {
+            Ok(f) => t.file = Some(f),
+            Err(_) => t.file_failed = true,
+        }
+    }
+    if let Some(f) = &mut t.file {
         let _ = writeln!(f, "{line}");
     }
 }
 
 /// 終わったスパンを 1 行出す（ADR-0025 論点 2）。`extra` は名前に固有の項目
-fn emit_span(s: &State, id: u64, name: &str, start: i64, extra: serde_json::Value) {
+fn emit_span(s: &mut State, id: u64, name: &str, start: i64, extra: serde_json::Value) {
     if s.trace.dest.is_none() {
         return;
     }
@@ -566,6 +581,8 @@ pub(crate) fn task_finished(id: usize) {
                 s.unref(i);
             }
         }
+        // タスクの番号は再利用されるので、開いたままのスパンを持ち越さない
+        s.trace.active.remove(&id);
     });
 }
 
@@ -1117,7 +1134,7 @@ pub unsafe extern "C" fn wys_llm_generate(
                             extra["output"] = o.into();
                         }
                     }
-                    emit_span(&s, span, "tool_call", start, extra);
+                    emit_span(&mut s, span, "tool_call", start, extra);
                 });
             };
             let failed = || STATE.with(|cell| failure_result(&cell.borrow()));
@@ -1364,6 +1381,13 @@ pub unsafe extern "C" fn wys_agent_enter(cfg: *const AgentCfg) {
         ctx.span_parent = s.top().span;
         ctx.span = new_span(&mut s);
         ctx.span_start = trace_now_ms(&s);
+        // ツールの中で入った agent のイベントが、外側の `tool_call` に付かないように積む（Fable のレビュー）
+        let span = ctx.span;
+        s.trace
+            .active
+            .entry(crate::task::current_task())
+            .or_default()
+            .push(span);
         let i = s.alloc(ctx);
         let task = crate::task::current_task();
         let mut chain = s.chain();
@@ -1391,7 +1415,8 @@ pub extern "C" fn wys_agent_exit() {
             "cost_usd": 0.0
         });
         let (span, start) = (c.span, c.span_start);
-        emit_span(&s, span, "agent", start, extra);
+        close_span(&mut s, span);
+        emit_span(&mut s, span, "agent", start, extra);
         chain.pop();
         s.unref(i);
         s.stacks.insert(task, chain);
