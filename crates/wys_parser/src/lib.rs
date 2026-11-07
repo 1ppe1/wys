@@ -42,6 +42,7 @@ fn parse_from(tokens: &[Token], first_expr: u32) -> (Module, Vec<Diagnostic>) {
         pos: 0,
         diags: Vec::new(),
         next_expr: first_expr,
+        depth: 0,
     };
     let (imports, types, funcs) = p.module();
     (
@@ -67,7 +68,13 @@ struct Parser<'t> {
     pos: usize,
     diags: Vec<Diagnostic>,
     next_expr: u32,
+    /// いまの入れ子の深さ（式・型・パターン・ブロック）。`MAX_NESTING` を超えたら E0107
+    depth: u32,
 }
+
+/// 入れ子の深さの上限（ADR-0026 論点 14）。構文木の再帰（型検査・lowering も同じ深さで再帰する）でスタックが
+/// 溢れるとプロセスごと止まる（LSP のサーバーも）ので、パーサで止めて診断にする
+pub const MAX_NESTING: u32 = 100;
 
 impl Parser<'_> {
     // ---- token helpers ----
@@ -483,6 +490,10 @@ impl Parser<'_> {
     }
 
     fn type_expr(&mut self) -> PResult<TypeExpr> {
+        self.nested(Self::type_expr_inner)
+    }
+
+    fn type_expr_inner(&mut self) -> PResult<TypeExpr> {
         let first = self.type_atom()?;
         if !self.at(&TokenKind::Pipe) {
             return Ok(first);
@@ -634,7 +645,41 @@ impl Parser<'_> {
         })
     }
 
+    /// 入れ子を 1 段深くして `f` を呼ぶ。深すぎれば E0107（1 回だけ報告し、その構文は読み飛ばす）
+    fn nested<T>(&mut self, f: impl FnOnce(&mut Self) -> PResult<T>) -> PResult<T> {
+        let saved = self.depth;
+        self.deeper()?;
+        let r = f(self);
+        // 二項演算子の連なり（`deeper`）で増えた分も、この構文を出るときに戻す
+        self.depth = saved;
+        r
+    }
+
+    /// 入れ子を 1 段深くする。二項演算子の連なり（`a + b + c ...`）は左に深い構文木になり、型検査と lowering が
+    /// その深さで再帰するので、演算子ごとに 1 段数える（`nested` を出るときに戻る）
+    fn deeper(&mut self) -> PResult<()> {
+        if self.depth >= MAX_NESTING {
+            if !self.diags.iter().any(|d| d.code == "E0107") {
+                self.diags.push(
+                    Diagnostic::error(
+                        "E0107",
+                        format!("the code is nested too deeply (more than {MAX_NESTING} levels)"),
+                        self.span(),
+                    )
+                    .with_hint("move the inner part into a variable or a function"),
+                );
+            }
+            return Err(Reported);
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
     fn block(&mut self) -> PResult<Vec<Stmt>> {
+        self.nested(Self::block_inner)
+    }
+
+    fn block_inner(&mut self) -> PResult<Vec<Stmt>> {
         self.expect(&TokenKind::Newline, "a new line after `:`")?;
         if !self.at(&TokenKind::Indent) {
             return Err(self.error_here("an indented block"));
@@ -805,6 +850,10 @@ impl Parser<'_> {
     }
 
     fn pattern(&mut self) -> PResult<Pattern> {
+        self.nested(Self::pattern_inner)
+    }
+
+    fn pattern_inner(&mut self) -> PResult<Pattern> {
         let start = self.span().start;
         let kind = match self.peek().clone() {
             TokenKind::None => {
@@ -878,12 +927,13 @@ impl Parser<'_> {
     }
 
     fn expr(&mut self) -> PResult<Expr> {
-        self.or_expr()
+        self.nested(Self::or_expr)
     }
 
     fn or_expr(&mut self) -> PResult<Expr> {
         let mut lhs = self.and_expr()?;
         while self.eat(&TokenKind::Or) {
+            self.deeper()?;
             let rhs = self.and_expr()?;
             lhs = self.binary(BinOp::Or, lhs, rhs);
         }
@@ -893,6 +943,7 @@ impl Parser<'_> {
     fn and_expr(&mut self) -> PResult<Expr> {
         let mut lhs = self.not_expr()?;
         while self.eat(&TokenKind::And) {
+            self.deeper()?;
             let rhs = self.not_expr()?;
             lhs = self.binary(BinOp::And, lhs, rhs);
         }
@@ -902,7 +953,7 @@ impl Parser<'_> {
     fn not_expr(&mut self) -> PResult<Expr> {
         if self.at(&TokenKind::Not) {
             let start = self.bump().span.start;
-            let operand = self.not_expr()?;
+            let operand = self.nested(Self::not_expr)?;
             return Ok(self.mk(
                 ExprKind::Unary {
                     op: UnaryOp::Not,
@@ -985,6 +1036,7 @@ impl Parser<'_> {
                 _ => return Ok(lhs),
             };
             self.bump();
+            self.deeper()?;
             let rhs = self.term()?;
             lhs = self.binary(op, lhs, rhs);
         }
@@ -1001,15 +1053,17 @@ impl Parser<'_> {
                 _ => return Ok(lhs),
             };
             self.bump();
+            self.deeper()?;
             let rhs = self.unary()?;
             lhs = self.binary(op, lhs, rhs);
         }
     }
 
+    /// 単項演算子（`-` / `not` の繰り返しは自分を呼ぶたびに 1 段深くする）
     fn unary(&mut self) -> PResult<Expr> {
         if self.at(&TokenKind::Minus) {
             let start = self.bump().span.start;
-            let operand = self.unary()?;
+            let operand = self.nested(Self::unary)?;
             return Ok(self.mk(
                 ExprKind::Unary {
                     op: UnaryOp::Neg,
@@ -1254,6 +1308,43 @@ impl Parser<'_> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn nesting_is_limited_before_the_stack_overflows() {
+        let deep = |n: usize| {
+            format!(
+                "def main() -> None:\n    x = {}1{}\n",
+                "(".repeat(n),
+                ")".repeat(n)
+            )
+        };
+        // 関数の本体（1 段）と式（1 段）に、括弧 98 段で 100 段
+        assert!(parse_source(&deep(98)).1.is_empty());
+        let codes: Vec<String> = parse_source(&deep(99))
+            .1
+            .iter()
+            .map(|d| d.code.to_string())
+            .collect();
+        assert_eq!(codes, vec!["E0107"]);
+        // 極端に深い入力も、1 つの E0107 で止まる（スタックを溢れさせない）
+        let codes: Vec<String> = parse_source(&deep(200_000))
+            .1
+            .iter()
+            .map(|d| d.code.to_string())
+            .collect();
+        assert_eq!(codes, vec!["E0107"]);
+        let chain = format!(
+            "def main() -> None:\n    x = {}\n",
+            vec!["1"; 200_000].join(" + ")
+        );
+        let codes: Vec<String> = parse_source(&chain)
+            .1
+            .iter()
+            .map(|d| d.code.to_string())
+            .collect();
+        assert_eq!(codes, vec!["E0107"]);
+    }
+
     use super::*;
 
     fn ok(src: &str) -> Module {
