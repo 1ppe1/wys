@@ -2139,6 +2139,120 @@ fn recordings_are_recreated_at_start_with_owner_only_access() {
     }
 }
 
+#[test]
+fn eval_replays_cases_and_reports_the_success_rate() {
+    // 評価ケース（ADR-0025 論点 11）: 記録の再生で test_* を実行し、合否・使用量・成功率をまとめる
+    let root = std::env::temp_dir().join(format!("wys-e2e-{}-eval", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let case = root.join("greet");
+    std::fs::create_dir_all(&case).unwrap();
+    std::fs::write(
+        case.join("case.wys"),
+        "async def ask() -> str:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"hi\")], max_tokens=0)\n    match await llm_generate[str](req):\n        case Ok(t):\n            return t\n        case Err(e):\n            return e.kind\n\nasync def test_hello() -> None:\n    assert(await ask() == \"hello\")\n\nasync def test_bye() -> None:\n    assert(await ask() == \"bye\")\n",
+    )
+    .unwrap();
+    let case_s = case.to_str().unwrap();
+    // 記録がなければ 2
+    let out = cli(&["eval", case_s]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot read the recording"));
+    // --record はプロバイダが要る
+    let out = cli(&["eval", "--record", case_s]);
+    assert_eq!(out.status.code(), Some(2));
+    // テスト用のプロバイダで記録する（どちらのテストも "hello" を受け取る）
+    let replies = root.join("replies.jsonl");
+    std::fs::write(
+        &replies,
+        "{\"text\":\"hello\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}\n",
+    )
+    .unwrap();
+    let provider = format!("cmd:{FAKE_PROVIDER}");
+    let log = root.join("log.jsonl");
+    let out = cli_env(
+        &["eval", "--record", case_s],
+        &[
+            ("WYS_LLM_PROVIDER", provider.as_str()),
+            ("FAKE_REPLIES", replies.to_str().unwrap()),
+            ("FAKE_LOG", log.to_str().unwrap()),
+        ],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("recordings contain the prompts"));
+    assert!(case.join("recordings/test_hello.jsonl").exists());
+    assert!(case.join("recordings/test_bye.jsonl").exists());
+    // 再生: 開発者のシェルのプロバイダは外す（ネットワークに出ない）
+    let out = cli_env(
+        &["eval", "--format", "json", case_s],
+        &[("WYS_LLM_PROVIDER", "anthropic")],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["passed"], 1);
+    assert_eq!(v["failed"], 1);
+    assert_eq!(v["success_rate"], 0.5);
+    let tests = &v["cases"][0]["tests"];
+    assert_eq!(tests[0]["name"], "test_hello");
+    assert_eq!(tests[0]["passed"], true);
+    assert_eq!(tests[0]["llm_calls"], 1);
+    assert_eq!(tests[0]["input_tokens"], 3);
+    assert_eq!(tests[1]["passed"], false);
+    let out = cli(&["eval", case_s]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains("test test_hello ... ok (llm_calls=1, tokens=4)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("eval result: FAILED. 1 passed; 1 failed; success rate 0.50"),
+        "{text}"
+    ); // 要求が記録と違えば、失敗の原因（`llm_call` のスパンの結果）を添える。使わない記録は警告
+    let src = std::fs::read_to_string(case.join("case.wys")).unwrap();
+    std::fs::write(
+        case.join("case.wys"),
+        src.replace("content=\"hi\"", "content=\"hey\""),
+    )
+    .unwrap();
+    std::fs::write(case.join("recordings/test_gone.jsonl"), "").unwrap();
+    let out = cli(&["eval", "--format", "json", case_s]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        v["cases"][0]["tests"][0]["llm_errors"],
+        serde_json::json!(["error:replay"])
+    );
+    assert!(v["cases"][0]["tests"][0]["output"].is_string());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("test_gone.jsonl has no test_* function"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // 壊れた記録はテストの失敗ではなく 2（Codex のレビュー）
+    let good = std::fs::read_to_string(case.join("recordings/test_bye.jsonl")).unwrap();
+    for broken in ["", "not json\n", "{\"kind\":\"header\",\"v\":2}\n"] {
+        std::fs::write(case.join("recordings/test_bye.jsonl"), broken).unwrap();
+        let out = cli(&["eval", case_s]);
+        assert_eq!(out.status.code(), Some(2), "{broken:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("cannot read the recording"));
+    }
+    std::fs::write(case.join("recordings/test_bye.jsonl"), good).unwrap();
+    // テストのないケースは 0 件で、成功率は null
+    let empty = root.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    std::fs::write(
+        empty.join("case.wys"),
+        "def helper() -> int:\n    return 1\n",
+    )
+    .unwrap();
+    let out = cli(&["eval", "--format", "json", empty.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["success_rate"].is_null());
+}
+
 const COSTLY: &str = "@tool(description=\"Add.\")\ndef add(a: int, b: int) -> int uses pure:\n    return a + b\n\n@agent(tools=[add], capabilities=[\"llm\"], max_cost_usd=0.4)\nasync def capped() -> Result[str, LlmError] uses llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm:\n    for _ in range(2):\n        match await capped():\n            case Ok(t):\n                print(\"ok \" + t)\n            case Err(e):\n                print(e.kind + \": \" + e.message)\n    print(to_json(llm_usage().cost_usd))\n    for ev in audit_events():\n        if ev.kind == \"budget_exceeded\":\n            print(ev.kind + \" \" + ev.detail)\n";
 
 #[test]

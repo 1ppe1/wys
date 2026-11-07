@@ -1,0 +1,40 @@
+# 評価ケース（ADR-0025 論点 11）: 記録の再生で agent を実行し、結果を assert で判定する
+type Plan = {title: str, steps: int}
+
+@tool(description="Add two integers.")
+def add(a: int, b: int) -> int uses pure:
+    return a + b
+
+@agent(tools=[add], capabilities=["llm"])
+async def planner(goal: str) -> Result[Plan, LlmError] uses llm:
+    req = LlmRequest(
+        model="",
+        system="Plan with the tools.",
+        messages=[Message(role="user", content=goal)],
+        max_tokens=0
+    )
+    return await llm_generate[Plan](req)
+
+@agent(tools=[add], capabilities=["llm"], max_llm_calls=1)
+async def hasty(goal: str) -> Result[Plan, LlmError] uses llm:
+    req = LlmRequest(
+        model="",
+        system="Plan with the tools.",
+        messages=[Message(role="user", content=goal)],
+        max_tokens=0
+    )
+    return await llm_generate[Plan](req)
+
+async def test_plan_uses_the_tool() -> None:
+    match await planner("five steps"):
+        case Ok(p):
+            assert(p.steps == 5)
+        case Err(_):
+            assert(False)
+
+async def test_budget_stops_the_agent() -> None:
+    match await hasty("five steps"):
+        case Ok(_):
+            assert(False)
+        case Err(e):
+            assert(e.kind == "budget")

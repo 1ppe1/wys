@@ -431,7 +431,14 @@ evals/<name>/case.wys                     test_* 関数が agent / llm_generate 
 evals/<name>/recordings/<test>.jsonl      テスト関数ごとの記録（wys test はテストごとに別プロセス）
 ```
 
-`wys eval <dir>...` は記録を再生して各テストを実行し、合否・使用量・成功率をまとめる（`--format json`）。`wys eval --record <dir>...` は環境のプロバイダで実行して記録を書き直す。終了コードは 0（すべて合格）/ 1（失敗あり）/ 2（ケースか記録が読めない）。
+`wys eval <dir>...` は記録を再生して各テストを実行し、合否・使用量・成功率をまとめる（`--format json`）。`wys eval --record <dir>...` は環境のプロバイダで実行して記録を書き直す。終了コードは 0（すべて合格）/ 1（失敗あり）/ 2（ケースか記録が読めない）。実行の環境は Conformance と同じ（`WYS_VIRTUAL_TIME=1`、開発者のシェルの AI Runtime の変数を外す。`--record` はプロバイダの設定 `WYS_LLM_PROVIDER` / `WYS_LLM_MODEL` / `WYS_LLM_PROXY` だけ残す）。再生は記録のヘッダの `model` を `WYS_LLM_MODEL` に設定する。使用量はトレースの `llm_call` のスパン（応答が届いたもの）から数える。
+
+```text
+case planner
+  test test_plan_uses_the_tool ... ok (llm_calls=2, tokens=43)
+eval result: ok. 1 passed; 0 failed; success rate 1.00
+```
+
 
 ## 21. 費用（M6、ADR-0025 論点 12〜14、AI-006）
 
