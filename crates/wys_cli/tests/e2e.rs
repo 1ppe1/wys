@@ -2185,3 +2185,15 @@ fn max_cost_usd_stops_the_agent_and_closes_when_the_cost_is_unknown() {
         "{stdout}"
     );
 }
+
+#[test]
+fn tiny_cost_limits_are_rounded_up_not_dropped() {
+    // 1 µUSD より小さい上限も上限として残す（丸めて 0 = 上限なしにしない。Fable のレビュー）
+    let path = scratch(
+        "tiny_cost",
+        "@agent(max_cost_usd=0.0000001)\nasync def a() -> None uses io, llm:\n    pass\n\ndef main() -> None:\n    pass\n",
+    );
+    let out = cli(&["dump-ir", path.to_str().unwrap()]);
+    let ir = String::from_utf8(out.stdout).unwrap();
+    assert!(ir.contains("max_cost_usd=0.000001"), "{ir}");
+}

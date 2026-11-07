@@ -1362,9 +1362,19 @@ fn parse_reply(v: &serde_json::Value) -> Result<Reply, (String, Usage, Option<f6
     };
     // `error` は文字列のときだけ失敗（`"error": null` は成功の応答に付く慣習なので無視する。Fable のレビュー）
     if let Some(e) = v["error"].as_str() {
-        return Err((e.to_string(), usage, cost.unwrap_or(None)));
+        let Ok(cost) = cost else {
+            return Err((
+                "malformed provider response: `cost_usd` must be a non-negative number".into(),
+                usage,
+                None,
+            ));
+        };
+        return Err((e.to_string(), usage, cost));
     }
-    let malformed = |what: &str| Err((format!("malformed provider response: {what}"), usage, None));
+    // 壊れた応答でも、正しい `cost_usd` があれば費用は数える（Fable のレビュー）
+    let known = cost.unwrap_or(None);
+    let malformed =
+        |what: &str| Err((format!("malformed provider response: {what}"), usage, known));
     if !v.is_object() || !v["text"].is_string() {
         return malformed("`text` is missing");
     }

@@ -94,9 +94,9 @@ fn request_body(req: &serde_json::Value, env_model: Option<&str>) -> serde_json:
 
 /// 価格表（100 万トークンあたりの USD: 入力、出力、キャッシュの書き込み（5 分の TTL、入力の 1.25 倍）、
 /// キャッシュの読み込み）。ADR-0025 論点 12。価格は古くなるので、ランタイムではなくここに置く。
-/// 2026-10 時点の Anthropic の API の単価（claude-api のスキルの表）。モデルの ID は完全一致で引き、知らない
-/// モデルには費用を付けない（ランタイムは「費用が分からない」として扱う）。`claude-haiku-5-5` は 10 万トークン
-/// までの単価（それを超える要求の単価は表に入れていない）
+/// 2026-10 時点の Anthropic の API の単価（claude-api のスキルの表）。モデルの ID は、表の ID と一致するか、
+/// 表の ID に `-` で続く ID（日付付きのスナップショット）で引く。知らないモデルには費用を付けない（ランタイムは
+/// 「費用が分からない」として扱う）。`claude-haiku-5-5` は 10 万トークンまでの単価で、それを超える要求には費用を付けない
 const PRICES: &[(&str, [f64; 4])] = &[
     ("claude-fable-5-1", [10.0, 50.0, 12.5, 0.25]),
     ("claude-opus-5-5", [4.0, 20.0, 5.0, 0.20]),
@@ -106,13 +106,30 @@ const PRICES: &[(&str, [f64; 4])] = &[
 
 /// 応答の `usage` の費用（USD）。知らないモデルなら `None`
 fn cost_usd(model: &str, usage: &serde_json::Value) -> Option<f64> {
-    let (_, [input, output, write, read]) = PRICES.iter().find(|(m, _)| *m == model)?;
-    let n = |k: &str| usage[k].as_f64().unwrap_or(0.0);
+    let (key, [input, output, write, read]) = PRICES
+        .iter()
+        .filter(|(m, _)| model == *m || model.starts_with(&format!("{m}-")))
+        .max_by_key(|(m, _)| m.len())?;
+    let n = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0);
+    let prompt = n(&usage["input_tokens"])
+        + n(&usage["cache_creation_input_tokens"])
+        + n(&usage["cache_read_input_tokens"]);
+    if *key == "claude-haiku-5-5" && prompt > 100_000.0 {
+        return None;
+    }
+    // キャッシュの書き込みは、内訳があれば 5 分（入力の 1.25 倍）と 1 時間（入力の 2 倍）で分ける
+    let writes = match usage.get("cache_creation") {
+        Some(c) if c.is_object() => {
+            n(&c["ephemeral_5m_input_tokens"]) * write
+                + n(&c["ephemeral_1h_input_tokens"]) * input * 2.0
+        }
+        _ => n(&usage["cache_creation_input_tokens"]) * write,
+    };
     Some(
-        (n("input_tokens") * input
-            + n("output_tokens") * output
-            + n("cache_creation_input_tokens") * write
-            + n("cache_read_input_tokens") * read)
+        (n(&usage["input_tokens"]) * input
+            + n(&usage["output_tokens"]) * output
+            + writes
+            + n(&usage["cache_read_input_tokens"]) * read)
             / 1_000_000.0,
     )
 }
@@ -324,10 +341,23 @@ mod tests {
         let cost = r["cost_usd"].as_f64().unwrap();
         assert!((cost - 6.2).abs() < 1e-9, "{cost}");
         assert_eq!(r["usage"]["cache_read_input_tokens"], 1_000_000);
+        // 日付付きのスナップショットの ID も引ける
+        let mut dated = resp.clone();
+        dated["model"] = "claude-opus-5-5-20261001".into();
+        assert!((reply_line(&dated, "x")["cost_usd"].as_f64().unwrap() - 6.2).abs() < 1e-9);
+        let mut lookalike = resp.clone();
+        lookalike["model"] = "claude-opus-5-55".into();
+        assert!(reply_line(&lookalike, "x").get("cost_usd").is_none());
+        // 1 時間の TTL の書き込みは入力の 2 倍
+        let hour = serde_json::json!({"cache_creation_input_tokens": 1_000_000, "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 1_000_000}});
+        assert_eq!(cost_usd("claude-sonnet-5-5", &hour), Some(4.0));
+        // claude-haiku-5-5 の 10 万トークンを超える要求は単価が違うので、費用を付けない
+        let big = serde_json::json!({"input_tokens": 100_001, "output_tokens": 1});
+        assert_eq!(cost_usd("claude-haiku-5-5", &big), None);
         // 応答に `model` がなければ要求のモデルで引く。知らないモデルには費用を付けない
         let mut no_model = resp.clone();
         no_model.as_object_mut().unwrap().remove("model");
-        assert!(reply_line(&no_model, "claude-haiku-5-5")["cost_usd"].is_number());
+        assert!(reply_line(&no_model, "claude-sonnet-5-5")["cost_usd"].is_number());
         assert!(
             reply_line(&no_model, "some-other-model")
                 .get("cost_usd")

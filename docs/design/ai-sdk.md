@@ -169,6 +169,7 @@ attr_elem  = STRING | IDENT { "." IDENT } ;
 | `model` | `str` | `""` | 既定のモデル（`LlmRequest.model` が空のとき） |
 | `max_llm_calls` / `max_tool_calls` / `max_tokens` | `int` | `0`（上限なし） | 予算（7.5）。`max_tokens` は合計で、`LlmRequest.max_tokens`（1 応答）とは別。負の値は E1402 |
 | `timeout_ms` | `int` | `0`（期限なし） | agent に入ってからの期限（7.6） |
+| `max_cost_usd` | 数（`float` か `int`） | `0`（上限なし） | 費用の上限（USD、M6、§21）。負の値は E1402。100 万分の 1 USD に切り上げて運ぶ |
 
 関数の条件: `uses` を書く（E1403）、`main` / `test_*` ではない、`@tool` と同時に付けない（E1403）、ツールの `uses` ⊆ `capabilities`（E1405）、`capabilities` ⊆ 自身の `uses`（E1406。agent がツールを通して起こし得る Effect を署名が隠さない）。`async def` でなくてもよいが、`llm_generate` を呼ぶには `async def` が要る（ADR-0020 論点 6）。lowering は本体を `wys_agent_enter(cfg)` / `wys_agent_exit()` で囲む（`return` / `?` / パニック以外のすべての出口）。agent の名前は関数の内部名（監査の `agent`）。
 
@@ -435,3 +436,10 @@ evals/<name>/recordings/<test>.jsonl      テスト関数ごとの記録（wys t
 ## 21. 費用（M6、ADR-0025 論点 12〜14、AI-006）
 
 proxy が価格表から応答に `cost_usd` を足す（未知のモデルは付けない）。`usage` に任意の `cache_read_input_tokens` / `cache_creation_input_tokens`。どちらも任意の項目なのでプロトコルの `v` は 1 のまま。`@agent(max_cost_usd=float)` はほかの予算と同じ場所で検査し、超えたら `Err(kind="budget")`。上限のある agent の中で費用の分からない応答（モック、未知のモデル）が来たら、超過として扱う。
+
+細部（M6 T8 の決定）:
+
+- 価格表は proxy（`llm_proxy.rs` の `PRICES`）にあり、モデルの ID は、表の ID と一致するか、表の ID に `-` で続く ID（日付付きのスナップショット）で引く。応答の `model` を先に使い、なければ要求のモデル。キャッシュの書き込みは、`usage.cache_creation` の内訳があれば 5 分（入力の 1.25 倍）と 1 時間（入力の 2 倍）で分け、なければ 5 分として数える。`claude-haiku-5-5` は 10 万トークンまでの単価なので、それを超える要求には費用を付けない（上限のある agent では止まる）。
+- `error` 行は、`usage` があれば費用が要る（なければ「分からない」）。`usage` がなければ課金なし。`cost_usd` が負・数でなければ、`error` 行でも壊れた応答。
+- `llm_usage().cost_usd` と agent のスパンは、分かった費用の合計（費用の分からない応答は 0 として足す）。外側の agent の上限は、内側の agent の呼び出しも止める（ほかの予算と同じ）。
+

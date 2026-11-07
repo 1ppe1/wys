@@ -1851,7 +1851,8 @@ fn check_decorators(cx: &mut Ctx, module: &Module) {
                         );
                         continue;
                     }
-                    attr.max_cost_micro_usd = (v * 1_000_000.0).round().min(i64::MAX as f64) as i64;
+                    // 正の上限は 1 µUSD 以上に切り上げる（丸めて 0 = 上限なしにしない。Fable のレビュー）
+                    attr.max_cost_micro_usd = (v * 1_000_000.0).ceil().min(i64::MAX as f64) as i64;
                 }
                 ("max_cost_usd", _) => bad_arg(
                     cx,
