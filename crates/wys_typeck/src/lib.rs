@@ -891,6 +891,9 @@ pub struct FuncInfo {
     pub locals: Vec<(String, Ty)>,
     /// `locals` と同じ順の、各ローカル変数を宣言した位置（`wys explain` 用）。
     pub local_spans: Vec<Span>,
+    /// `case` のパターンの束縛（`case Ok(x):` の `x`）の名前・型・位置（ADR-0026 論点 11。`wys explain` と LSP 用）。
+    /// lowering は束縛のローカルを自分で作るので、`locals` には入れない（生成コードを変えない）
+    pub bindings: Vec<(String, Ty, Span)>,
     /// 変数の参照のうち、型が宣言型から絞り込まれていたもの（位置の順。`wys explain` 用）。
     pub narrowings: Vec<Narrowing>,
     /// 関数の呼び出しと、呼び出し先の Effect（位置の順。`wys explain` 用）。
@@ -2493,6 +2496,7 @@ struct FnCk<'a> {
     vars: HashMap<String, Var>,
     locals: Vec<(String, Ty)>,
     local_spans: Vec<Span>,
+    bindings: Vec<(String, Ty, Span)>,
     /// 式ごとの絞り込み（ループで同じ式を検査し直したら上書きする）。
     narrowings: HashMap<ExprId, Narrowing>,
     /// 検査している関数の名前（ADR-0014）。
@@ -2516,6 +2520,7 @@ impl<'a> FnCk<'a> {
             vars: HashMap::new(),
             locals: Vec::new(),
             local_spans: Vec::new(),
+            bindings: Vec::new(),
             narrowings: HashMap::new(),
             fn_name: f.name.name.clone(),
             effect_sites: Vec::new(),
@@ -2569,6 +2574,7 @@ impl<'a> FnCk<'a> {
         FuncInfo {
             locals: ck.locals,
             local_spans: ck.local_spans,
+            bindings: ck.bindings,
             narrowings,
             effect_sites,
         }
@@ -3206,6 +3212,8 @@ impl<'a> FnCk<'a> {
                             decl: ident.span,
                         },
                     );
+                    // LSP の定義ジャンプとホバー、`wys explain` の `binding` 用に記録する
+                    self.bindings.push((ident.name.clone(), ty, ident.span));
                     b.insert(ident.name.clone(), ty);
                     // 束縛は新しい値: 同じ名前の以前の経路の絞り込みを引き継がない（ADR-0016 論点 4）
                     Self::forget_paths(&mut b, &ident.name);

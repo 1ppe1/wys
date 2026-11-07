@@ -16,6 +16,7 @@ wys_diagnostics = { path = "../wys_diagnostics" }
 wys_parser = { path = "../wys_parser" }
 wys_resolve = { path = "../wys_resolve" }
 wys_typeck = { path = "../wys_typeck" }
+wys_ast = { path = "../wys_ast" }
 wys_lower = { path = "../wys_lower" }
 wys_ir = { path = "../wys_ir" }
 wys_backend = { path = "../wys_backend" }

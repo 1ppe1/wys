@@ -335,6 +335,9 @@ fn resolve(mut mods: Vec<ModInfo>, diags: &mut Vec<Diagnostic>, expr_count: u32)
         }
         out.types.append(&mut m.ast.types);
         out.funcs.append(&mut m.ast.funcs);
+        // import 文も残す（LSP の定義ジャンプが使う。ADR-0026 論点 11）。`span` は通しの位置なので、
+        // どのファイルの import かは位置で分かる。後続のパスは読まない
+        out.imports.append(&mut m.ast.imports);
     }
     out
 }
