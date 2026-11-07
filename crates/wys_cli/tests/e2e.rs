@@ -2210,5 +2210,36 @@ fn eval_replays_cases_and_reports_the_success_rate() {
     assert!(
         text.contains("eval result: FAILED. 1 passed; 1 failed; success rate 0.50"),
         "{text}"
+    ); // 要求が記録と違えば、失敗の原因（`llm_call` のスパンの結果）を添える。使わない記録は警告
+    let src = std::fs::read_to_string(case.join("case.wys")).unwrap();
+    std::fs::write(
+        case.join("case.wys"),
+        src.replace("content=\"hi\"", "content=\"hey\""),
+    )
+    .unwrap();
+    std::fs::write(case.join("recordings/test_gone.jsonl"), "").unwrap();
+    let out = cli(&["eval", "--format", "json", case_s]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        v["cases"][0]["tests"][0]["llm_errors"],
+        serde_json::json!(["error:replay"])
     );
+    assert!(v["cases"][0]["tests"][0]["output"].is_string());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("test_gone.jsonl has no test_* function"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // テストのないケースは 0 件で、成功率は null
+    let empty = root.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    std::fs::write(
+        empty.join("case.wys"),
+        "def helper() -> int:\n    return 1\n",
+    )
+    .unwrap();
+    let out = cli(&["eval", "--format", "json", empty.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["success_rate"].is_null());
 }

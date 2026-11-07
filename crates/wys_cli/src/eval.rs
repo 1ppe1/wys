@@ -31,6 +31,23 @@ struct TestResult {
     output_tokens: i64,
     cost_usd: f64,
     output: String,
+    /// 失敗した `llm_call` のスパンの結果（`error:replay` など。失敗の原因の手がかり）
+    llm_errors: Vec<String>,
+}
+
+/// 一時ファイルの接頭辞。落ちる経路を含めて、作ったファイルを消す
+struct Temp(PathBuf);
+
+impl Temp {
+    fn path(&self, suffix: &str) -> PathBuf {
+        PathBuf::from(format!("{}.{suffix}", self.0.display()))
+    }
+}
+
+impl Drop for Temp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.path("bin"));
+    }
 }
 
 struct CaseResult {
@@ -61,7 +78,7 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
         return Err("`wys eval` needs at least one case directory".into());
     }
     if record {
-        if std::env::var("WYS_LLM_PROVIDER").is_err() {
+        if std::env::var("WYS_LLM_PROVIDER").map_or(true, |v| v.is_empty()) {
             return Err("`wys eval --record` runs the cases with the provider in WYS_LLM_PROVIDER; set it (for example `anthropic`)".into());
         }
         eprintln!("note: recordings contain the prompts and replies of the model");
@@ -88,7 +105,8 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
                 "tests": c.tests.iter().map(|t| serde_json::json!({
                     "name": t.name, "passed": t.passed, "llm_calls": t.llm_calls,
                     "input_tokens": t.input_tokens, "output_tokens": t.output_tokens,
-                    "cost_usd": t.cost_usd
+                    "cost_usd": t.cost_usd, "llm_errors": t.llm_errors,
+                    "output": if t.passed { serde_json::Value::Null } else { t.output.clone().into() }
                 })).collect::<Vec<_>>()
             })).collect::<Vec<_>>(),
             "passed": passed, "failed": failed, "success_rate": rate
@@ -110,6 +128,9 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
         for c in &cases {
             for t in c.tests.iter().filter(|t| !t.passed) {
                 println!("\n---- {} / {} ----", c.name, t.name);
+                for e in &t.llm_errors {
+                    println!("llm_call: {e}");
+                }
                 print!("{}", t.output);
             }
         }
@@ -137,6 +158,13 @@ fn run_case(dir: &Path, record: bool) -> Result<CaseResult, String> {
         eprint!("{}", wys_driver::to_text(&fe.file, &fe.diagnostics));
         return Err(format!("the case {} has errors", src.display()));
     }
+    if tests.is_empty() {
+        eprintln!("note: the case {} has no test_* functions", src.display());
+        return Ok(CaseResult {
+            name,
+            tests: Vec::new(),
+        });
+    }
     if let Some(msg) = &fe.unsupported {
         return Err(msg.clone());
     }
@@ -147,15 +175,45 @@ fn run_case(dir: &Path, record: bool) -> Result<CaseResult, String> {
     if record {
         std::fs::create_dir_all(&recordings)
             .map_err(|e| format!("cannot create {}: {e}", recordings.display()))?;
+    } else {
+        // リンクの前に、すべての記録があるかを確かめる
+        for test in &tests {
+            let rec = recordings.join(format!("{test}.jsonl"));
+            if let Err(e) = std::fs::metadata(&rec) {
+                return Err(format!("cannot read the recording {}: {e}", rec.display()));
+            }
+        }
     }
-    let tmp = std::env::temp_dir().join(format!("wys-eval-{}-{name}", std::process::id()));
-    let exe = tmp.with_extension("bin");
+    // テストのない記録（消したテストの記録）を知らせる
+    if let Ok(entries) = std::fs::read_dir(&recordings) {
+        let mut stale: Vec<String> = entries
+            .flatten()
+            .filter_map(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                let stem = n.strip_suffix(".jsonl")?.to_string();
+                (!tests.contains(&stem)).then_some(n)
+            })
+            .collect();
+        stale.sort();
+        for n in stale {
+            eprintln!(
+                "warning: {} has no test_* function for this recording",
+                recordings.join(n).display()
+            );
+        }
+    }
+    let tmp = Temp(std::env::temp_dir().join(format!(
+        "wys-eval-{}-{}",
+        std::process::id(),
+        name.replace(['/', '.'], "_")
+    )));
+    let exe = tmp.path("bin");
     wys_driver::link_program(program, &exe, &wys_driver::BuildOptions::default())
         .map_err(|e| format!("cannot build the case {}: {e:?}", src.display()))?;
     let mut results = Vec::new();
     for (i, test) in tests.iter().enumerate() {
         let rec = recordings.join(format!("{test}.jsonl"));
-        let trace = tmp.with_extension(format!("{i}.trace.jsonl"));
+        let trace = tmp.path(&format!("{i}.trace.jsonl"));
         let _ = std::fs::remove_file(&trace);
         let mut cmd = Command::new(&exe);
         for (k, _) in std::env::vars() {
@@ -197,12 +255,20 @@ fn run_case(dir: &Path, record: bool) -> Result<CaseResult, String> {
                 String::from_utf8_lossy(&out.stdout),
                 String::from_utf8_lossy(&out.stderr)
             ),
+            llm_errors: Vec::new(),
         };
         // 使用量はトレースの `llm_call` のスパンから数える（応答が届いた呼び出しだけ = `llm_usage().llm_calls`）
         for line in std::fs::read_to_string(&trace).unwrap_or_default().lines() {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
+            if v["kind"] == "span"
+                && v["name"] == "llm_call"
+                && let Some(res) = v["result"].as_str()
+                && res != "ok"
+            {
+                r.llm_errors.push(res.to_string());
+            }
             if v["kind"] == "span" && v["name"] == "llm_call" && !v["usage"].is_null() {
                 r.llm_calls += 1;
                 r.input_tokens += v["usage"]["input_tokens"].as_i64().unwrap_or(0);
@@ -213,7 +279,6 @@ fn run_case(dir: &Path, record: bool) -> Result<CaseResult, String> {
         let _ = std::fs::remove_file(&trace);
         results.push(r);
     }
-    let _ = std::fs::remove_file(&exe);
     Ok(CaseResult {
         name,
         tests: results,
