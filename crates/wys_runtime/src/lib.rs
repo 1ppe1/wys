@@ -698,6 +698,7 @@ pub unsafe extern "C" fn wys_runtime_init(argc: i32, argv: *const *const c_char)
         args.push(new_immortal(s.to_bytes()) as usize);
     }
     let _ = ARGS.set(args);
+    ai::init_clock();
 }
 
 fn arg_at(i: i64) -> Option<*mut Header> {

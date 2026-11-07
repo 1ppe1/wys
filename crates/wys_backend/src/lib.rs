@@ -218,6 +218,7 @@ declare void @wys_agent_exit()
 declare void @wys_tool_err()
 declare void @wys_tool_args_rejected(i1 zeroext)
 declare ptr @wys_audit_json()
+declare ptr @wys_usage_json()
 declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
@@ -2146,7 +2147,8 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                         | Builtin::LlmErrMessage
                         | Builtin::LlmJsonRejected
                         | Builtin::LlmSchemaRejected
-                        | Builtin::AuditJson),
+                        | Builtin::AuditJson
+                        | Builtin::UsageJson),
                     ) => {
                         let d = t(dst.expect("llm builtins return a value"));
                         let (ret, sym) = match b {
@@ -2155,6 +2157,7 @@ fn emit_function(out: &mut String, p: &Program, f: &Function, drops: &DropInfo) 
                             Builtin::LlmErrMessage => ("ptr", "@wys_llm_err_message"),
                             Builtin::LlmJsonRejected => ("ptr", "@wys_llm_json_rejected"),
                             Builtin::LlmSchemaRejected => ("ptr", "@wys_llm_schema_rejected"),
+                            Builtin::UsageJson => ("ptr", "@wys_usage_json"),
                             _ => ("ptr", "@wys_audit_json"),
                         };
                         let _ = writeln!(out, "  {d} = call {ret} {sym}()");

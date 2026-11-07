@@ -433,6 +433,7 @@ fn keeps_places(inst: &Inst) -> bool {
                 | Builtin::LlmSchemaRejected
                 | Builtin::LlmMockPush
                 | Builtin::AuditJson
+                | Builtin::UsageJson
                 | Builtin::AgentEnter
                 | Builtin::AgentExit
                 | Builtin::ToolErr
