@@ -36,12 +36,13 @@
 |---|---|---|
 | `Message` | `{role: str, content: str}` | 会話の 1 発話。`role` は `user` / `assistant` |
 | `LlmRequest` | `{model: str, system: str, messages: list[Message], max_tokens: int}` | `llm_generate` の要求。`model=""` は既定（`@agent(model=)` → `WYS_LLM_MODEL` → proxy の既定）。`max_tokens=0` は proxy の既定（**1 応答の出力の上限**。`@agent` の予算の `max_tokens`（合計）とは別） |
-| `LlmError` | `{kind: str, message: str}` | `kind` は `provider` / `schema` / `budget` / `timeout` / `denied` / `approval` / `mock_exhausted`（5.3） |
+| `LlmError` | `{kind: str, message: str}` | `kind` は `provider` / `schema` / `budget` / `timeout` / `denied` / `approval` / `mock_exhausted` / `replay`（5.3。`replay` は M6） |
 | `SchemaError` | `{path: str, expected: str, found: str}` | `validate` の失敗。`path` は `steps[2].name`（根は `""`） |
 | `JsonError` | `{message: str, offset: int}` | `parse_json` の失敗（ADR-0021） |
 | `AuditEvent` | `{seq: int, kind: str, agent: str, tool: str \| None, detail: str}` | 監査イベント（9 章） |
 | `MockResponse` | `{text: str, tool_calls: list[MockToolCall], input_tokens: int, output_tokens: int, latency_ms: int}` | モックの応答 1 つ |
 | `MockToolCall` | `{name: str, args_json: str}` | モックが要求するツールの呼び出し |
+| `LlmUsage` | `{llm_calls: int, tool_calls: int, input_tokens: int, output_tokens: int, cost_usd: float}` | 使用量の集計（M6、§18） |
 
 | 関数 | 型 | Effect | 内容 |
 |---|---|---|---|
@@ -51,6 +52,7 @@
 | `parse_json(s: str)` | `Result[Unknown, JsonError]` | なし | ADR-0021 |
 | `llm_mock_push(r: MockResponse)` | `None` | なし | モックの応答を末尾に積む。実プロバイダが設定されていれば実行時エラー（8.1） |
 | `audit_events()` | `list[AuditEvent]` | なし | これまでの監査イベント（順序付き、`seq` 昇順） |
+| `llm_usage()` | `LlmUsage` | なし | 現在のコンテキスト（根なら全体）の使用量（M6、§18） |
 
 ## 4. スキーマ型と JSON（AI-002）
 
@@ -125,11 +127,12 @@ Union は構成要素の順（型検査がそろえた順: `int`、`bool`、`str
 |---|---|
 | `provider` | proxy を起動できない、応答が壊れている、`error` 行（HTTP の失敗、`refusal`）、要求が不正、`max_tokens` で切れた |
 | `schema` | 出力かツールの引数が型に合わない（`message` に経路） |
-| `budget` | `max_llm_calls` / `max_tool_calls` / `max_tokens` を超えた |
+| `budget` | `max_llm_calls` / `max_tool_calls` / `max_tokens` / `max_cost_usd`（M6）を超えた。上限のある agent で費用の分からない応答が来た |
 | `timeout` | `timeout_ms` を超えた（呼び出しの境界で判定） |
 | `denied` | 一覧にないツール、Capability の不足、`llm` のないコンテキストからの呼び出し |
 | `approval` | `WYS_APPROVAL=prompt` で stdin から回答を読めない、`WYS_APPROVAL` が未知の値 |
 | `mock_exhausted` | モックの応答が尽きた |
+| `replay` | 記録の再生で、要求が記録と一致しない、記録が尽きた、記録が読めない（M6、§19） |
 
 承認の拒否は `kind` にならない（LLM に返して続ける）。パニックにするのは agent コンテキストの不整合（コンパイラの誤り）だけ。
 
@@ -203,8 +206,7 @@ attr_elem  = STRING | IDENT { "." IDENT } ;
 | `max_tool_calls` | ツールを実行するたびに 1（拒否・承認の拒否は数えない） | 実行の前 |
 | `max_tokens` | 応答の `usage.input_tokens + output_tokens` の合計 | 呼ぶ前と、応答の直後 |
 | `timeout_ms` | 7.6 | 呼ぶ前、応答の直後、ツールの前 |
-
-費用（`max_cost_usd`）は価格表が要るので M6（proxy の adapter に置く）。
+| `max_cost_usd`（M6） | 応答の `cost_usd` の合計（費用の分からない応答は超過として扱い、以後も超過のまま。§21） | 呼ぶ前と、応答の直後 |
 
 ### 7.6 タイムアウト
 
@@ -240,7 +242,7 @@ attr_elem  = STRING | IDENT { "." IDENT } ;
 {"text": "...", "tool_calls": [{"id": "t1", "name": "add", "args": {...}}], "usage": {"input_tokens": 10, "output_tokens": 5}, "stop": "end_turn", "assistant": "<不透明な値>"}
 ```
 
-失敗なら `{"error": "..."}`。ランタイムは `text` / `tool_calls` / `usage` / `stop` だけを読み、`assistant` は解釈せず次の要求に戻す（Claude Opus 5.5 の thinking のブロックは会話に結び付いていて、編集すると拒否され得る。PoC4）。
+失敗なら `{"error": "..."}`。任意の項目（M6、ADR-0025 論点 12。`v` は 1 のまま）: 応答と `error` 行の `cost_usd`（数値、USD）、`usage` の `cache_read_input_tokens` / `cache_creation_input_tokens`。ランタイムは `text` / `tool_calls` / `usage` / `stop` だけを読み、`assistant` は解釈せず次の要求に戻す（Claude Opus 5.5 の thinking のブロックは会話に結び付いていて、編集すると拒否され得る。PoC4）。
 
 ### 8.3 `wys llm-proxy`（Anthropic Messages API の adapter）
 
@@ -290,7 +292,7 @@ async def main() -> None uses io, llm:
 
 | 変数 | 読む側 | 意味 |
 |---|---|---|
-| `WYS_LLM_PROVIDER` | ランタイム | 未設定 = モック / `anthropic` / `cmd:<path>` |
+| `WYS_LLM_PROVIDER` | ランタイム | 未設定 = モック / `anthropic` / `cmd:<path>` / `replay:<path>`（M6、§19） |
 | `WYS_LLM_PROXY` | ランタイム | `wys` の実行ファイルの場所（任意） |
 | `WYS_LLM_MODEL` | ランタイム・proxy | 既定のモデル |
 | `WYS_CAPABILITIES` | ランタイム | 配備時の Capability の縮小 |
@@ -309,7 +311,7 @@ async def main() -> None uses io, llm:
 - `llm_generate` の呼び出しをまたぐと thinking のブロックは引き継がれない（利用者の `Message` は文字列だけ）。
 - `dict[str, T]` と `Unknown` のスキーマは Anthropic の構造化出力に乗らない（4.2）。
 - `python` を付与したツールは Python の内側で何でもできる（サンドボックスではない。ADR-0018 論点 12、ADR-0023 論点 17）。
-- 費用の上限、トレース、記録済み応答の再生、ストリーミング、ほかの adapter、`python` の隔離は M6 以降（`docs/plans/m5.md` 範囲外）。
+- 費用の上限、トレース、記録済み応答の再生は M6（§18〜§21、ADR-0025）。ストリーミング、ほかの adapter、`python` の隔離はその後（`docs/plans/m6.md` 範囲外）。
 
 ## 13. 用語（用語集に追加する）
 
