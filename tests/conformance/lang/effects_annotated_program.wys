@@ -3,6 +3,7 @@
 # expect-stdout: 2
 # expect-stdout: 7
 # expect-stdout: done
+# expect-warning: W0203 26:37
 def fact(n: int) -> int uses pure:
     if n <= 1:
         return 1

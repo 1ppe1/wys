@@ -1193,6 +1193,61 @@ fn effect_diagnostics(cx: &Ctx, f: &FuncDef, index: usize, funcs: &[FuncInfo]) -
     out
 }
 
+/// 宣言したが本体のどの呼び出しも要求しない Effect（W0203、ADR-0024 論点 7）。要求は呼び出しの Effect の和集合で、
+/// 自分自身への呼び出しは除く。`@agent` は `capabilities`（既定の `io, llm` を含む）の分を除く（ツールを通して起こし得る）。
+/// `@tool` は除かない。修正案は 1 つで、使われない名前を外した並び（すべてなら `pure`）に `uses` 節を書き換える。
+fn unused_effects(cx: &Ctx, f: &FuncDef, index: usize, funcs: &[FuncInfo]) -> Vec<Diagnostic> {
+    let (Some(declared), Some(clause)) = (cx.sigs[index].effects, &f.effects) else {
+        return Vec::new();
+    };
+    let mut required = funcs[index]
+        .effect_sites
+        .iter()
+        .filter(|site| site.callee != f.name.name)
+        .fold(EffectSet::default(), |a, site| {
+            a.union(site.effects.unwrap_or_default())
+        });
+    if let Some(agent) = &cx.sigs[index].agent {
+        required = required.union(agent.capabilities);
+    }
+    let unused = declared.missing_from(required);
+    if unused.is_empty() {
+        return Vec::new();
+    }
+    let kept: Vec<&str> = declared
+        .iter()
+        .into_iter()
+        .filter(|e| !unused.contains(e))
+        .map(Effect::name)
+        .collect();
+    let text = if kept.is_empty() {
+        "pure".to_string()
+    } else {
+        kept.join(", ")
+    };
+    let (Some(first), Some(last)) = (clause.names.first(), clause.names.last()) else {
+        return Vec::new();
+    };
+    let names_span = Span::new(first.span.start, last.span.end);
+    let message = format!("declare `uses {text}`");
+    clause
+        .names
+        .iter()
+        .filter(|n| Effect::parse(&n.name).is_some_and(|e| unused.contains(&e)))
+        .map(|n| {
+            Diagnostic::warning(
+                "W0203",
+                format!(
+                    "`{}` declares the effect `{}` but none of its calls needs it",
+                    f.name.name, n.name
+                ),
+                n.span,
+            )
+            .with_fix(message.clone(), names_span, text.clone())
+        })
+        .collect()
+}
+
 /// 一度も読まれないローカル変数（W0201、ADR-0016 論点 20）。代入先、`for` の変数、`case Ok(x)` の束縛が対象で、
 /// `_` で始まる名前と引数は除く。読まれたかどうかは関数の中の名前で判定する（スコープは区別しない）。
 fn unused_locals(f: &FuncDef) -> Vec<Diagnostic> {
@@ -1461,11 +1516,17 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
             cx.diags.splice(range.start..range.start, merged);
             range.start..range.end + k
         };
-        let inside = |d: &Diagnostic| d.span.start >= f.span.start && d.span.end <= f.span.end;
+        // デコレータの引数の誤り（E1101 / E1402 など）も、その関数のエラーとして数える
+        let start = f
+            .decorators
+            .first()
+            .map_or(f.span.start, |d| d.span.start.min(f.span.start));
+        let inside = |d: &Diagnostic| d.span.start >= start && d.span.end <= f.span.end;
         if cx.diags.iter().any(|d| d.is_error() && inside(d)) {
             continue;
         }
-        let unused = unused_locals(f);
+        let mut unused = unused_locals(f);
+        unused.extend(unused_effects(&cx, f, i, &funcs));
         if unused.is_empty() {
             continue;
         }

@@ -1,0 +1,15 @@
+# 宣言したが本体のどの呼び出しも要求しない Effect は警告（W0203、ADR-0024 論点 7）。自己再帰は数えない
+# expect-warning: W0203 6:37
+# expect-warning: W0203 9:31
+# expect-warning: W0203 9:35
+# expect-stdout: 1
+def report(n: int) -> None uses io, exit:
+    print(n)
+
+def count(n: int) -> int uses io, exit:
+    if n == 0:
+        return 0
+    return count(n - 1)
+
+def main() -> None uses io, exit:
+    report(count(1) + 1)

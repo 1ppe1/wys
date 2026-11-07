@@ -1,0 +1,27 @@
+# `@tool` は除外しない（過剰な宣言は agent に不要な Capability を要求させる）。`@agent` は capabilities の分を除く（ADR-0024 論点 7）
+# expect-warning: W0203 5:37
+# expect-stdout: 3
+@tool(description="Add.")
+def add(a: int, b: int) -> int uses io:
+    return a + b
+
+@agent(tools=[add])
+async def calc() -> Result[str, LlmError] uses io, llm:
+    req = LlmRequest(
+        model="",
+        system="",
+        messages=[Message(role="user", content="go")],
+        max_tokens=0
+    )
+    return await llm_generate[str](req)
+
+async def main() -> None uses io, llm:
+    print(add(1, 2))
+    llm_mock_push(
+        MockResponse(text="x", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0)
+    )
+    match await calc():
+        case Ok(_):
+            pass
+        case Err(e):
+            print(e.kind)
