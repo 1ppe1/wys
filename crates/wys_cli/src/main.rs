@@ -27,6 +27,7 @@ usage:
   wys dump-llvm <file>                    print the generated LLVM IR
   wys explain <file | CODE>               explain a program (types, narrowing, ARC operations) or
                                           an error code such as E0201, as JSON
+  wys lsp                                 run the language server on stdin/stdout (diagnostics)
   wys llm-proxy                           serve LLM requests as JSON lines on stdin/stdout
                                           using the Anthropic API (ANTHROPIC_API_KEY)
 ";
@@ -59,6 +60,15 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
     }
     if cmd == "eval" {
         return eval::run(rest);
+    }
+    if cmd == "lsp" {
+        // `shutdown` なしの `exit` は終了コード 1（LSP の仕様）
+        let clean = wys_lsp::run_stdio()?;
+        return Ok(if clean {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        });
     }
     let mut format_arg: Option<Format> = None;
     let mut check_only = false;

@@ -2311,3 +2311,125 @@ fn tiny_cost_limits_are_rounded_up_not_dropped() {
     let ir = String::from_utf8(out.stdout).unwrap();
     assert!(ir.contains("max_cost_usd=0.000001"), "{ir}");
 }
+
+/// LSP の 1 つのメッセージを `Content-Length` の枠で書く
+fn lsp_send(w: &mut impl std::io::Write, v: serde_json::Value) {
+    let body = v.to_string();
+    write!(w, "Content-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+    w.flush().unwrap();
+}
+
+/// LSP の 1 つのメッセージを読む
+fn lsp_recv(r: &mut impl std::io::BufRead) -> serde_json::Value {
+    let mut len = 0usize;
+    loop {
+        let mut line = String::new();
+        assert!(
+            r.read_line(&mut line).unwrap() > 0,
+            "the server closed stdout"
+        );
+        let line = line.trim_end();
+        if line.is_empty() {
+            break;
+        }
+        if let Some(n) = line.strip_prefix("Content-Length: ") {
+            len = n.parse().unwrap();
+        }
+    }
+    let mut buf = vec![0; len];
+    r.read_exact(&mut buf).unwrap();
+    serde_json::from_slice(&buf).unwrap()
+}
+
+#[test]
+fn lsp_publishes_diagnostics_over_json_rpc() {
+    // PoC6（DX-003）: `wys lsp` が stdio で JSON-RPC を話し、開いたファイルと import 先の診断をそれぞれの URI に配る
+    let dir = std::env::temp_dir().join(format!("wys-e2e-{}-lsp", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(&dir).unwrap();
+    std::fs::write(
+        dir.join("lib.wys"),
+        "pub def f() -> int:\n    return \"x\"\n",
+    )
+    .unwrap();
+    let main_uri = format!("file://{}/main.wys", dir.display());
+    let lib_uri = format!("file://{}/lib.wys", dir.display());
+    let mut child = wys()
+        .arg("lsp")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut w = child.stdin.take().unwrap();
+    let mut r = std::io::BufReader::new(child.stdout.take().unwrap());
+    lsp_send(
+        &mut w,
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"capabilities": {"general": {"positionEncodings": ["utf-8", "utf-16"]}}}}),
+    );
+    let init = lsp_recv(&mut r);
+    assert_eq!(init["result"]["capabilities"]["positionEncoding"], "utf-8");
+    lsp_send(
+        &mut w,
+        serde_json::json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    );
+    let text = "import lib\n\ndef main() -> None:\n    x: int = \"a\"\n    print(lib.f() + x)\n";
+    lsp_send(
+        &mut w,
+        serde_json::json!({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": {"textDocument": {"uri": main_uri, "languageId": "wys", "version": 1, "text": text}}}),
+    );
+    let mut got: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+    while got.len() < 2 {
+        let m = lsp_recv(&mut r);
+        assert_eq!(m["method"], "textDocument/publishDiagnostics");
+        got.insert(
+            m["params"]["uri"].as_str().unwrap().to_string(),
+            m["params"]["diagnostics"].clone(),
+        );
+    }
+    let main_d = &got[&main_uri][0];
+    assert_eq!(main_d["code"], "E0201");
+    assert_eq!(
+        main_d["range"]["start"],
+        serde_json::json!({"line": 3, "character": 13})
+    );
+    assert_eq!(got[&lib_uri][0]["code"], "E0201");
+    // 直すと、空の診断を配り直す
+    let fixed = "import lib\n\ndef main() -> None:\n    x: int = 1\n    print(lib.f() + x)\n";
+    lsp_send(
+        &mut w,
+        serde_json::json!({"jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {"textDocument": {"uri": main_uri, "version": 2}, "contentChanges": [{"text": fixed}]}}),
+    );
+    // 変わった URI（main）だけを配り直す。lib の診断は変わらないので配り直さない
+    let mut seen: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+    while seen.is_empty() {
+        let m = lsp_recv(&mut r);
+        seen.insert(
+            m["params"]["uri"].as_str().unwrap().to_string(),
+            m["params"]["diagnostics"].clone(),
+        );
+    }
+    assert_eq!(seen[&main_uri], serde_json::json!([]));
+    // `untitled:` の文書は無視し、サーバーは動き続ける
+    lsp_send(
+        &mut w,
+        serde_json::json!({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": {"textDocument": {"uri": "untitled:Untitled-1", "languageId": "wys", "version": 1, "text": "x"}}}),
+    );
+    lsp_send(
+        &mut w,
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "shutdown"}),
+    );
+    assert_eq!(lsp_recv(&mut r)["id"], 2);
+    lsp_send(
+        &mut w,
+        serde_json::json!({"jsonrpc": "2.0", "method": "exit"}),
+    );
+    drop(w);
+    assert!(child.wait().unwrap().success());
+}

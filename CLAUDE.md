@@ -50,6 +50,7 @@ WYS_APPROVAL=allow target/debug/wys run examples/agent_demo.wys   # 承認の方
 scripts/llm-smoke.sh   # 実プロバイダ（WYS_LLM_PROVIDER=anthropic、wys llm-proxy）と 1 往復。ANTHROPIC_API_KEY は各自の環境で。費用がかかる。cmd:<path> で任意のコマンドも使える
 target/debug/wys explain examples/fib.wys   # 型・絞り込み・ARC 操作の理由を JSON で（ADR-0017）
 target/debug/wys explain E0201              # エラーコードの説明
+target/debug/wys lsp                        # LSP のサーバー（stdio。M6 PoC6 は診断だけ）
 target/debug/wys eval tests/evals/*/        # 評価ケースを記録の再生で実行し、成功率を出す（ADR-0025。--format json、--record で記録し直す）
 benches/measure.sh                                          # ベンチ計測（倍率は書かない）
 ```
