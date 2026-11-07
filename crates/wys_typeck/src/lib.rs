@@ -871,6 +871,8 @@ pub struct AgentAttr {
     pub max_tool_calls: i64,
     pub max_tokens: i64,
     pub timeout_ms: i64,
+    /// `max_cost_usd`（100 万分の 1 USD 単位。0 は上限なし。ADR-0025 論点 13）
+    pub max_cost_micro_usd: i64,
 }
 
 /// 変数の参照で、その地点の型が宣言型と異なる（絞り込まれている）こと。
@@ -1763,6 +1765,7 @@ fn check_decorators(cx: &mut Ctx, module: &Module) {
             max_tool_calls: 0,
             max_tokens: 0,
             timeout_ms: 0,
+            max_cost_micro_usd: 0,
         };
         attr.capabilities.insert(Effect::Io);
         attr.capabilities.insert(Effect::Llm);
@@ -1833,6 +1836,29 @@ fn check_decorators(cx: &mut Ctx, module: &Module) {
                 ("max_llm_calls" | "max_tool_calls" | "max_tokens" | "timeout_ms", _) => {
                     bad_arg(cx, format!("`{}` must be an integer", k.name), a.span)
                 }
+                // 費用の上限（USD。整数のリテラルも受け付ける。ADR-0025 論点 13）
+                ("max_cost_usd", AttrValue::Float(_) | AttrValue::Int(_)) => {
+                    let v = match &a.value {
+                        AttrValue::Float(v) => *v,
+                        AttrValue::Int(v) => *v as f64,
+                        _ => unreachable!("matched above"),
+                    };
+                    if !v.is_finite() || v < 0.0 {
+                        bad_arg(
+                            cx,
+                            "`max_cost_usd` cannot be negative (0 means no limit)".into(),
+                            a.span,
+                        );
+                        continue;
+                    }
+                    // 正の上限は 1 µUSD 以上に切り上げる（丸めて 0 = 上限なしにしない。Fable のレビュー）
+                    attr.max_cost_micro_usd = (v * 1_000_000.0).ceil().min(i64::MAX as f64) as i64;
+                }
+                ("max_cost_usd", _) => bad_arg(
+                    cx,
+                    "`max_cost_usd` must be a number of US dollars, e.g. `0.5`".into(),
+                    a.span,
+                ),
                 (other, _) => bad_arg(cx, format!("`@agent` has no argument `{other}`"), k.span),
             }
         }

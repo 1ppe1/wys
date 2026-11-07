@@ -2252,3 +2252,62 @@ fn eval_replays_cases_and_reports_the_success_rate() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(v["success_rate"].is_null());
 }
+
+const COSTLY: &str = "@tool(description=\"Add.\")\ndef add(a: int, b: int) -> int uses pure:\n    return a + b\n\n@agent(tools=[add], capabilities=[\"llm\"], max_cost_usd=0.4)\nasync def capped() -> Result[str, LlmError] uses llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm:\n    for _ in range(2):\n        match await capped():\n            case Ok(t):\n                print(\"ok \" + t)\n            case Err(e):\n                print(e.kind + \": \" + e.message)\n    print(to_json(llm_usage().cost_usd))\n    for ev in audit_events():\n        if ev.kind == \"budget_exceeded\":\n            print(ev.kind + \" \" + ev.detail)\n";
+
+#[test]
+fn max_cost_usd_stops_the_agent_and_closes_when_the_cost_is_unknown() {
+    // 応答の cost_usd を数え、上限を超えたら Err(budget)（ADR-0025 論点 13）
+    let tool = r#"{"text":"","tool_calls":[{"id":"t1","name":"add","args":{"a":1,"b":2}}],"usage":{"input_tokens":10,"output_tokens":5},"cost_usd":0.25,"stop":"tool_use"}"#;
+    let done = r#"{"text":"3","usage":{"input_tokens":10,"output_tokens":5},"cost_usd":0.25,"stop":"end_turn"}"#;
+    let (out, reqs) = run_with_provider("cost_capped", COSTLY, &[tool, done, done], &[]);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // 1 回目: 2 回の呼び出しで 0.5 > 0.4 → 超過。2 回目: 新しい agent は 0 から数え、0.25 で終わる
+    assert_eq!(
+        stdout, "budget: max_cost_usd exceeded\nok 3\n0.75\nbudget_exceeded max_cost_usd\n",
+        "{stdout}"
+    );
+    assert_eq!(reqs.len(), 3);
+    // 費用の分からない応答（cost_usd がない）は超過として扱い、以後は呼ぶ前に止める（閉じる方向）
+    let unpriced = r#"{"text":"","tool_calls":[{"id":"t1","name":"add","args":{"a":1,"b":2}}],"usage":{"input_tokens":10,"output_tokens":5},"stop":"tool_use"}"#;
+    let (out, reqs) = run_with_provider("cost_unknown", COSTLY, &[unpriced, unpriced], &[]);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with("budget: max_cost_usd exceeded (cost unknown)\nbudget: max_cost_usd exceeded (cost unknown)\n"),
+        "{stdout}"
+    );
+    assert_eq!(reqs.len(), 2, "each agent pays for one call and then stops");
+    // 負の cost_usd は壊れた応答
+    let negative = r#"{"text":"x","usage":{"input_tokens":1,"output_tokens":1},"cost_usd":-1}"#;
+    let (out, _) = run_with_provider("cost_negative", COSTLY, &[negative, negative], &[]);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with(
+            "provider: malformed provider response: `cost_usd` must be a non-negative number\n"
+        ),
+        "{stdout}"
+    );
+    // モックは費用を返さないので、上限のある agent の最初の呼び出しで超過になる
+    let mocked = COSTLY.replace(
+        "    for _ in range(2):",
+        "    llm_mock_push(MockResponse(text=\"m\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    for _ in range(1):",
+    );
+    let (code, stdout, _) = run("cost_mock", &mocked);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.starts_with("budget: max_cost_usd exceeded (cost unknown)\n"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn tiny_cost_limits_are_rounded_up_not_dropped() {
+    // 1 µUSD より小さい上限も上限として残す（丸めて 0 = 上限なしにしない。Fable のレビュー）
+    let path = scratch(
+        "tiny_cost",
+        "@agent(max_cost_usd=0.0000001)\nasync def a() -> None uses io, llm:\n    pass\n\ndef main() -> None:\n    pass\n",
+    );
+    let out = cli(&["dump-ir", path.to_str().unwrap()]);
+    let ir = String::from_utf8(out.stdout).unwrap();
+    assert!(ir.contains("max_cost_usd=0.000001"), "{ir}");
+}

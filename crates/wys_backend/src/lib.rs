@@ -543,12 +543,13 @@ fn emit_ai_tables(out: &mut String, p: &Program) -> String {
         let caps: u64 = a.capabilities.iter().map(|e| effect_bit(*e)).sum();
         let _ = writeln!(
             out,
-            "@.agent.{i} = private constant {{ ptr, ptr, i64, i64, i64, i64, i64, i64, ptr }} {{ ptr @.agent.name.{i}, ptr {tools_ptr}, i64 {}, i64 {caps}, i64 {}, i64 {}, i64 {}, i64 {}, ptr @.agent.model.{i} }}",
+            "@.agent.{i} = private constant {{ ptr, ptr, i64, i64, i64, i64, i64, i64, ptr, i64 }} {{ ptr @.agent.name.{i}, ptr {tools_ptr}, i64 {}, i64 {caps}, i64 {}, i64 {}, i64 {}, i64 {}, ptr @.agent.model.{i}, i64 {} }}",
             idx.len(),
             a.max_llm_calls,
             a.max_tool_calls,
             a.max_tokens,
-            a.timeout_ms
+            a.timeout_ms,
+            a.max_cost_micro_usd
         );
     }
     let mut init = String::new();

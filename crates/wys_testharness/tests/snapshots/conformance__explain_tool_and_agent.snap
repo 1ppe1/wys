@@ -166,7 +166,8 @@ expression: json
         "max_llm_calls": 3,
         "max_tool_calls": 0,
         "max_tokens": 0,
-        "timeout_ms": 0
+        "timeout_ms": 0,
+        "max_cost_usd": 0.0
       }
     },
     {

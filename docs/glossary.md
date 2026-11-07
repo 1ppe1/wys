@@ -30,6 +30,7 @@
 | 記録 | 要求と応答の対を JSON 行で並べたファイル（先頭にヘッダ）。どのプロバイダでも作れ、本文を含む（API キーは含まない） | ADR-0025 論点 6 |
 | 指紋（要求の） | 再生で記録と突き合わせる、要求から `v` と `timeout_ms` を除いたもの。n 回目の呼び出しは n 回目の記録と、指紋が一致しなければ `Err(kind="replay")` | ADR-0025 論点 7・8 |
 | 評価ケース | ディレクトリ `<name>/` の `case.wys`（`test_*` 関数が agent や `llm_generate` を呼び、`assert` で判定する）と、テスト関数ごとの記録 `recordings/<test>.jsonl`。`wys eval` が再生で実行し、成功率と使用量をまとめる | AI-008, ADR-0025 論点 11 |
+| 価格表 | proxy（`wys llm-proxy`）が持つ、モデルごとの 100 万トークンあたりの USD（入力・出力・キャッシュの書き込みと読み込み）。応答に `cost_usd` を添え、ランタイムが `@agent(max_cost_usd=)` と比べる。知らないモデルには付けない（上限のある agent では費用が分からないとして止める） | AI-006, ADR-0025 論点 12・13 |
 | 監査イベント | 権限拒否や承認などの、後から追跡できる実行記録。M5 ではランタイムが順序付きで持ち（`audit_events()`、`WYS_AUDIT=<path>\|stderr` で JSON 行）、種類は `llm_called` / `tool_called` / `tool_denied` / `capability_denied` / `approval_requested` / `approval_granted` / `approval_denied` / `budget_exceeded` / `schema_rejected`。プロンプトと応答の本文は含めない | AC-007, NFR-005, ADR-0023 論点 15 |
 | 構造化診断 | エラーコード・位置・原因・修正ヒントなどを機械可読形式（JSONなど）で出す診断 | DX-002, AC-005 |
 | 共通IR | フロントエンドと各バックエンドの間にある中間表現 | COMP-001 |

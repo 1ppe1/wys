@@ -62,6 +62,8 @@ struct AgentJson<'a> {
     max_tool_calls: i64,
     max_tokens: i64,
     timeout_ms: i64,
+    /// `max_cost_usd`（USD。0 は上限なし）
+    max_cost_usd: f64,
 }
 
 /// Effect（ADR-0014 論点 10、ADR-0024 論点 11）。`required` は本体の呼び出しの Effect の和集合
@@ -303,6 +305,7 @@ fn function_json<'a>(
             max_tool_calls: a.max_tool_calls,
             max_tokens: a.max_tokens,
             timeout_ms: a.timeout_ms,
+            max_cost_usd: a.max_cost_micro_usd as f64 / 1e6,
         }),
     }
 }

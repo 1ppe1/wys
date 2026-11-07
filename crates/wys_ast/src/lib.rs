@@ -171,6 +171,8 @@ pub struct AttrArg {
 #[derive(Debug, Clone)]
 pub enum AttrValue {
     Int(i64),
+    /// 小数のリテラル（`max_cost_usd=0.5`。ADR-0025 論点 13）
+    Float(f64),
     Str(String),
     Bool(bool),
     List(Vec<AttrElem>),
