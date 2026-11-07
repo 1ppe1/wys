@@ -103,6 +103,11 @@ impl SourceMap {
         file.position(byte - base)
     }
 
+    /// 位置 `byte` を含むファイル。
+    pub fn file_at(&self, byte: u32) -> &SourceFile {
+        self.find(byte).1
+    }
+
     /// 最初に追加したファイル（エントリファイル）。
     pub fn entry(&self) -> &SourceFile {
         &self.files[0].1

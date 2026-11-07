@@ -20,6 +20,7 @@
 | [design/ai-sdk.md](design/ai-sdk.md) | 確定 | AI SDK の設計（M5）: 組み込みの型と関数、スキーマ型と JSON Schema、`llm_generate`、`@tool` / `@agent`、ランタイムの強制、プロバイダ、監査 |
 | [poc/poc3-results.md](poc/poc3-results.md) | 成功 | PoC3: CPython の埋め込み（M4 T1、INTEROP-001 / 002 の試作） |
 | [poc/poc4-results.md](poc/poc4-results.md) | 成功 | PoC4: AI 安全性のランタイム（M5 T1、ツール表・agent のコンテキスト・予算・監査・実プロバイダの proxy） |
+| [poc/poc6-results.md](poc/poc6-results.md) | 基準 2 の確認待ち | PoC6: LSP のスパイク（M6 T9、`wys lsp` の診断、位置の符号化、計測） |
 | [poc/poc5-results.md](poc/poc5-results.md) | 準備済み・未計測 | PoC5: AI 修正ループの成功率（DX-005） |
 | [glossary.md](glossary.md) | Draft | 用語集。文書間で表記を揃えるための基準 |
 | [adr/README.md](adr/README.md) | 運用中 | ADRの書き方、一覧、未決定事項との対応 |

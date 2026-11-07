@@ -1,0 +1,19 @@
+[package]
+name = "wys_lsp"
+description = "Language Server Protocol の初期版（M6 PoC6、DX-003）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+wys_driver = { path = "../wys_driver" }
+wys_diagnostics = { path = "../wys_diagnostics" }
+wys_span = { path = "../wys_span" }
+lsp-server = "0.7"
+lsp-types = "0.97"
+serde_json = "1"
+
+[lints]
+workspace = true
