@@ -39,7 +39,7 @@
 | [0023](0023-ai-runtime.md) | AI Runtime（`wys llm-proxy`、Capability・承認・予算の強制、監査とプライバシー） | Accepted（論点 13・16・21 の M6 の部分は ADR-0025 が引き継ぐ） | 2026-11-06 |
 | [0024](0024-effect-inference.md) | Effect の推論（注釈のない関数だけ。E1103 の廃止、W0203。ADR-0014 論点 4・5・7・10・12 を置き換える） | Accepted | 2026-11-07 |
 | [0025](0025-trace-replay-eval-cost.md) | トレース・記録と再生・評価ケース・費用の上限 | Accepted | 2026-11-07 |
-| [0026](0026-lsp-initial.md) | LSP の初期版（`wys lsp`、診断・型のホバー・定義ジャンプ・quickfix・整形） | Proposed | 2026-11-07 |
+| [0026](0026-lsp-initial.md) | LSP の初期版（`wys lsp`、診断・型のホバー・定義ジャンプ・quickfix・整形） | Accepted | 2026-11-07 |
 
 ## 未決定事項との対応
 

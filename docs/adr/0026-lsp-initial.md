@@ -1,6 +1,6 @@
 # ADR-0026: LSP の初期版
 
-- **状態:** Proposed
+- **状態:** Accepted
 - **日付:** 2026-11-07
 - **関連:** DX-003、DX-001、DX-004、AC-004、ADR-0017（`wys explain`）、ADR-0024（推論した Effect）、`docs/plans/m6.md` T9〜T11、`docs/poc/poc6-results.md`、`docs/design/lsp.md`
 
