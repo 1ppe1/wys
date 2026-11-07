@@ -1,0 +1,2 @@
+{"kind":"header","model":null,"provider":"cmd","v":1}
+{"kind":"exchange","latency_ms":8,"reply":{"assistant":[{"text":"Brief","type":"text"}],"stop":"end_turn","text":"Brief","tool_calls":[],"usage":{"input_tokens":12,"output_tokens":2}},"request":{"max_tokens":0,"messages":[{"content":"a long text","role":"user"}],"model":"","schema":null,"system":"Summarize in one word.","timeout_ms":0,"tools":[],"v":1},"seq":1}

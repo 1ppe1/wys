@@ -1,0 +1,13 @@
+# 評価ケース（ADR-0025 論点 11）: 型を付けない本文の応答
+async def test_summary_is_short() -> None:
+    req = LlmRequest(
+        model="",
+        system="Summarize in one word.",
+        messages=[Message(role="user", content="a long text")],
+        max_tokens=0
+    )
+    match await llm_generate[str](req):
+        case Ok(t):
+            assert(len(t) < 10)
+        case Err(_):
+            assert(False)
