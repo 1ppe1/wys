@@ -66,4 +66,6 @@ E1101 / E1104 / E1403 / E1405 / E1406 は変えない。
 
 - 論点 5 のメッセージの例（``g` has inferred effect `io` (it calls `print` at 12:5)`）は、実装では位置を本文に入れず、`cause` に由来の呼び出し先の名前（``g` has no `uses` clause, so its effects are inferred from its calls (`print`)`）、位置は `related` に入れる形にした（診断の本文に行・列を書くと、ファイルの対応表が型検査に要る）。
 - 由来を探すとき、呼び出し先 `g` の中の `g` 自身への呼び出しは除く（自己再帰は由来ではない。Fable のレビュー）。
+- 論点 11 の「注釈のある関数では `declared − required` が W0203 の対象と一致する」は、`@agent` の関数では成り立たない（W0203 は `capabilities` の分も除く。`wys explain` の `required` は呼び出しの和だけ。M6 T3、Fable のレビュー）。
+- W0203 の修正案は、利用者が書いた名前の順を保つ（M6 T3）。
 

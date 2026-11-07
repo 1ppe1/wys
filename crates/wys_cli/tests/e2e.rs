@@ -1699,7 +1699,7 @@ fn effects_of_unannotated_functions_are_inferred() {
 #[test]
 fn unused_effects_are_warned_with_one_fix() {
     // 宣言したが使われない Effect は W0203。修正案を適用すると警告が消える（ADR-0024 論点 7）
-    let src = "def report(n: int) -> None uses io, exit, python:\n    print(n)\n\ndef main() -> None:\n    report(1)\n";
+    let src = "def report(n: int) -> None uses python, io, exit:\n    print(n)\n\ndef main() -> None:\n    report(1)\n";
     let path = scratch("unused_effects", src);
     let out = cli(&["check", "--format", "json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));

@@ -1214,11 +1214,12 @@ fn unused_effects(cx: &Ctx, f: &FuncDef, index: usize, funcs: &[FuncInfo]) -> Ve
     if unused.is_empty() {
         return Vec::new();
     }
-    let kept: Vec<&str> = declared
+    // 利用者が書いた順を保つ（`wys fmt` は `uses` の名前を並べ替えない）
+    let kept: Vec<&str> = clause
+        .names
         .iter()
-        .into_iter()
-        .filter(|e| !unused.contains(e))
-        .map(Effect::name)
+        .filter(|n| Effect::parse(&n.name).is_some_and(|e| !unused.contains(&e)))
+        .map(|n| n.name.as_str())
         .collect();
     let text = if kept.is_empty() {
         "pure".to_string()
