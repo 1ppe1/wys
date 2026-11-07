@@ -1,0 +1,15 @@
+# LSP の定義ジャンプ（ADR-0026 論点 11）: モジュールの関数・型、import、ローカル変数
+# expect-definition: 1:1 -> -
+# expect-definition: 9:8 -> lib.wys:1:1
+# expect-definition: 10:17 -> lib.wys:3:9
+# expect-definition: 14:11 -> lib.wys:3:9
+# expect-definition: 15:11 -> lib.wys:3:9
+# expect-definition: 14:16 -> main.wys:13:5
+# expect-definition: 13:9 -> lib.wys:1:10
+import lib
+from lib import area
+
+def main() -> None uses io:
+    s = lib.Shape(w=3)
+    print(area(s))
+    print(lib.area(s))

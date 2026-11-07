@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 wys_driver = { path = "../wys_driver" }
+wys_lsp = { path = "../wys_lsp" }
 
 [dev-dependencies]
 wys_explain = { path = "../wys_explain" }

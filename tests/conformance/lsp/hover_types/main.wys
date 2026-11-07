@@ -1,0 +1,24 @@
+# LSP のホバー（ADR-0026 論点 10）: 式の型、変数の宣言の型と絞り込み、関数の署名と Effect、組み込み、フィールド、束縛
+# expect-hover: 21:5 total: int
+# expect-hover: 21:13 def add(a: int, b: int) -> int uses(inferred) pure
+# expect-hover: 22:11 total: int
+# expect-hover: 23:10 Point(...) -> Point
+# expect-hover: 15:13 .x: int
+# expect-hover: 15:5 print(...) -> None uses io
+# expect-hover: 14:10 p: Point
+# expect-hover: 17:5 def add(a: int, b: int) -> int uses(inferred) pure
+# expect-hover: 24:7 -
+# expect-hover: 21:17 int
+type Point = {x: int, y: int}
+
+def show(p: Point, n: int | None) -> None uses io:
+    print(p.x)
+
+def add(a: int, b: int) -> int:
+    return a + b
+
+def main() -> None uses io:
+    total = add(1, 2)
+    print(total)
+    show(Point(x=1, y=2), None)
+    # comment

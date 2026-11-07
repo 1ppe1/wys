@@ -62,8 +62,12 @@ fn rel(root: &Path, p: &Path) -> String {
 #[test]
 fn conformance_suite() {
     let root = repo_root();
-    let cases = collect_cases(&root.join("tests/conformance"));
+    let mut cases = collect_cases(&root.join("tests/conformance"));
     assert!(!cases.is_empty(), "no conformance cases found");
+    // 開発中に一部だけ回す: `WYS_CONFORMANCE_FILTER=lsp/`（パスの部分一致）
+    if let Ok(f) = std::env::var("WYS_CONFORMANCE_FILTER") {
+        cases.retain(|c| c.display().to_string().contains(&f));
+    }
     // 最適化レベルとサニタイザは環境変数 WYS_OPT / WYS_SANITIZE で切り替える（CI が3つのモードで実行する）
     let (rt, py) = runtime_libs();
     let opts = BuildOptions {

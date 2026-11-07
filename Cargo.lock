@@ -1361,8 +1361,10 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "serde_json",
+ "wys_ast",
  "wys_driver",
  "wys_span",
+ "wys_typeck",
 ]
 
 [[package]]
@@ -1414,6 +1416,7 @@ dependencies = [
  "serde_json",
  "wys_driver",
  "wys_explain",
+ "wys_lsp",
 ]
 
 [[package]]

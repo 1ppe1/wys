@@ -1,0 +1,26 @@
+# LSP のホバーと定義（ADR-0026 論点 10・11）: 絞り込み、case の束縛、Effect の宣言、型の注釈からの定義
+# expect-hover: 15:15 n: int
+# expect-hover: 17:17 v: int
+# expect-hover: 18:20 v: int
+# expect-hover: 20:19 e: str
+# expect-hover: 13:5 def pick(n: int | None, r: Result[int, str]) -> int uses io
+# expect-definition: 18:20 -> main.wys:17:17
+# expect-definition: 20:19 -> main.wys:19:18
+# expect-definition: 24:8 -> main.wys:11:6
+# expect-definition: 15:15 -> main.wys:13:10
+type Plan = {title: str}
+
+def pick(n: int | None, r: Result[int, str]) -> int uses io:
+    if n is not None:
+        print(n)
+    match r:
+        case Ok(v):
+            return v
+        case Err(e):
+            print(e)
+    return 0
+
+def main() -> None uses io:
+    p: Plan = Plan(title="x")
+    print(pick(1, Ok(2)))
+    print(p.title)

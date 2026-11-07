@@ -1,0 +1,4 @@
+pub type Shape = {w: int}
+
+pub def area(s: Shape) -> int:
+    return s.w

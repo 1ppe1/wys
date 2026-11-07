@@ -50,7 +50,7 @@ WYS_APPROVAL=allow target/debug/wys run examples/agent_demo.wys   # 承認の方
 scripts/llm-smoke.sh   # 実プロバイダ（WYS_LLM_PROVIDER=anthropic、wys llm-proxy）と 1 往復。ANTHROPIC_API_KEY は各自の環境で。費用がかかる。cmd:<path> で任意のコマンドも使える
 target/debug/wys explain examples/fib.wys   # 型・絞り込み・ARC 操作の理由を JSON で（ADR-0017）
 target/debug/wys explain E0201              # エラーコードの説明
-target/debug/wys lsp                        # LSP のサーバー（stdio。M6 PoC6 は診断だけ）
+target/debug/wys lsp                        # LSP のサーバー（stdio。診断・ホバー・定義ジャンプ。ADR-0026）
 target/debug/wys eval tests/evals/*/        # 評価ケースを記録の再生で実行し、成功率を出す（ADR-0025。--format json、--record で記録し直す）
 benches/measure.sh                                          # ベンチ計測（倍率は書かない）
 ```
@@ -70,6 +70,7 @@ benches/measure.sh                                          # ベンチ計測（
    - 診断 JSON の形も固定したいもの: `diagnostics/`（insta スナップショット）
    - 複数ファイル（モジュール）: `modules/<ケース名>/main.wys` と、そこから import するファイル
    - AI SDK（`llm_generate` など。プロバイダは既定のモック）: `ai/`。環境変数は `# expect-env: KEY=VALUE`
+   - LSP のホバーと定義ジャンプ: `lsp/<ケース名>/main.wys`。`# expect-hover: 行:列 <コードブロックの 1 行目>`、`# expect-definition: 行:列 -> ファイル:行:列`（実行せずに解析だけ。`WYS_CONFORMANCE_FILTER=lsp/` で一部だけ回せる）
 2. 新しいケースが**失敗することを確認してから**実装する。
 3. `.wys` の挙動は `scripts/ai-loop.sh <file>` で確かめる。診断があれば JSON が返るので、`code`・`span`・`hints` を読んで直す。
 4. `./scripts/ci.sh` が通るまで作業を終えない。
