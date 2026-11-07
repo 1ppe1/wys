@@ -675,12 +675,19 @@ fn provider_step(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
 
 /// プロバイダか記録から届いた応答を受け取る。届いた応答は、壊れていても回数とトークンを数える
 /// （失敗を繰り返す呼び出しも予算で止まる。Codex のレビュー）。届かなかったら数えない。
-/// `latency_ms` は時計に足す待ち時間（届いた応答なら、成功でも失敗でも足す。届かなければ足さない）。
+/// `latency_ms` は時計に足す待ち時間（成功でも失敗でも、応答が届かなかったときも足す。Codex のレビュー）。
 fn accept(s: &mut State, outcome: Outcome, latency_ms: i64) -> Result<Reply, *mut Header> {
     let parsed = match outcome {
         Outcome::Line(v) => parse_reply(&v),
         Outcome::Malformed(_, m) => Err((m, Usage::default())),
-        Outcome::Transport(m) => return Err(fail(s, "provider", m)),
+        Outcome::Transport(m) => {
+            // 応答は届いていないので回数は数えないが、待った時間は数える（記録と再生を対称にする）
+            for i in s.chain() {
+                s.arena[i].virtual_ms += latency_ms;
+            }
+            s.trace.latency_ms = s.trace.latency_ms.saturating_add(latency_ms);
+            return Err(fail(s, "provider", m));
+        }
     };
     match parsed {
         Ok(mut r) => {
