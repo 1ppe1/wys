@@ -359,7 +359,7 @@ ADR-0023 論点 1〜6 のとおりに実装した。仕様の解釈として決�
 
 - **プロバイダの失敗の `message`**（どれも `Err(kind="provider")`）:
   - 起動できない: `cannot start the provider <path>: <理由>`
-  - 未知の値: `unknown WYS_LLM_PROVIDER value <値> (use anthropic or cmd:<path>)`
+  - 未知の値: `unknown WYS_LLM_PROVIDER value <値> (use anthropic, cmd:<path> or replay:<path>)`
   - 応答の行が JSON でない、`text` がない、ツールの呼び出しに `id` / `name` がない: `malformed provider response: ...`
   - `error` 行: その文字列をそのまま
   - 子プロセスが応答を返さずに終わった・書き込めない: `the provider exited`
@@ -414,6 +414,12 @@ ADR-0023 論点 1〜6 のとおりに実装した。仕様の解釈として決�
 {"kind":"header","v":1,"provider":"cmd"}
 {"kind":"exchange","seq":1,"request":{"v":1,"model":"...","system":"...","messages":[...],"tools":[...],"schema":{...},"max_tokens":0,"timeout_ms":0},"reply":{"text":"","tool_calls":[...],"usage":{...},"stop":"tool_use","assistant":...},"latency_ms":812}
 ```
+
+- 記録は**プロセスの最初**に作り直し（LLM を呼ぶ前に落ちても古い記録を残さない）、権限は 0600（既にあったファイルも）。ヘッダの `model` は記録したときの `WYS_LLM_MODEL`（`wys eval` が再生で使う）。
+- `exchange` の応答は項目で区別する: 届いた JSON は `reply`、JSON でない行は `malformed`（行そのもの）、届かなかった応答は `transport`（文言）。届いた応答（`reply` と `malformed`）は回数とトークンを数え、`transport` は数えない。
+- 待ち時間: モックは `latency_ms`、実プロバイダは実際に待った時間を記録する。仮想時計のモードでは、実プロバイダの待ち時間も agent の経過時間に足す（記録と再生を対称にする）。再生は、成功でも失敗でも（応答が届かなかったときも）、記録した `latency_ms` を足す。
+- 失敗の文言: `request N: <項目> differs`、`recording exhausted after N exchanges`、`cannot read the recording <path>: ...`（以上 `kind="replay"`、回数は数えない）、`cannot write the recording <path>: ...`、`the recording path is also the replay source`（以上 `kind="provider"`）。再生中の `llm_mock_push` は実行時エラー（101）。
+- モックを記録すると、`MockToolCall.args_json` は JSON の値に直して入る（再生ではキーの順と空白が変わるので、監査の `args_len` が変わり得る）。
 
 `WYS_LLM_PROVIDER=replay:<path>` で、子プロセスを起動せずに記録から順に返す。n 回目の呼び出しの要求の指紋（`v` と `timeout_ms` を除いた要求）が n 回目の記録と一致しなければ `Err(kind="replay")`。`latency_ms` は待たずに経過時間を進める。ツールは実際に実行し、承認・Capability・予算の検査もそのまま行う。記録には本文が入る（API キーは入らない）。
 
