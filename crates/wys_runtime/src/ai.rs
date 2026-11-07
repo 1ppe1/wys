@@ -179,6 +179,34 @@ enum Provider {
     Broken(String),
 }
 
+/// 記録の 1 回分の応答（ADR-0025 論点 6）。
+enum Outcome {
+    /// 届いた JSON の応答（`error` 行と、`parse_reply` が拒む形を含む）
+    Line(serde_json::Value),
+    /// 届いた行が JSON でなかった（行そのものと、失敗の文言）
+    Malformed(String, String),
+    /// 応答が届かなかった（`the provider exited` など）
+    Transport(String),
+}
+
+/// 記録の再生（`WYS_LLM_PROVIDER=replay:<path>`、ADR-0025 論点 7・8）。最初の呼び出しでファイルを全部読む
+struct Replay {
+    /// (要求, 応答, `latency_ms`)
+    exchanges: Vec<(serde_json::Value, Outcome)>,
+    latencies: Vec<i64>,
+    next: usize,
+    /// 一度失敗したら、以後の呼び出しも同じ失敗を返す
+    failed: Option<String>,
+}
+
+/// 記録（`WYS_LLM_RECORD=<path>`、ADR-0025 論点 6）
+#[derive(Default)]
+struct Record {
+    file: Option<std::fs::File>,
+    seq: usize,
+    failed: Option<String>,
+}
+
 struct AuditEvent {
     kind: &'static str,
     agent: String,
@@ -200,6 +228,8 @@ struct State {
     /// ビルドしたコンパイラの絶対パス（生成コードが `wys_llm_set_compiler` で渡す。`wys llm-proxy` の探索に使う）
     compiler: Option<String>,
     trace: Trace,
+    replay: Option<Replay>,
+    record: Record,
 }
 
 /// トレース（ADR-0025 論点 1〜4、`docs/design/ai-sdk.md` §18）。
@@ -255,6 +285,8 @@ impl State {
             provider: Provider::Idle,
             compiler: None,
             trace: Trace::from_env(),
+            replay: None,
+            record: Record::default(),
         }
     }
 
@@ -627,37 +659,335 @@ fn provider_step(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
     r
 }
 
+/// プロバイダか記録から届いた応答を受け取る。届いた応答は、壊れていても回数とトークンを数える
+/// （失敗を繰り返す呼び出しも予算で止まる。Codex のレビュー）。届かなかったら数えない。
+fn accept(s: &mut State, outcome: Outcome, latency_ms: i64) -> Result<Reply, *mut Header> {
+    let parsed = match outcome {
+        Outcome::Line(v) => parse_reply(&v),
+        Outcome::Malformed(_, m) => Err((m, Usage::default())),
+        Outcome::Transport(m) => return Err(fail(s, "provider", m)),
+    };
+    match parsed {
+        Ok(mut r) => {
+            r.latency_ms = latency_ms;
+            Ok(r)
+        }
+        Err((m, usage)) => {
+            for i in s.chain() {
+                s.arena[i].llm_calls += 1;
+                s.arena[i].usage.add(usage);
+            }
+            audit(s, "llm_called", None, format!("tokens={}", usage.total()));
+            Err(fail(s, "provider", m))
+        }
+    }
+}
+
+/// モックの応答を、プロトコルの応答の形にする（記録用。`args_json` が JSON でなければ文字列のまま）
+fn mock_reply_json(r: &Reply) -> serde_json::Value {
+    let calls: Vec<serde_json::Value> = r
+        .tool_calls
+        .iter()
+        .map(|(id, name, args)| {
+            let args = serde_json::from_str::<serde_json::Value>(args)
+                .unwrap_or_else(|_| serde_json::Value::String(args.clone()));
+            serde_json::json!({"id": id, "name": name, "args": args})
+        })
+        .collect();
+    serde_json::json!({
+        "text": r.text, "tool_calls": calls,
+        "usage": {"input_tokens": r.usage.input_tokens, "output_tokens": r.usage.output_tokens},
+        "stop": r.stop, "assistant": r.assistant
+    })
+}
+
+/// `WYS_LLM_PROVIDER=replay:<path>` の `<path>`
+fn replay_source() -> Option<String> {
+    std::env::var("WYS_LLM_PROVIDER")
+        .ok()
+        .and_then(|v| v.strip_prefix("replay:").map(str::to_string))
+}
+
+/// 再生のファイルを読む（最初の呼び出しで 1 回）。形が違えば失敗
+fn replay_load(s: &mut State) -> Result<(), String> {
+    if s.replay.is_some() {
+        return Ok(());
+    }
+    let path = replay_source().unwrap_or_default();
+    let bad = |why: String| format!("cannot read the recording {path}: {why}");
+    let loaded = (|| -> Result<Replay, String> {
+        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+        let header: serde_json::Value =
+            serde_json::from_str(lines.next().ok_or("the file is empty")?)
+                .map_err(|e| e.to_string())?;
+        if header["kind"] != "header" || header["v"] != 1 {
+            return Err("the first line is not a version 1 header".into());
+        }
+        let mut exchanges = Vec::new();
+        let mut latencies = Vec::new();
+        for (n, l) in lines.enumerate() {
+            let v: serde_json::Value =
+                serde_json::from_str(l).map_err(|e| format!("line {}: {e}", n + 2))?;
+            if v["kind"] != "exchange" || !v["request"].is_object() {
+                return Err(format!("line {}: not an exchange", n + 2));
+            }
+            let outcome = match &v["reply"] {
+                serde_json::Value::Null => Outcome::Transport(
+                    v["transport"]
+                        .as_str()
+                        .unwrap_or("the provider exited")
+                        .to_string(),
+                ),
+                serde_json::Value::String(raw) => {
+                    let m = match serde_json::from_str::<serde_json::Value>(raw) {
+                        Err(e) => malformed_message(&e),
+                        Ok(_) => "malformed provider response".into(),
+                    };
+                    Outcome::Malformed(raw.clone(), m)
+                }
+                r => Outcome::Line(r.clone()),
+            };
+            exchanges.push((v["request"].clone(), outcome));
+            latencies.push(v["latency_ms"].as_i64().unwrap_or(0).max(0));
+        }
+        Ok(Replay {
+            exchanges,
+            latencies,
+            next: 0,
+            failed: None,
+        })
+    })();
+    match loaded {
+        Ok(r) => {
+            s.replay = Some(r);
+            Ok(())
+        }
+        Err(why) => {
+            let m = bad(why);
+            s.replay = Some(Replay {
+                exchanges: Vec::new(),
+                latencies: Vec::new(),
+                next: 0,
+                failed: Some(m.clone()),
+            });
+            Err(m)
+        }
+    }
+}
+
+/// 要求の指紋（`v` と `timeout_ms` を除く）で、記録と違う最初の項目（ADR-0025 論点 7・8）
+fn first_difference(recorded: &serde_json::Value, request: &serde_json::Value) -> Option<String> {
+    for key in [
+        "model",
+        "system",
+        "messages",
+        "tools",
+        "schema",
+        "max_tokens",
+    ] {
+        let (a, b) = (&recorded[key], &request[key]);
+        if a == b {
+            continue;
+        }
+        if let (Some(xs), Some(ys)) = (a.as_array(), b.as_array()) {
+            for i in 0..xs.len().max(ys.len()) {
+                let (x, y) = (xs.get(i), ys.get(i));
+                if x == y {
+                    continue;
+                }
+                if let (Some(serde_json::Value::Object(xo)), Some(serde_json::Value::Object(yo))) =
+                    (x, y)
+                {
+                    let mut names: Vec<&String> = xo.keys().chain(yo.keys()).collect();
+                    names.sort();
+                    names.dedup();
+                    if let Some(k) = names.into_iter().find(|k| xo.get(*k) != yo.get(*k)) {
+                        return Some(format!("{key}[{i}].{k}"));
+                    }
+                }
+                return Some(format!("{key}[{i}]"));
+            }
+        }
+        return Some(key.to_string());
+    }
+    None
+}
+
+/// 次の記録を返す。要求が記録と違う・尽きた・読めないなら失敗（`kind="replay"`。回数は数えない）
+fn replay_next(s: &mut State, request: &serde_json::Value) -> Result<(Outcome, i64), String> {
+    let r = s.replay.as_mut().expect("loaded before");
+    if let Some(m) = &r.failed {
+        return Err(m.clone());
+    }
+    let n = r.next;
+    let Some((recorded, _)) = r.exchanges.get(n) else {
+        let m = format!("recording exhausted after {} exchanges", r.exchanges.len());
+        r.failed = Some(m.clone());
+        return Err(m);
+    };
+    if let Some(what) = first_difference(recorded, request) {
+        let m = format!("request {}: {what} differs", n + 1);
+        r.failed = Some(m.clone());
+        return Err(m);
+    }
+    r.next += 1;
+    let outcome = match &r.exchanges[n].1 {
+        Outcome::Line(v) => Outcome::Line(v.clone()),
+        Outcome::Malformed(raw, m) => Outcome::Malformed(raw.clone(), m.clone()),
+        Outcome::Transport(m) => Outcome::Transport(m.clone()),
+    };
+    Ok((outcome, r.latencies[n]))
+}
+
+/// `WYS_LLM_RECORD` の場所（未設定なら記録しない）
+fn record_path() -> Option<String> {
+    std::env::var("WYS_LLM_RECORD")
+        .ok()
+        .filter(|p| !p.is_empty())
+}
+
+/// 記録のファイルを作り直してヘッダを書く（最初の呼び出しで 1 回）。再生と同じファイルなら失敗
+fn record_prepare(s: &mut State) -> Result<(), String> {
+    let Some(path) = record_path() else {
+        return Ok(());
+    };
+    if let Some(m) = &s.record.failed {
+        return Err(m.clone());
+    }
+    if s.record.file.is_some() {
+        return Ok(());
+    }
+    let result = (|| -> Result<std::fs::File, String> {
+        if let Some(src) = replay_source() {
+            let same = match (std::fs::canonicalize(&src), std::fs::canonicalize(&path)) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => src == path,
+            };
+            if same {
+                return Err("the recording path is also the replay source".into());
+            }
+        }
+        let mut opts = std::fs::OpenOptions::new();
+        opts.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            opts.mode(0o600);
+        }
+        let mut f = opts
+            .open(&path)
+            .map_err(|e| format!("cannot write the recording {path}: {e}"))?;
+        let header = serde_json::json!({
+            "kind": "header", "v": 1, "provider": provider_kind(),
+            "model": std::env::var("WYS_LLM_MODEL").ok()
+        });
+        writeln!(f, "{header}").map_err(|e| format!("cannot write the recording {path}: {e}"))?;
+        Ok(f)
+    })();
+    match result {
+        Ok(f) => {
+            s.record.file = Some(f);
+            Ok(())
+        }
+        Err(m) => {
+            s.record.failed = Some(m.clone());
+            Err(m)
+        }
+    }
+}
+
+fn provider_kind() -> &'static str {
+    match std::env::var("WYS_LLM_PROVIDER")
+        .unwrap_or_default()
+        .as_str()
+    {
+        "" => "mock",
+        "anthropic" => "anthropic",
+        v if v.starts_with("cmd:") => "cmd",
+        v if v.starts_with("replay:") => "replay",
+        _ => "unknown",
+    }
+}
+
+/// 1 回の要求と応答を記録する
+fn record_write(
+    s: &mut State,
+    request: &serde_json::Value,
+    outcome: &Outcome,
+    latency_ms: i64,
+) -> Result<(), String> {
+    let Some(f) = &mut s.record.file else {
+        return Ok(());
+    };
+    s.record.seq += 1;
+    let mut line = serde_json::json!({
+        "kind": "exchange", "seq": s.record.seq, "request": request, "latency_ms": latency_ms
+    });
+    match outcome {
+        Outcome::Line(v) => line["reply"] = v.clone(),
+        Outcome::Malformed(raw, _) => line["reply"] = raw.as_str().into(),
+        Outcome::Transport(m) => {
+            line["reply"] = serde_json::Value::Null;
+            line["transport"] = m.as_str().into();
+        }
+    }
+    let path = record_path().unwrap_or_default();
+    writeln!(f, "{line}").map_err(|e| {
+        let m = format!("cannot write the recording {path}: {e}");
+        s.record.failed = Some(m.clone());
+        m
+    })
+}
+
 /// 1 回のプロバイダの呼び出し（予算の検査、使用量の加算、監査）。失敗なら `Err(null)`
 fn provider_step_inner(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
     if let Some((kind, what)) = over_budget(s, false) {
         audit(s, "budget_exceeded", None, what.into());
         return Err(fail(s, kind, format!("{what} exceeded")));
     }
-    let reply = if provider_configured() {
-        let line = request_line(s, call);
-        match exchange(s, &line) {
-            // 応答の行が届いた（JSON でなくても、届いた応答として数える。Codex のレビュー）
-            Ok(v) => match v
-                .map_err(|m| (m, Usage::default()))
-                .and_then(|v| parse_reply(&v))
-            {
-                Ok(r) => r,
-                Err((m, usage)) => {
-                    // 応答は届いたので、回数とトークンを数える（失敗を繰り返す呼び出しも予算で止まる）
-                    for i in s.chain() {
-                        s.arena[i].llm_calls += 1;
-                        s.arena[i].usage.add(usage);
-                    }
-                    audit(s, "llm_called", None, format!("tokens={}", usage.total()));
-                    return Err(fail(s, "provider", m));
-                }
-            },
-            Err(m) => return Err(fail(s, "provider", m)),
+    let replaying = replay_source().is_some();
+    if replaying && let Err(m) = replay_load(s) {
+        return Err(fail(s, "replay", m));
+    }
+    if let Err(m) = record_prepare(s) {
+        return Err(fail(s, "provider", m));
+    }
+    let request = request_json(s, call);
+    let reply = if replaying {
+        let (outcome, latency) = match replay_next(s, &request) {
+            Ok(x) => x,
+            Err(m) => return Err(fail(s, "replay", m)),
+        };
+        if let Err(m) = record_write(s, &request, &outcome, latency) {
+            return Err(fail(s, "provider", m));
         }
+        accept(s, outcome, latency)?
+    } else if provider_configured() {
+        let started = Instant::now();
+        let outcome = match exchange(s, &request.to_string()) {
+            Ok(Ok(v)) => Outcome::Line(v),
+            Ok(Err((raw, m))) => Outcome::Malformed(raw, m),
+            Err(m) => Outcome::Transport(m),
+        };
+        let waited = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+        if let Err(m) = record_write(s, &request, &outcome, waited) {
+            return Err(fail(s, "provider", m));
+        }
+        // 実際に待った時間は時計がすでに数えている
+        accept(s, outcome, 0)?
     } else {
         let Some(reply) = s.mock.pop_front() else {
             return Err(fail(s, "mock_exhausted", "no mock response left".into()));
         };
+        if let Err(m) = record_write(
+            s,
+            &request,
+            &Outcome::Line(mock_reply_json(&reply)),
+            reply.latency_ms,
+        ) {
+            return Err(fail(s, "provider", m));
+        }
         reply
     };
     for i in s.chain() {
@@ -775,7 +1105,7 @@ struct Call {
 }
 
 /// プロバイダへの要求の 1 行（ADR-0023 論点 2・3）。
-fn request_line(s: &State, call: &Call) -> String {
+fn request_json(s: &State, call: &Call) -> serde_json::Value {
     let top = s.top();
     let model = [
         call.req["model"].as_str().unwrap_or_default().to_string(),
@@ -812,7 +1142,6 @@ fn request_line(s: &State, call: &Call) -> String {
         "max_tokens": call.req["max_tokens"].as_i64().unwrap_or(0).max(0),
         "timeout_ms": timeout_ms,
     })
-    .to_string()
 }
 
 /// `wys llm-proxy` の場所: `WYS_LLM_PROXY` → ビルドしたコンパイラ → `PATH` の `wys`（ADR-0023 論点 4）。
@@ -831,7 +1160,10 @@ fn proxy_program(s: &State) -> String {
 
 /// 要求の 1 行を送り、応答の 1 行を読む。起動していなければ起動する。外側の `Err` は応答が届かなかった
 /// （起動できない・子が終わった）、内側の `Err` は届いた行が JSON でなかった。
-fn exchange(s: &mut State, line: &str) -> Result<Result<serde_json::Value, String>, String> {
+fn exchange(
+    s: &mut State,
+    line: &str,
+) -> Result<Result<serde_json::Value, (String, String)>, String> {
     use std::io::{BufRead, Write as _};
     if matches!(s.provider, Provider::Idle) {
         let setting = std::env::var("WYS_LLM_PROVIDER").unwrap_or_default();
@@ -841,7 +1173,7 @@ fn exchange(s: &mut State, line: &str) -> Result<Result<serde_json::Value, Strin
             (path.to_string(), &[])
         } else {
             s.provider = Provider::Broken(format!(
-                "unknown WYS_LLM_PROVIDER value `{setting}` (use anthropic or cmd:<path>)"
+                "unknown WYS_LLM_PROVIDER value `{setting}` (use anthropic, cmd:<path> or replay:<path>)"
             ));
             return exchange(s, line);
         };
@@ -887,7 +1219,12 @@ fn exchange(s: &mut State, line: &str) -> Result<Result<serde_json::Value, Strin
         s.provider = Provider::Broken("the provider exited".into());
         return Err("the provider exited".into());
     }
-    Ok(serde_json::from_str(&reply).map_err(|e| format!("malformed provider response: {e}")))
+    let raw = reply.trim_end_matches(['\n', '\r']).to_string();
+    Ok(serde_json::from_str(&raw).map_err(|e| (raw.clone(), malformed_message(&e))))
+}
+
+fn malformed_message(e: &serde_json::Error) -> String {
+    format!("malformed provider response: {e}")
 }
 
 const SIGPIPE: i32 = 13;
@@ -977,7 +1314,14 @@ fn stop_provider(s: &mut State) {
 
 /// 終了時（`wys_runtime_finish`）: プロバイダの子プロセスを片付ける。
 pub(crate) fn shutdown() {
-    STATE.with(|cell| stop_provider(&mut cell.borrow_mut()));
+    STATE.with(|cell| {
+        let mut s = cell.borrow_mut();
+        stop_provider(&mut s);
+        // LLM を呼ばなかったら、ヘッダだけの記録を作る（評価ケースの記録の欠けと区別する。ADR-0025 論点 6）
+        if s.record.file.is_none() && s.record.failed.is_none() {
+            let _ = record_prepare(&mut s);
+        }
+    });
 }
 
 /// 生成コード: ビルドしたコンパイラの絶対パス（`llm_generate` を使うプログラムだけが呼ぶ）。

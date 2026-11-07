@@ -359,7 +359,7 @@ ADR-0023 論点 1〜6 のとおりに実装した。仕様の解釈として決�
 
 - **プロバイダの失敗の `message`**（どれも `Err(kind="provider")`）:
   - 起動できない: `cannot start the provider <path>: <理由>`
-  - 未知の値: `unknown WYS_LLM_PROVIDER value <値> (use anthropic or cmd:<path>)`
+  - 未知の値: `unknown WYS_LLM_PROVIDER value <値> (use anthropic, cmd:<path> or replay:<path>)`
   - 応答の行が JSON でない、`text` がない、ツールの呼び出しに `id` / `name` がない: `malformed provider response: ...`
   - `error` 行: その文字列をそのまま
   - 子プロセスが応答を返さずに終わった・書き込めない: `the provider exited`

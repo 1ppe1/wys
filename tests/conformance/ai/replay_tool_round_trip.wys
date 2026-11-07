@@ -1,0 +1,35 @@
+# 記録を再生すると、外部のモデルを呼ばずに同じ実行になる。ツールは実際に実行する（ADR-0025 論点 7・9、AC-009）
+# expect-env: WYS_LLM_PROVIDER=replay:${CASE_DIR}/recordings/tool_round_trip.jsonl
+# expect-stdout: add 2 3
+# expect-stdout: p 5
+# expect-stdout: llm_called tokens=4
+# expect-stdout: tool_called args_len=13
+# expect-stdout: llm_called tokens=7
+type Plan = {title: str, steps: int}
+
+@tool(description="Add two integers.")
+def add(a: int, b: int) -> int uses io:
+    print("add " + to_json(a) + " " + to_json(b))
+    return a + b
+
+@agent(tools=[add], timeout_ms=50)
+async def planner(goal: str) -> Result[Plan, LlmError] uses io, llm:
+    req = LlmRequest(
+        model="",
+        system="Plan.",
+        messages=[Message(role="user", content=goal)],
+        max_tokens=0
+    )
+    return await llm_generate[Plan](req)
+
+async def run(goal: str) -> None uses io, llm:
+    match await planner(goal):
+        case Ok(p):
+            print(p.title + " " + to_json(p.steps))
+        case Err(e):
+            print(e.kind + ": " + e.message)
+
+async def main() -> None uses io, llm:
+    await run("five")
+    for ev in audit_events():
+        print(ev.kind + " " + ev.detail)

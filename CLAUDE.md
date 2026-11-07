@@ -44,6 +44,7 @@ WYS_ARC_OPT=0 target/debug/wys run examples/fib.wys          # Move 最適化を
 WYS_VIRTUAL_TIME=1 target/debug/wys run examples/async_hello.wys  # sleep_ms を仮想時計だけで進める（実時間を待たない。Conformance の harness が設定する）
 WYS_AUDIT=stderr target/debug/wys run tests/conformance/ai/llm_text.wys   # 監査イベントを JSON 行で出す（ADR-0023）。WYS_CAPABILITIES=io,llm で Capability を縮める
 WYS_VIRTUAL_TIME=1 WYS_TRACE=stderr target/debug/wys run examples/agent_demo.wys  # トレース（スパンと監査イベント、ADR-0025）。WYS_TRACE_CONTENT=1 で本文も出す
+WYS_LLM_RECORD=/tmp/r.jsonl target/debug/wys run examples/agent_demo.wys        # 要求と応答を記録する（本文を含む）。WYS_LLM_PROVIDER=replay:/tmp/r.jsonl で再生（llm_mock_push のないプログラムで）
 target/debug/wys run examples/agent_demo.wys                  # @tool / @agent と llm_generate[T]（既定のプロバイダはモック。CI はネットワークに出ない）
 WYS_APPROVAL=allow target/debug/wys run examples/agent_demo.wys   # 承認の方針: deny（既定）/ allow / prompt（stdin から 1 行読む）
 scripts/llm-smoke.sh   # 実プロバイダ（WYS_LLM_PROVIDER=anthropic、wys llm-proxy）と 1 往復。ANTHROPIC_API_KEY は各自の環境で。費用がかかる。cmd:<path> で任意のコマンドも使える

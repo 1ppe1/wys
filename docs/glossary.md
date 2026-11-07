@@ -26,7 +26,9 @@
 | 予算（Budget） | タイムアウト、実行回数、トークン数、費用の上限 | AI-006 |
 | トレース | モデル呼び出し、ツール実行、使用量、失敗の記録。M6 では `WYS_TRACE=<path>\|stderr` にスパンと監査イベントを JSON 行で出す（監査とは別の流れ。本文は `WYS_TRACE_CONTENT=1` のときだけ）。プログラムからは `llm_usage()` で集計を読む | AI-007, NFR-003, ADR-0025 |
 | スパン | トレースの 1 区間（`agent` / `llm_call` / `tool_call`）。終わったときに 1 行出し、`parent` で入れ子をたどる | ADR-0025 論点 2 |
-| モック / 再生 | モデル応答を差し替える / 記録済み応答を再利用して、外部呼び出しなしでテストすること | AI-008, AC-009 |
+| モック / 再生 | モデル応答を差し替える / 記録済み応答を再利用して、外部呼び出しなしでテストすること。M6 では `WYS_LLM_RECORD=<path>` で記録し、`WYS_LLM_PROVIDER=replay:<path>` で再生する | AI-008, AC-009, ADR-0025 |
+| 記録 | 要求と応答の対を JSON 行で並べたファイル（先頭にヘッダ）。どのプロバイダでも作れ、本文を含む（API キーは含まない） | ADR-0025 論点 6 |
+| 指紋（要求の） | 再生で記録と突き合わせる、要求から `v` と `timeout_ms` を除いたもの。n 回目の呼び出しは n 回目の記録と、指紋が一致しなければ `Err(kind="replay")` | ADR-0025 論点 7・8 |
 | 監査イベント | 権限拒否や承認などの、後から追跡できる実行記録。M5 ではランタイムが順序付きで持ち（`audit_events()`、`WYS_AUDIT=<path>\|stderr` で JSON 行）、種類は `llm_called` / `tool_called` / `tool_denied` / `capability_denied` / `approval_requested` / `approval_granted` / `approval_denied` / `budget_exceeded` / `schema_rejected`。プロンプトと応答の本文は含めない | AC-007, NFR-005, ADR-0023 論点 15 |
 | 構造化診断 | エラーコード・位置・原因・修正ヒントなどを機械可読形式（JSONなど）で出す診断 | DX-002, AC-005 |
 | 共通IR | フロントエンドと各バックエンドの間にある中間表現 | COMP-001 |

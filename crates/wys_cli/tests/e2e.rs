@@ -1366,7 +1366,7 @@ async def main() -> None uses io, llm:
         ),
         (
             "openai",
-            "provider: unknown WYS_LLM_PROVIDER value `openai` (use anthropic or cmd:<path>)",
+            "provider: unknown WYS_LLM_PROVIDER value `openai` (use anthropic, cmd:<path> or replay:<path>)",
         ),
         // 実行できないファイル（起動の前に確かめる。エミュレーションの下でも同じ結果になる）
         (
@@ -1851,4 +1851,145 @@ fn unused_effects_are_warned_with_one_fix() {
     let out = cli(&["check", "--format", "json", path.to_str().unwrap()]);
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["diagnostics"], serde_json::json!([]));
+}
+
+/// 記録の各行（ヘッダを含む）
+fn recording_lines(path: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn record_then_replay_reproduces_the_run() {
+    // AC-009: テスト用のプロバイダで記録し、プロバイダなしで再生すると、同じ出力と監査になる（ADR-0025 論点 6・7）
+    let rec = scratch("replay_planner", "").with_extension("rec.jsonl");
+    let rec_s = rec.to_str().unwrap();
+    let (first, _) = run_with_provider(
+        "replay_planner",
+        PLANNER,
+        &[TOOL_USE_REPLY, PLAN_REPLY],
+        &[("WYS_LLM_RECORD", rec_s)],
+    );
+    let first_out = String::from_utf8(first.stdout).unwrap();
+    assert!(first_out.starts_with("plan\n5\n"), "{first_out}");
+    let lines = recording_lines(&rec);
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0]["kind"], "header");
+    assert_eq!(lines[0]["provider"], "cmd");
+    assert_eq!(lines[1]["request"]["system"], "Be brief.");
+    assert_eq!(lines[2]["reply"]["stop"], "end_turn");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&rec).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "the recording holds prompts and replies"
+        );
+    }
+    let path = scratch("replay_planner_again", PLANNER);
+    let provider = format!("replay:{rec_s}");
+    let again = cli_env(
+        &["run", path.to_str().unwrap()],
+        &[("WYS_LLM_PROVIDER", provider.as_str())],
+    );
+    assert_eq!(String::from_utf8(again.stdout).unwrap(), first_out);
+    // プログラムが変わって要求が記録と違えば Err(replay)。回数は数えない
+    let changed = scratch(
+        "replay_planner_changed",
+        &PLANNER.replace("Be brief.", "Be long."),
+    );
+    let out = cli_env(
+        &["run", changed.to_str().unwrap()],
+        &[("WYS_LLM_PROVIDER", provider.as_str())],
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(stdout, "replay: request 1: system differs\n", "{stdout}");
+    // 記録が尽きた
+    let short = rec.with_extension("short.jsonl");
+    let text = std::fs::read_to_string(&rec).unwrap();
+    let head: Vec<&str> = text.lines().take(2).collect();
+    std::fs::write(&short, head.join("\n") + "\n").unwrap();
+    let provider = format!("replay:{}", short.display());
+    let out = cli_env(
+        &["run", path.to_str().unwrap()],
+        &[("WYS_LLM_PROVIDER", provider.as_str())],
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with("replay: recording exhausted after 1 exchanges\n"),
+        "{stdout}"
+    );
+    // 記録と再生に同じファイルを指すと閉じる
+    let provider = format!("replay:{rec_s}");
+    let out = cli_env(
+        &["run", path.to_str().unwrap()],
+        &[
+            ("WYS_LLM_PROVIDER", provider.as_str()),
+            ("WYS_LLM_RECORD", rec_s),
+        ],
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with("provider: the recording path is also the replay source\n"),
+        "{stdout}"
+    );
+    assert_eq!(
+        recording_lines(&rec).len(),
+        3,
+        "the source is not truncated"
+    );
+}
+
+#[test]
+fn recordings_keep_failed_replies_and_mock_runs() {
+    // JSON でない行と、届かなかった応答も記録し、再生で同じ失敗になる（ADR-0025 論点 6）
+    let rec = scratch("replay_failures", "").with_extension("rec.jsonl");
+    let rec_s = rec.to_str().unwrap();
+    let (first, _) = run_with_provider(
+        "replay_failures",
+        PLANNER,
+        &["this is not json"],
+        &[("WYS_LLM_RECORD", rec_s)],
+    );
+    let first_out = String::from_utf8(first.stdout).unwrap();
+    assert!(
+        first_out.starts_with("provider: malformed provider response"),
+        "{first_out}"
+    );
+    let lines = recording_lines(&rec);
+    assert_eq!(lines[1]["reply"], "this is not json");
+    let path = scratch("replay_failures_again", PLANNER);
+    let provider = format!("replay:{rec_s}");
+    let again = cli_env(
+        &["run", path.to_str().unwrap()],
+        &[("WYS_LLM_PROVIDER", provider.as_str())],
+    );
+    assert_eq!(String::from_utf8(again.stdout).unwrap(), first_out);
+    // モックの実行も記録でき、LLM を呼ばなければヘッダだけの記録になる
+    let mocked = scratch(
+        "record_mock",
+        "async def main() -> None uses io, llm:\n    llm_mock_push(MockResponse(text=\"hi\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=7))\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"x\")], max_tokens=0)\n    match await llm_generate[str](req):\n        case Ok(t):\n            print(t)\n        case Err(e):\n            print(e.kind)\n",
+    );
+    let out = cli_env(
+        &["run", mocked.to_str().unwrap()],
+        &[("WYS_LLM_RECORD", rec_s)],
+    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "hi\n");
+    let lines = recording_lines(&rec);
+    assert_eq!(lines[0]["provider"], "mock");
+    assert_eq!(lines[1]["reply"]["text"], "hi");
+    assert_eq!(lines[1]["latency_ms"], 7);
+    let none = scratch("record_none", "def main() -> None:\n    print(1)\n");
+    cli_env(
+        &["run", none.to_str().unwrap()],
+        &[("WYS_LLM_RECORD", rec_s)],
+    );
+    let lines = recording_lines(&rec);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["kind"], "header");
 }
