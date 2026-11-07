@@ -27,7 +27,7 @@
 | [0011](0011-unknown-and-validation.md) | `Unknown` の実行時表現と検証 API | Accepted | 2026-11-04 |
 | [0012](0012-heap-objects-and-arc-pass.md) | ヒープオブジェクトと、IR パスによる ARC | Accepted | 2026-11-04 |
 | [0013](0013-result-binding-patterns-try-panic.md) | `Result[T, E]`、束縛パターン、`?`、パニックの仕様 | Accepted | 2026-11-04 |
-| [0014](0014-effects-phase1-annotations.md) | Effect の基礎（Phase 1 は注釈だけ） | Accepted | 2026-11-04 |
+| [0014](0014-effects-phase1-annotations.md) | Effect の基礎（Phase 1 は注釈だけ） | Accepted（論点 4・5・7・10・12 は ADR-0024 で置き換え） | 2026-11-04 |
 | [0015](0015-dict-keys-order-mutation.md) | `dict[K, V]` のキー、反復の順序、反復中の変更 | Accepted | 2026-11-04 |
 | [0016](0016-record-field-narrowing-and-structural-values.md) | 不変レコードのフィールドの絞り込みと、構造を持つ値の `print` / `==` | Accepted | 2026-11-04 |
 | [0017](0017-explain-report-and-arc-reasons.md) | `wys explain` の報告と、ARC 操作の理由 | Accepted | 2026-11-04 |
@@ -37,6 +37,7 @@
 | [0021](0021-json-and-unknown-containers.md) | JSON と `Unknown` のコンテナ、呼び出しの型引数の明示（再帰レコードと `weak` は入れない） | Accepted | 2026-11-05 |
 | [0022](0022-ai-sdk-surface.md) | AI SDK の形と表面の API（標準添付、スキーマ型、`llm_generate[T]`、属性としての `@tool` / `@agent`） | Accepted | 2026-11-06 |
 | [0023](0023-ai-runtime.md) | AI Runtime（`wys llm-proxy`、Capability・承認・予算の強制、監査とプライバシー） | Accepted | 2026-11-06 |
+| [0024](0024-effect-inference.md) | Effect の推論（注釈のない関数だけ。E1103 の廃止、W0203。ADR-0014 論点 4・5・7・10・12 を置き換える） | Accepted | 2026-11-07 |
 
 ## 未決定事項との対応
 
@@ -48,7 +49,7 @@
 | 2 | 構造的型付けと名目的型付けを適用する境界 | Phase 1 | LANG-005 | [0007](0007-structural-vs-nominal-typing.md) |
 | 3 | Union/Null、Generics、エラー処理の正確な構文 | Phase 1 | LANG-003, 004, 008 | [0006](0006-union-null-generics-error-syntax.md) |
 | 4 | ARC/ORC相当の方式、循環参照回収、Ownership/Borrowの詳細 | Phase 1 | MEM-001〜005 | [0005](0005-memory-model-arc-move.md) |
-| 5 | Effectの表現形式（型シグネチャ、注釈、推論の組合せ） | Phase 1（基礎）／Phase 2 | AI-009 | [0014](0014-effects-phase1-annotations.md)（Phase 1 の注釈。推論は M6） |
+| 5 | Effectの表現形式（型シグネチャ、注釈、推論の組合せ） | Phase 1（基礎）／Phase 2 | AI-009 | [0014](0014-effects-phase1-annotations.md)（Phase 1 の注釈）、[0024](0024-effect-inference.md)（推論） |
 | 6 | Runtimeの構成（静的リンク、動的リンク、最小バイナリ） | Phase 1 | COMP-002, AC-004 | [0008](0008-runtime-static-linking.md) |
 | 7 | MVPの対象OS/CPU、初期標準ライブラリ範囲 | Phase 1 | NFR-006 | [0003](0003-mvp-target-platform.md)（OS/CPU のみ） |
 | 8 | Python連携方式と対応バージョン、GIL/スレッド境界 | Phase 2 | INTEROP-001〜003 | [0018](0018-cpython-ffi-embedding.md) |
