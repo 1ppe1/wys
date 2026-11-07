@@ -1,0 +1,16 @@
+# 注釈のない関数が Python の組み込みを呼べば `python` を推論する（ADR-0024 論点 2）
+# expect-error: E1102 12:10
+def load() -> bool:
+    match py_import("math"):
+        case Ok(_):
+            return True
+        case Err(_):
+            return False
+
+@tool(description="Load a module.")
+def lookup() -> bool uses pure:
+    ok = load()
+    return ok
+
+def main() -> None:
+    print(lookup())

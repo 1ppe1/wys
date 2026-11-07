@@ -1,0 +1,16 @@
+# `wys explain` のスナップショット: 注釈のない関数の推論した Effect（`inferred`）と、呼び出しごとの推論した Effect（ADR-0024 論点 11）
+# expect-stdout: 0
+# expect-stdout: 1
+def show(x: int) -> None:
+    print(x)
+
+def again(n: int) -> None:
+    if n > 0:
+        again(n - 1)
+    show(n)
+
+def run() -> None uses io:
+    again(1)
+
+def main() -> None:
+    run()

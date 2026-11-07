@@ -1,0 +1,11 @@
+# Generic な注釈のない関数も定義で推論し、インスタンスはその Effect を引き継ぐ（ADR-0024 論点 4）
+# expect-error: E1102 8:12
+def show[T](x: T, n: int) -> T:
+    print(n)
+    return x
+
+def run() -> int uses pure:
+    return show(1, 2)
+
+def main() -> None:
+    print(run())

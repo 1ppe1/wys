@@ -1,0 +1,17 @@
+# 相互再帰する注釈のない関数も、不動点で Effect を推論する（ADR-0024 論点 3）
+# expect-error: E1102 14:5
+def ping(n: int) -> None:
+    if n > 0:
+        pong(n - 1)
+
+def pong(n: int) -> None:
+    if n == 1:
+        print("pong")
+    if n > 0:
+        ping(n - 1)
+
+def run(n: int) -> None uses pure:
+    ping(n)
+
+def main() -> None:
+    run(3)

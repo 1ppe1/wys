@@ -1,0 +1,9 @@
+# モジュールの注釈のない関数も推論する（ADR-0024 論点 3）
+# expect-error: E1102 6:5
+import util
+
+def quiet(msg: str) -> None uses pure:
+    util.note(msg)
+
+def main() -> None:
+    quiet("x")

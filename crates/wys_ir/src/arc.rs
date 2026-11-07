@@ -975,6 +975,7 @@ mod tests {
                 elided_rc: Vec::new(),
                 is_async: false,
                 effects: None,
+                effects_inferred: false,
                 tool: None,
                 agent: None,
             }],
@@ -1387,6 +1388,7 @@ mod tests {
             elided_rc: Vec::new(),
             is_async: false,
             effects: None,
+            effects_inferred: false,
             tool: None,
             agent: None,
         });

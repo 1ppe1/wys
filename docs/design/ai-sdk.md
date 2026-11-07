@@ -186,6 +186,8 @@ attr_elem  = STRING | IDENT { "." IDENT } ;
 
 名前は Effect と同じ `io` / `exit` / `python` / `llm`（M5 に `fs` / `net` の組み込みはない）。agent の既定は `io, llm`。`WYS_CAPABILITIES=io,llm` は配備時の**縮小**で、広げることはできない（未設定 = 縮小なし、空 = すべて外す、未知の名前は無視 = 縮小の方向）。静的な `uses` ⊆ `capabilities`（E1405）は早期発見で、保証は 5.1 の (b) の検査が担う。防御を重ねるため、`wys_py_*`（`Err(PyError kind="CapabilityError")`）、`wys_exit`（実行時エラー 101）、`wys_llm_*`（`Err(kind="denied")`）の入口でも現在のコンテキストの Capability を確かめ、監査 `capability_denied` を残す。`io`（`print` / `arg`）は入口で検査しない。
 
+M6 から、注釈のない関数の Effect は推論する（ADR-0024）。`uses pure` のツールが補助関数を経由して `print` や `py_import` を呼ぶと、コンパイル時に E1102 になる（AI-009 の静的な側）。入口の再検査はそのまま残す（保証はランタイム）。
+
 ### 7.3 拒否の扱い
 
 | 事象 | 扱い |

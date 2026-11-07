@@ -1147,7 +1147,9 @@ fn approval_is_followed_by_a_deadline_check() {
         &["run", path.to_str().unwrap()],
         &[("WYS_APPROVAL", "prompt")],
         "y\n",
-        std::time::Duration::from_millis(300),
+        // 期限（2 秒）を確実に過ぎてから答える。期限を短くすると、遅い環境（Linux のエミュレーション）では
+        // 承認を尋ねる前に期限が切れる
+        std::time::Duration::from_millis(4000),
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
@@ -1176,7 +1178,7 @@ fn approval_without_an_answer_is_audited() {
 
 const PY_STDIN: &str = "@tool(description=\"Remove.\", approval=\"required\")\ndef rm(path: str) -> None uses io:\n    print(\"removed \" + path)\n\ndef read_impl() -> Result[str, PyError] uses python:\n    sys = py_import(\"sys\")?\n    stdin = sys.attr(\"stdin\")?\n    f = stdin.attr(\"readline\")?\n    r = f.call([])?\n    return r.to_str()\n\n@tool(description=\"Reads a line from stdin via Python.\")\ndef readline() -> str uses io, python:\n    match read_impl():\n        case Ok(s):\n            print(\"python read: [\" + s + \"]\")\n            return s\n        case Err(e):\n            print(\"python err: \" + e.message)\n            return \"\"\n\n@agent(tools=[rm, readline], capabilities=[\"io\", \"llm\", \"python\"])\nasync def cleaner() -> Result[str, LlmError] uses io, llm, python:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm, python:\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"rm\", args_json=\"{\\\"path\\\": \\\"/tmp/x\\\"}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"readline\", args_json=\"{}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"done\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    match await cleaner():\n        case Ok(t):\n            print(\"ok \" + t)\n        case Err(e):\n            print(e.kind + \": \" + e.message)\n";
 
-const APPROVAL_THEN_TIMEOUT: &str = "@tool(description=\"Remove.\", approval=\"required\")\ndef rm(path: str) -> None uses io:\n    print(\"removed \" + path)\n\n@agent(tools=[rm], capabilities=[\"io\", \"llm\"], timeout_ms=30)\nasync def cleaner() -> Result[str, LlmError] uses io, llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm:\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"rm\", args_json=\"{\\\"path\\\": \\\"/tmp/x\\\"}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"done\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    match await cleaner():\n        case Ok(t):\n            print(\"ok \" + t)\n        case Err(e):\n            print(e.kind + \": \" + e.message)\n    for ev in audit_events():\n        print(ev.kind + \" \" + ev.detail)\n";
+const APPROVAL_THEN_TIMEOUT: &str = "@tool(description=\"Remove.\", approval=\"required\")\ndef rm(path: str) -> None uses io:\n    print(\"removed \" + path)\n\n@agent(tools=[rm], capabilities=[\"io\", \"llm\"], timeout_ms=2000)\nasync def cleaner() -> Result[str, LlmError] uses io, llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm:\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"rm\", args_json=\"{\\\"path\\\": \\\"/tmp/x\\\"}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"done\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    match await cleaner():\n        case Ok(t):\n            print(\"ok \" + t)\n        case Err(e):\n            print(e.kind + \": \" + e.message)\n    for ev in audit_events():\n        print(ev.kind + \" \" + ev.detail)\n";
 
 // ---------------------------------------------------------------- 実プロバイダ（M5 T11、ADR-0023 論点 1〜6）
 
@@ -1787,4 +1789,37 @@ fn events_of_an_agent_inside_a_tool_belong_to_that_agent() {
     let tool = lines.iter().find(|v| v["name"] == "tool_call").unwrap();
     assert_eq!(denied["span"], inner["span"]);
     assert_eq!(inner["parent"], tool["parent"]);
+}
+
+#[test]
+fn effects_of_unannotated_functions_are_inferred() {
+    // 注釈のない関数を経由した Effect も、注釈のある呼び出し元で E1102 になる（ADR-0024）
+    let bad = scratch(
+        "inferred_bad",
+        "def note(x: int) -> None:\n    print(x)\n\n@tool(description=\"Double.\")\ndef double(x: int) -> int uses pure:\n    note(x)\n    return x * 2\n\ndef main() -> None:\n    print(double(1))\n",
+    );
+    let out = cli(&["check", "--format", "json", bad.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let d = &v["diagnostics"][0];
+    assert_eq!(d["code"], "E1102");
+    assert_eq!(d["related"][0]["name"], "note");
+    assert_eq!(d["related"][1]["name"], "print");
+    assert_eq!(d["hints"][0]["replacement"]["text"], "io");
+    // 推論した集合が宣言に収まれば通り、IR と `wys explain` に推論した Effect が出る
+    let ok = scratch(
+        "inferred_ok",
+        "def note(x: int) -> None:\n    print(x)\n\ndef log(x: int) -> None uses io:\n    note(x)\n\ndef main() -> None:\n    log(1)\n",
+    );
+    let out = cli(&["run", ok.to_str().unwrap()]);
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "1\n");
+    let out = cli(&["dump-ir", ok.to_str().unwrap()]);
+    let ir = String::from_utf8(out.stdout).unwrap();
+    assert!(ir.contains("note(l0: int) uses(inferred) io {"), "{ir}");
+    assert!(ir.contains("log(l0: int) uses io {"), "{ir}");
+    let out = cli(&["explain", ok.to_str().unwrap()]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["functions"][0]["effects"]["inferred"][0], "io");
+    assert!(v["functions"][1]["effects"]["inferred"].is_null());
+    assert_eq!(v["functions"][2]["effects"]["inferred"][0], "io");
 }
