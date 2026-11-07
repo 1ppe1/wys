@@ -2404,9 +2404,10 @@ fn lsp_publishes_diagnostics_over_json_rpc() {
         serde_json::json!({"jsonrpc": "2.0", "method": "textDocument/didChange",
         "params": {"textDocument": {"uri": main_uri, "version": 2}, "contentChanges": [{"text": fixed}]}}),
     );
+    // 変わった URI（main）だけを配り直す。lib の診断は変わらないので配り直さない
     let mut seen: std::collections::HashMap<String, serde_json::Value> =
         std::collections::HashMap::new();
-    while seen.len() < 2 {
+    while seen.is_empty() {
         let m = lsp_recv(&mut r);
         seen.insert(
             m["params"]["uri"].as_str().unwrap().to_string(),
@@ -2414,6 +2415,12 @@ fn lsp_publishes_diagnostics_over_json_rpc() {
         );
     }
     assert_eq!(seen[&main_uri], serde_json::json!([]));
+    // `untitled:` の文書は無視し、サーバーは動き続ける
+    lsp_send(
+        &mut w,
+        serde_json::json!({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": {"textDocument": {"uri": "untitled:Untitled-1", "languageId": "wys", "version": 1, "text": "x"}}}),
+    );
     lsp_send(
         &mut w,
         serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "shutdown"}),

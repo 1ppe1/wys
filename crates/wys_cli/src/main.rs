@@ -62,8 +62,13 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
         return eval::run(rest);
     }
     if cmd == "lsp" {
-        wys_lsp::run_stdio()?;
-        return Ok(ExitCode::SUCCESS);
+        // `shutdown` なしの `exit` は終了コード 1（LSP の仕様）
+        let clean = wys_lsp::run_stdio()?;
+        return Ok(if clean {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        });
     }
     let mut format_arg: Option<Format> = None;
     let mut check_only = false;

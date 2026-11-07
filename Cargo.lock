@@ -1360,7 +1360,6 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "serde_json",
- "wys_diagnostics",
  "wys_driver",
  "wys_span",
 ]

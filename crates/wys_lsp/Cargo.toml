@@ -9,7 +9,6 @@ publish.workspace = true
 
 [dependencies]
 wys_driver = { path = "../wys_driver" }
-wys_diagnostics = { path = "../wys_diagnostics" }
 wys_span = { path = "../wys_span" }
 lsp-server = "0.7"
 lsp-types = "0.97"

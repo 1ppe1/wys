@@ -7,7 +7,7 @@
 //!
 //! transport を含まない純粋な部分（`diagnostics`、位置の変換）は単体テストで、JSON-RPC の全体は e2e で確かめる。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use lsp_server::{Connection, Message, Notification};
@@ -56,7 +56,9 @@ pub fn diagnostics(
             .cloned()
             .or_else(|| std::fs::read_to_string(p).ok())
     };
-    let fe = wys_driver::frontend_with(&path.display().to_string(), text, &read);
+    // エディタで開くファイルの多くは `main` のないモジュールなので、`main` を求めない（`wys test` と同じ入口。
+    // `main` があれば検査する）
+    let (fe, _) = wys_driver::frontend_tests_with(&path.display().to_string(), text, &read);
     let mut out: HashMap<PathBuf, Vec<Diagnostic>> = HashMap::new();
     out.insert(path.to_path_buf(), Vec::new());
     for d in &fe.diagnostics {
@@ -81,34 +83,52 @@ pub fn diagnostics(
     out
 }
 
-fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
-    let s = uri.as_str().strip_prefix("file://")?;
-    Some(PathBuf::from(percent_decode(s)))
+/// `file://` の URI のパス（host は空か `localhost` だけ。クエリとフラグメントは落とす）。ほかの URI は `None`。
+pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    if !rest.starts_with('/') {
+        return None;
+    }
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let mut path = percent_decode(rest);
+    // Windows: `/c:/Users/...` の先頭の `/` を落とす
+    let b = path.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        path.remove(0);
+    }
+    Some(PathBuf::from(path))
 }
 
-fn path_to_uri(path: &Path) -> Option<Uri> {
+/// パスの `file://` の URI（開いていない import 先の診断を配るとき。開いている文書は受け取った URI をそのまま使う）。
+pub fn path_to_uri(path: &Path) -> String {
     let mut s = String::from("file://");
-    for b in path.display().to_string().bytes() {
+    let text = path.display().to_string().replace('\\', "/");
+    if !text.starts_with('/') {
+        s.push('/');
+    }
+    for b in text.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => {
                 s.push(b as char)
             }
             _ => s.push_str(&format!("%{b:02X}")),
         }
     }
-    s.parse().ok()
+    s
 }
 
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+            && let (Some(&h), Some(&l)) = (bytes.get(i + 1), bytes.get(i + 2))
+            && let (Some(h), Some(l)) = (hex(h), hex(l))
         {
-            out.push(v);
+            out.push(h * 16 + l);
             i += 3;
         } else {
             out.push(bytes[i]);
@@ -118,12 +138,27 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// stdio で LSP のサーバーとして動く（`wys lsp`）。stdin の終わりか `exit` で戻る。
-pub fn run_stdio() -> Result<(), String> {
+/// stdio で LSP のサーバーとして動く（`wys lsp`）。`shutdown` の後の `exit` か stdin の終わりで `Ok(true)`、
+/// `shutdown` なしの `exit` で `Ok(false)`（仕様では終了コード 1）。
+pub fn run_stdio() -> Result<bool, String> {
     let (conn, io) = Connection::stdio();
-    let (id, params) = conn.initialize_start().map_err(|e| e.to_string())?;
-    let params: lsp_types::InitializeParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let clean = serve(&conn);
+    drop(conn);
+    // 読み取りの失敗（壊れた枠など）は `io.join()` が返す。lsp-server には -32700 で続ける口がない
+    let joined = io.join().map_err(|e| e.to_string());
+    let clean = clean?;
+    joined?;
+    Ok(clean)
+}
+
+/// 1 つの接続でサーバーとして動く（transport を含まないので、`Connection::memory()` で単体テストできる）。
+pub fn serve(conn: &Connection) -> Result<bool, String> {
+    let (id, params) = match conn.initialize_start() {
+        Ok(x) => x,
+        // `initialize` の前に閉じた
+        Err(_) => return Ok(true),
+    };
+    let params: lsp_types::InitializeParams = serde_json::from_value(params).unwrap_or_default();
     let offered = params
         .capabilities
         .general
@@ -146,8 +181,10 @@ pub fn run_stdio() -> Result<(), String> {
         "capabilities": caps,
         "serverInfo": {"name": "wys lsp", "version": env!("CARGO_PKG_VERSION")}
     });
-    conn.initialize_finish(id, result)
-        .map_err(|e| e.to_string())?;
+    if conn.initialize_finish(id, result).is_err() {
+        // `initialized` の前に閉じた
+        return Ok(true);
+    }
     let mut server = Server {
         docs: HashMap::new(),
         published: HashMap::new(),
@@ -156,8 +193,10 @@ pub fn run_stdio() -> Result<(), String> {
     for msg in &conn.receiver {
         match msg {
             Message::Request(req) => {
-                if conn.handle_shutdown(&req).map_err(|e| e.to_string())? {
-                    break;
+                match conn.handle_shutdown(&req) {
+                    Ok(true) => return Ok(true),
+                    Ok(false) => {}
+                    Err(e) => return Err(e.to_string()),
                 }
                 // PoC6 では診断だけ。ほかの要求には「未対応」で答える
                 let resp = lsp_server::Response::new_err(
@@ -165,86 +204,156 @@ pub fn run_stdio() -> Result<(), String> {
                     lsp_server::ErrorCode::MethodNotFound as i32,
                     format!("`{}` is not supported yet", req.method),
                 );
-                conn.sender
-                    .send(Message::Response(resp))
-                    .map_err(|e| e.to_string())?;
+                send(conn, Message::Response(resp))?;
             }
-            Message::Notification(n) => server.notify(&conn, n)?,
+            Message::Notification(n) if n.method == "exit" => return Ok(false),
+            Message::Notification(n) => server.notify(conn, n)?,
             Message::Response(_) => {}
         }
     }
-    drop(conn);
-    io.join().map_err(|e| e.to_string())
+    Ok(true)
+}
+
+fn send(conn: &Connection, m: Message) -> Result<(), String> {
+    conn.sender.send(m).map_err(|e| e.to_string())
+}
+
+/// `window/logMessage`（壊れた通知などはサーバーを止めずに知らせる）
+fn log(conn: &Connection, message: String) -> Result<(), String> {
+    let n = Notification::new(
+        "window/logMessage".into(),
+        serde_json::json!({"type": 2, "message": message}),
+    );
+    send(conn, Message::Notification(n))
 }
 
 struct Server {
-    docs: HashMap<PathBuf, String>,
-    /// エントリのファイル → そのファイルの診断を配った URI（消えた診断を空で配り直すため）
-    published: HashMap<PathBuf, HashSet<String>>,
+    /// 開いている文書: 受け取った URI → (パス, 全文)
+    docs: HashMap<String, (PathBuf, String)>,
+    /// いま診断を配っている URI と、その診断（変わった URI だけ配り直し、消えた URI は空で配る）
+    published: HashMap<String, Vec<Diagnostic>>,
     enc: Encoding,
 }
 
 impl Server {
+    /// 通知を処理する。中身の誤りはサーバーを止めずに `window/logMessage` で知らせ、`Err` は送信の失敗だけ
     fn notify(&mut self, conn: &Connection, n: Notification) -> Result<(), String> {
         use lsp_types::notification::{
             DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
         };
-        let path = match n.method.as_str() {
+        let changed = match n.method.as_str() {
             DidOpenTextDocument::METHOD => {
-                let p: lsp_types::DidOpenTextDocumentParams =
-                    serde_json::from_value(n.params).map_err(|e| e.to_string())?;
-                let path =
-                    uri_to_path(&p.text_document.uri).ok_or("only file:// URIs are supported")?;
-                self.docs.insert(path.clone(), p.text_document.text);
-                path
+                match serde_json::from_value::<lsp_types::DidOpenTextDocumentParams>(n.params) {
+                    Ok(p) => self.open(p.text_document.uri.as_str(), p.text_document.text),
+                    Err(e) => return log(conn, format!("ignored a malformed didOpen: {e}")),
+                }
             }
             DidChangeTextDocument::METHOD => {
-                let p: lsp_types::DidChangeTextDocumentParams =
-                    serde_json::from_value(n.params).map_err(|e| e.to_string())?;
-                let path =
-                    uri_to_path(&p.text_document.uri).ok_or("only file:// URIs are supported")?;
-                // 全体の同期（TextDocumentSyncKind::FULL）なので、最後の変更が全文
-                if let Some(c) = p.content_changes.into_iter().last() {
-                    self.docs.insert(path.clone(), c.text);
+                match serde_json::from_value::<lsp_types::DidChangeTextDocumentParams>(n.params) {
+                    // 全体の同期（TextDocumentSyncKind::FULL）なので、最後の変更が全文
+                    Ok(p) => match p.content_changes.into_iter().last() {
+                        Some(c) => self.open(p.text_document.uri.as_str(), c.text),
+                        None => false,
+                    },
+                    Err(e) => return log(conn, format!("ignored a malformed didChange: {e}")),
                 }
-                path
             }
             DidCloseTextDocument::METHOD => {
-                let p: lsp_types::DidCloseTextDocumentParams =
-                    serde_json::from_value(n.params).map_err(|e| e.to_string())?;
-                let path =
-                    uri_to_path(&p.text_document.uri).ok_or("only file:// URIs are supported")?;
-                self.docs.remove(&path);
-                // 閉じたファイルの診断は消す
-                for uri in self.published.remove(&path).unwrap_or_default() {
-                    publish(conn, &uri, Vec::new())?;
+                match serde_json::from_value::<lsp_types::DidCloseTextDocumentParams>(n.params) {
+                    Ok(p) => self.docs.remove(p.text_document.uri.as_str()).is_some(),
+                    Err(e) => return log(conn, format!("ignored a malformed didClose: {e}")),
                 }
-                return Ok(());
             }
-            _ => return Ok(()),
+            _ => false,
         };
-        let text = self.docs.get(&path).cloned().unwrap_or_default();
-        let by_file = diagnostics(&path, &text, &self.docs, self.enc);
-        let mut now = HashSet::new();
-        for (file, ds) in by_file {
-            let Some(uri) = path_to_uri(&file) else {
-                continue;
-            };
-            now.insert(uri.as_str().to_string());
-            publish(conn, uri.as_str(), ds)?;
+        if changed {
+            self.republish(conn)?;
         }
-        for old in self.published.get(&path).cloned().unwrap_or_default() {
-            if !now.contains(&old) {
-                publish(conn, &old, Vec::new())?;
+        Ok(())
+    }
+
+    /// 文書を開く・置き換える。`file://` でない URI（`untitled:`、`git:` など）は無視する
+    fn open(&mut self, uri: &str, text: String) -> bool {
+        match uri_to_path(uri) {
+            Some(path) => {
+                self.docs.insert(uri.to_string(), (path, text));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 開いているすべての文書をエントリとして解析し直し、URI ごとに診断の和集合を配る（同じモジュールを import する
+    /// 文書があっても消し合わない）。変わった URI だけ配り、もう診断のない URI には空を配る
+    fn republish(&mut self, conn: &Connection) -> Result<(), String> {
+        let overlay: HashMap<PathBuf, String> = self
+            .docs
+            .values()
+            .map(|(p, t)| (p.clone(), t.clone()))
+            .collect();
+        let uri_of: HashMap<PathBuf, String> = self
+            .docs
+            .iter()
+            .map(|(u, (p, _))| (p.clone(), u.clone()))
+            .collect();
+        let mut now: HashMap<String, Vec<Diagnostic>> = HashMap::new();
+        for (path, text) in self.docs.values() {
+            let by_file = match isolated_diagnostics(path, text, &overlay, self.enc) {
+                Ok(d) => d,
+                Err(why) => {
+                    log(conn, format!("cannot analyze {}: {why}", path.display()))?;
+                    continue;
+                }
+            };
+            for (file, ds) in by_file {
+                let uri = uri_of
+                    .get(&file)
+                    .cloned()
+                    .unwrap_or_else(|| path_to_uri(&file));
+                let slot = now.entry(uri).or_default();
+                for d in ds {
+                    if !slot.contains(&d) {
+                        slot.push(d);
+                    }
+                }
             }
         }
-        self.published.insert(path, now);
+        for (uri, ds) in &now {
+            if self.published.get(uri) != Some(ds) {
+                publish(conn, uri, ds.clone())?;
+            }
+        }
+        for uri in self.published.keys() {
+            if !now.contains_key(uri) {
+                publish(conn, uri, Vec::new())?;
+            }
+        }
+        self.published = now;
         Ok(())
     }
 }
 
+/// `diagnostics` を大きなスタックの別スレッドで回す。フロントエンドのパニックやスタックの溢れ（深い入れ子の式）で
+/// サーバーが落ちないように（`catch_unwind` ではスタックの溢れは拾えない）
+fn isolated_diagnostics(
+    path: &Path,
+    text: &str,
+    overlay: &HashMap<PathBuf, String>,
+    enc: Encoding,
+) -> Result<HashMap<PathBuf, Vec<Diagnostic>>, String> {
+    let (path, text, overlay) = (path.to_path_buf(), text.to_string(), overlay.clone());
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(move || diagnostics(&path, &text, &overlay, enc))
+        .map_err(|e| e.to_string())?
+        .join()
+        .map_err(|_| "the compiler panicked".to_string())
+}
+
 fn publish(conn: &Connection, uri: &str, diagnostics: Vec<Diagnostic>) -> Result<(), String> {
-    let uri: Uri = uri.parse().map_err(|_| format!("bad URI {uri}"))?;
+    let Ok(uri) = uri.parse::<Uri>() else {
+        return log(conn, format!("cannot publish to the URI {uri}"));
+    };
     let params = PublishDiagnosticsParams {
         uri,
         diagnostics,
@@ -254,9 +363,7 @@ fn publish(conn: &Connection, uri: &str, diagnostics: Vec<Diagnostic>) -> Result
         lsp_types::notification::PublishDiagnostics::METHOD.into(),
         params,
     );
-    conn.sender
-        .send(Message::Notification(n))
-        .map_err(|e| e.to_string())
+    send(conn, Message::Notification(n))
 }
 
 #[cfg(test)]
@@ -310,8 +417,173 @@ mod tests {
     #[test]
     fn uris_and_paths_round_trip() {
         let p = PathBuf::from("/tmp/a b/ü.wys");
-        let uri = path_to_uri(&p).unwrap();
-        assert_eq!(uri.as_str(), "file:///tmp/a%20b/%C3%BC.wys");
+        let uri = path_to_uri(&p);
+        assert_eq!(uri, "file:///tmp/a%20b/%C3%BC.wys");
         assert_eq!(uri_to_path(&uri).unwrap(), p);
+        assert_eq!(
+            uri_to_path("file://localhost/tmp/x.wys?a#b").unwrap(),
+            PathBuf::from("/tmp/x.wys")
+        );
+        assert_eq!(
+            uri_to_path("file:///c%3A/Users/x.wys").unwrap(),
+            PathBuf::from("c:/Users/x.wys")
+        );
+        assert_eq!(uri_to_path("untitled:Untitled-1"), None);
+        assert_eq!(uri_to_path("file://server/share/x.wys"), None);
+        // `%` の後が多バイト文字でもパニックしない
+        assert_eq!(
+            uri_to_path("file:///tmp/%あ.wys").unwrap(),
+            PathBuf::from("/tmp/%あ.wys")
+        );
+    }
+
+    #[test]
+    fn modules_without_main_have_no_e0210() {
+        let path = PathBuf::from("/tmp/wys-lsp-unit/lib.wys");
+        let ds = diagnostics(
+            &path,
+            "pub def f() -> int:\n    return 1\n",
+            &HashMap::new(),
+            Encoding::Utf16,
+        );
+        assert!(ds[&path].is_empty(), "{:?}", ds[&path]);
+    }
+
+    /// メモリの接続でサーバーを動かし、クライアントの送受信を `f` に任せる
+    fn with_server(f: impl FnOnce(&Connection)) -> bool {
+        let (server, client) = Connection::memory();
+        let t = std::thread::spawn(move || serve(&server));
+        let req = |id: i32, method: &str, params: serde_json::Value| {
+            Message::Request(lsp_server::Request::new(id.into(), method.into(), params))
+        };
+        client
+            .sender
+            .send(req(
+                1,
+                "initialize",
+                serde_json::json!({"capabilities": {}}),
+            ))
+            .unwrap();
+        let _ = client.receiver.recv().unwrap();
+        client
+            .sender
+            .send(Message::Notification(Notification::new(
+                "initialized".into(),
+                serde_json::json!({}),
+            )))
+            .unwrap();
+        f(&client);
+        drop(client);
+        t.join().unwrap().unwrap()
+    }
+
+    fn note(client: &Connection, method: &str, params: serde_json::Value) {
+        client
+            .sender
+            .send(Message::Notification(Notification::new(
+                method.into(),
+                params,
+            )))
+            .unwrap();
+    }
+
+    /// 次の `publishDiagnostics`（URI → 診断のコード）
+    fn next_publish(client: &Connection) -> (String, Vec<String>) {
+        loop {
+            let Message::Notification(n) = client.receiver.recv().unwrap() else {
+                continue;
+            };
+            if n.method == "textDocument/publishDiagnostics" {
+                let codes = n.params["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|d| d["code"].as_str().unwrap_or_default().to_string())
+                    .collect();
+                return (n.params["uri"].as_str().unwrap().to_string(), codes);
+            }
+        }
+    }
+
+    #[test]
+    fn shared_imports_keep_their_diagnostics_and_other_uris_are_ignored() {
+        with_server(|c| {
+            let open = |uri: &str, text: &str| {
+                note(
+                    c,
+                    "textDocument/didOpen",
+                    serde_json::json!({"textDocument": {"uri": uri, "languageId": "wys", "version": 1, "text": text}}),
+                );
+            };
+            // file:// でない URI と壊れた通知はサーバーを止めない
+            open("untitled:Untitled-1", "x");
+            note(
+                c,
+                "textDocument/didOpen",
+                serde_json::json!({"textDocument": {"uri": 42}}),
+            );
+            let lib = "pub def f() -> int:\n    return \"x\"\n";
+            open("file:///tmp/wys-lsp-shared/lib.wys", lib);
+            let (uri, codes) = next_publish(c);
+            assert_eq!(
+                (uri.as_str(), codes),
+                (
+                    "file:///tmp/wys-lsp-shared/lib.wys",
+                    vec!["E0201".to_string()]
+                )
+            );
+            let user = "import lib\n\ndef g() -> int:\n    return lib.f()\n";
+            open("file:///tmp/wys-lsp-shared/a.wys", user);
+            assert_eq!(next_publish(c).1, Vec::<String>::new());
+            open("file:///tmp/wys-lsp-shared/b.wys", user);
+            assert_eq!(next_publish(c).1, Vec::<String>::new());
+            // a を閉じても、b が import している lib の診断は残る（a の空の診断だけが配られる）
+            note(
+                c,
+                "textDocument/didClose",
+                serde_json::json!({"textDocument": {"uri": "file:///tmp/wys-lsp-shared/a.wys"}}),
+            );
+            let (uri, codes) = next_publish(c);
+            assert_eq!(uri, "file:///tmp/wys-lsp-shared/a.wys");
+            assert!(codes.is_empty());
+            // lib を直すと lib の診断が消える
+            note(
+                c,
+                "textDocument/didChange",
+                serde_json::json!({"textDocument": {"uri": "file:///tmp/wys-lsp-shared/lib.wys", "version": 2}, "contentChanges": [{"text": "pub def f() -> int:\n    return 1\n"}]}),
+            );
+            let (uri, codes) = next_publish(c);
+            assert_eq!(uri, "file:///tmp/wys-lsp-shared/lib.wys");
+            assert!(codes.is_empty());
+        });
+    }
+
+    #[test]
+    fn exit_without_shutdown_is_not_clean() {
+        let (server, client) = Connection::memory();
+        let t = std::thread::spawn(move || serve(&server));
+        client
+            .sender
+            .send(Message::Request(lsp_server::Request::new(
+                1.into(),
+                "initialize".into(),
+                serde_json::json!({"capabilities": {}}),
+            )))
+            .unwrap();
+        let _ = client.receiver.recv().unwrap();
+        note(&client, "initialized", serde_json::json!({}));
+        note(&client, "exit", serde_json::json!(null));
+        assert!(!t.join().unwrap().unwrap());
+    }
+
+    #[test]
+    fn deep_nesting_does_not_crash_the_server() {
+        let path = PathBuf::from("/tmp/wys-lsp-unit/deep.wys");
+        let text = format!(
+            "def main() -> None:\n    x = {}1{}\n    print(x)\n",
+            "(".repeat(500),
+            ")".repeat(500)
+        );
+        assert!(isolated_diagnostics(&path, &text, &HashMap::new(), Encoding::Utf16).is_ok());
     }
 }
