@@ -53,6 +53,7 @@ pub const BUILTINS: &[&str] = &[
     "llm_generate",
     "llm_mock_push",
     "audit_events",
+    "llm_usage",
     "assert",
     "len",
     "range",

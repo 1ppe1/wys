@@ -47,7 +47,10 @@ pub fn expand_case_dir(value: &str, case_path: &Path) -> String {
 /// 実行時の挙動を変える AI Runtime の環境変数（ADR-0023 と `docs/design/ai-sdk.md` 11 章）。
 pub fn is_ai_env(name: &str) -> bool {
     name.starts_with("WYS_LLM_")
-        || matches!(name, "WYS_CAPABILITIES" | "WYS_APPROVAL" | "WYS_AUDIT")
+        || matches!(
+            name,
+            "WYS_CAPABILITIES" | "WYS_APPROVAL" | "WYS_AUDIT" | "WYS_TRACE" | "WYS_TRACE_CONTENT"
+        )
 }
 
 pub fn parse_expectations(src: &str) -> Result<Expectations, String> {

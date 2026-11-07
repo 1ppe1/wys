@@ -1,0 +1,56 @@
+# 入れ子の agent と spawn した子の使用量は、外側の agent と根にも数える（ADR-0025 論点 5、ADR-0023 論点 9 と訂正）
+# expect-stdout: inner 1 0 2 1
+# expect-stdout: outer 3 0 9 4
+# expect-stdout: root 3 0 9 4
+async def ask(msg: str) -> Result[str, LlmError] uses llm:
+    req = LlmRequest(
+        model="",
+        system="",
+        messages=[Message(role="user", content=msg)],
+        max_tokens=0
+    )
+    return await llm_generate[str](req)
+
+def show(prefix: str) -> None uses io:
+    u = llm_usage()
+    print(prefix + " " + to_json(u.llm_calls) + " " + to_json(u.tool_calls) + " " + to_json(u.input_tokens) + " " + to_json(u.output_tokens))
+
+@agent()
+async def inner() -> Result[str, LlmError] uses io, llm:
+    r = await ask("inner")
+    show("inner")
+    return r
+
+@agent()
+async def outer() -> Result[str, LlmError] uses io, llm:
+    a = await inner()
+    t = spawn(ask("child"))
+    b = await t
+    c = await ask("outer")
+    show("outer")
+    match a:
+        case Err(e):
+            return Err(e)
+        case Ok(_):
+            pass
+    match b:
+        case Err(e):
+            return Err(e)
+        case Ok(_):
+            return c
+
+async def main() -> None uses io, llm:
+    llm_mock_push(
+        MockResponse(text="i", tool_calls=[], input_tokens=2, output_tokens=1, latency_ms=0)
+    )
+    llm_mock_push(
+        MockResponse(text="c", tool_calls=[], input_tokens=3, output_tokens=1, latency_ms=0)
+    )
+    llm_mock_push(
+        MockResponse(text="o", tool_calls=[], input_tokens=4, output_tokens=2, latency_ms=0)
+    )
+    match await outer():
+        case Ok(_):
+            show("root")
+        case Err(e):
+            print(e.kind + ": " + e.message)

@@ -1,0 +1,69 @@
+# llm_usage() は現在のコンテキストの集計を返す（agent の中ならその agent、根なら全体。ADR-0025 論点 5）
+# expect-stdout: add
+# expect-stdout: agent 2 1 8 3
+# expect-stdout: ok 5
+# expect-stdout: root 3 1 15 6
+# expect-stdout: mock_exhausted
+# expect-stdout: root 3 1 15 6 0.0
+@tool(description="Add two integers.")
+def add(a: int, b: int) -> int uses io:
+    print("add")
+    return a + b
+
+@agent(tools=[add])
+async def calc() -> Result[str, LlmError] uses io, llm:
+    req = LlmRequest(
+        model="",
+        system="",
+        messages=[Message(role="user", content="go")],
+        max_tokens=0
+    )
+    r = await llm_generate[str](req)
+    u = llm_usage()
+    print("agent " + to_json(u.llm_calls) + " " + to_json(u.tool_calls) + " " + to_json(u.input_tokens) + " " + to_json(u.output_tokens))
+    return r
+
+def show(prefix: str) -> None uses io:
+    u = llm_usage()
+    print(prefix + " " + to_json(u.llm_calls) + " " + to_json(u.tool_calls) + " " + to_json(u.input_tokens) + " " + to_json(u.output_tokens))
+
+async def main() -> None uses io, llm:
+    llm_mock_push(
+        MockResponse(
+            text="",
+            tool_calls=[MockToolCall(name="add", args_json="{\"a\": 2, \"b\": 3}")],
+            input_tokens=3,
+            output_tokens=1,
+            latency_ms=0
+        )
+    )
+    llm_mock_push(
+        MockResponse(text="5", tool_calls=[], input_tokens=5, output_tokens=2, latency_ms=0)
+    )
+    match await calc():
+        case Ok(t):
+            print("ok " + t)
+        case Err(e):
+            print(e.kind)
+    llm_mock_push(
+        MockResponse(text="x", tool_calls=[], input_tokens=7, output_tokens=3, latency_ms=0)
+    )
+    req = LlmRequest(
+        model="",
+        system="",
+        messages=[Message(role="user", content="hi")],
+        max_tokens=0
+    )
+    match await llm_generate[str](req):
+        case Ok(_):
+            show("root")
+        case Err(e):
+            print(e.kind)
+    # 応答が届かなかった呼び出しは数えない
+    match await llm_generate[str](req):
+        case Ok(_):
+            print("unexpected")
+        case Err(e):
+            print(e.kind)
+    u = llm_usage()
+    print("root " + to_json(u.llm_calls) + " " + to_json(u.tool_calls) + " " + to_json(u.input_tokens) + " " + to_json(u.output_tokens) + " " + to_json(u.cost_usd))

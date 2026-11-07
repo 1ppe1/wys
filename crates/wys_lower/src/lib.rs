@@ -1683,6 +1683,7 @@ impl<'s, 't> FnLower<'s, 't> {
                         | "llm_generate"
                         | "llm_mock_push"
                         | "audit_events"
+                        | "llm_usage"
                 ) =>
             {
                 Some(match callee.name.as_str() {
@@ -1709,7 +1710,10 @@ impl<'s, 't> FnLower<'s, 't> {
                         });
                         return None;
                     }
-                    "audit_events" => self.lower_audit_events(e),
+                    "audit_events" => {
+                        self.lower_runtime_json(Builtin::AuditJson, "audit_events", e)
+                    }
+                    "llm_usage" => self.lower_runtime_json(Builtin::UsageJson, "llm_usage", e),
                     "to_json" => {
                         let v = self.expr(&args[0]).expect("schema values exist");
                         self.builtin(Builtin::ToJson, vec![v])
@@ -2737,11 +2741,12 @@ impl<'s, 't> FnLower<'s, 't> {
         d
     }
 
-    /// `audit_events()`: ランタイムが JSON の配列を返し、T6 の glue で `list[AuditEvent]` にする。壊れていればコンパイラかランタイムの誤り
-    fn lower_audit_events(&mut self, e: &ast::Expr) -> TempId {
+    /// `audit_events()` / `llm_usage()`: ランタイムが JSON を返し、T6 の glue で型付きの値（`list[AuditEvent]` /
+    /// `LlmUsage`）にする。壊れていればコンパイラかランタイムの誤り
+    fn lower_runtime_json(&mut self, b: Builtin, name: &str, e: &ast::Expr) -> TempId {
         let lt = self.ty(e);
-        let vt = self.sh.ir_ty(lt).expect("lists have values");
-        let j = self.builtin(Builtin::AuditJson, vec![]);
+        let vt = self.sh.ir_ty(lt).expect("the runtime returns a value");
+        let j = self.builtin(b, vec![]);
         let u = self.temp(Ty::Unknown);
         self.emit(Inst::Call {
             dst: Some(u),
@@ -2764,8 +2769,10 @@ impl<'s, 't> FnLower<'s, 't> {
             else_block: ok_b,
         });
         self.switch_to(bad_b);
-        let m = self.string_const("audit events are malformed (this is a compiler bug)");
-        let at = self.string_const("audit_events");
+        let m = self.string_const(&format!(
+            "the result of `{name}` is malformed (this is a compiler bug)"
+        ));
+        let at = self.string_const(name);
         self.emit(Inst::Call {
             dst: None,
             callee: Callee::Builtin(Builtin::Panic),
@@ -3078,6 +3085,7 @@ impl<'s, 't> FnLower<'s, 't> {
                     | "llm_generate"
                     | "llm_mock_push"
                     | "audit_events"
+                    | "llm_usage"
                     | "assert"
                     | "Ok"
                     | "Err"

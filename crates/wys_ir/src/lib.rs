@@ -433,6 +433,8 @@ pub enum Builtin {
     LlmMockPush,
     /// `audit_events` の本体: 監査イベントの JSON の配列
     AuditJson,
+    /// `llm_usage` の本体: 現在のコンテキストの使用量の JSON（ADR-0025 論点 5）
+    UsageJson,
     /// `@agent` の本体に入る・出る（関数の `agent` の属性を、バックエンドが定数にして渡す。ADR-0023 論点 9）
     AgentEnter,
     AgentExit,
@@ -506,6 +508,7 @@ impl Builtin {
             Builtin::LlmSchemaRejected => "llm_schema_rejected",
             Builtin::LlmMockPush => "llm_mock_push",
             Builtin::AuditJson => "audit_json",
+            Builtin::UsageJson => "usage_json",
             Builtin::AgentEnter => "agent_enter",
             Builtin::AgentExit => "agent_exit",
             Builtin::ToolErr => "tool_err",
@@ -552,6 +555,7 @@ impl Builtin {
                 | Builtin::LlmJsonRejected
                 | Builtin::LlmSchemaRejected
                 | Builtin::AuditJson
+                | Builtin::UsageJson
         )
     }
 
@@ -609,7 +613,8 @@ impl Builtin {
             | Builtin::LlmErrMessage
             | Builtin::LlmJsonRejected
             | Builtin::LlmSchemaRejected
-            | Builtin::AuditJson => Some(Ty::Str),
+            | Builtin::AuditJson
+            | Builtin::UsageJson => Some(Ty::Str),
             Builtin::LlmFailed => Some(Ty::Bool),
             Builtin::LlmMockPush => None,
             Builtin::AgentEnter
@@ -674,7 +679,8 @@ impl Builtin {
             | Builtin::LlmErrMessage
             | Builtin::LlmJsonRejected
             | Builtin::LlmSchemaRejected
-            | Builtin::AuditJson => &[],
+            | Builtin::AuditJson
+            | Builtin::UsageJson => &[],
             Builtin::AgentEnter | Builtin::AgentExit | Builtin::ToolErr => &[],
             Builtin::ToolArgsRejected => &[Ty::Bool],
         }

@@ -51,7 +51,11 @@ fn wys() -> Command {
         if k.starts_with("WYS_LLM_")
             || matches!(
                 k.as_str(),
-                "WYS_CAPABILITIES" | "WYS_APPROVAL" | "WYS_AUDIT"
+                "WYS_CAPABILITIES"
+                    | "WYS_APPROVAL"
+                    | "WYS_AUDIT"
+                    | "WYS_TRACE"
+                    | "WYS_TRACE_CONTENT"
             )
         {
             cmd.env_remove(k);
@@ -1661,6 +1665,130 @@ fn agent_demo_runs_with_the_mock_provider() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_only_system_libraries(&exe);
+}
+
+const TRACED: &str = "@tool(description=\"Add.\")\ndef add(a: int, b: int) -> int uses pure:\n    return a + b\n\n@tool(description=\"Remove.\", approval=\"required\")\ndef rm(path: str) -> None uses io:\n    print(path)\n\n@agent(tools=[add, rm])\nasync def calc() -> Result[str, LlmError] uses io, llm:\n    req = LlmRequest(model=\"\", system=\"sys\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm:\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"add\", args_json=\"{\\\"a\\\": 2, \\\"b\\\": 3}\"), MockToolCall(name=\"rm\", args_json=\"{\\\"path\\\": \\\"/x\\\"}\")], input_tokens=3, output_tokens=1, latency_ms=40))\n    llm_mock_push(MockResponse(text=\"5\", tool_calls=[], input_tokens=5, output_tokens=2, latency_ms=10))\n    match await calc():\n        case Ok(t):\n            print(t)\n        case Err(e):\n            print(e.kind)\n";
+
+#[test]
+fn traces_are_deterministic_under_the_virtual_clock() {
+    // スパンは終わったときに 1 行、監査イベントも同じ流れに写す。本文は既定では含めない（ADR-0025 論点 1〜4）
+    let path = scratch("traced", TRACED);
+    let trace = path.with_extension("trace.jsonl");
+    let _ = std::fs::remove_file(&trace);
+    let out = cli_env(
+        &["run", path.to_str().unwrap()],
+        &[
+            ("WYS_VIRTUAL_TIME", "1"),
+            ("WYS_TRACE", trace.to_str().unwrap()),
+        ],
+    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "5\n");
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(&trace)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let brief: Vec<String> = lines
+        .iter()
+        .map(|v| match v["kind"].as_str().unwrap() {
+            "span" => format!(
+                "span {} {} parent={} {}..{} {}",
+                v["span"],
+                v["name"].as_str().unwrap(),
+                v["parent"],
+                v["start_ms"],
+                v["end_ms"],
+                v["result"].as_str().unwrap_or("-")
+            ),
+            _ => format!(
+                "event {} span={} t={}",
+                v["event"].as_str().unwrap(),
+                v["span"],
+                v["t_ms"]
+            ),
+        })
+        .collect();
+    assert_eq!(
+        brief,
+        vec![
+            "event llm_called span=2 t=40",
+            "span 2 llm_call parent=1 0..40 ok",
+            "event tool_called span=3 t=40",
+            "span 3 tool_call parent=1 40..40 ok",
+            "event approval_requested span=4 t=40",
+            "event approval_denied span=4 t=40",
+            "span 4 tool_call parent=1 40..40 refused",
+            "event llm_called span=5 t=50",
+            "span 5 llm_call parent=1 40..50 ok",
+            "span 1 agent parent=null 0..50 -",
+        ]
+    );
+    assert_eq!(
+        lines[1]["usage"],
+        serde_json::json!({"input_tokens": 3, "output_tokens": 1})
+    );
+    assert_eq!(
+        lines[9]["usage"],
+        serde_json::json!({"input_tokens": 8, "output_tokens": 3})
+    );
+    let text = std::fs::read_to_string(&trace).unwrap();
+    assert!(
+        !text.contains("\"request\"") && !text.contains("/x"),
+        "{text}"
+    );
+    // WYS_TRACE_CONTENT=1 なら本文（要求・応答・ツールの引数と戻り値）を足す
+    let _ = std::fs::remove_file(&trace);
+    cli_env(
+        &["run", path.to_str().unwrap()],
+        &[
+            ("WYS_VIRTUAL_TIME", "1"),
+            ("WYS_TRACE", trace.to_str().unwrap()),
+            ("WYS_TRACE_CONTENT", "1"),
+        ],
+    );
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(&trace)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines[1]["request"]["system"], "sys");
+    assert_eq!(lines[1]["reply"]["tool_calls"][0]["name"], "add");
+    assert_eq!(lines[3]["args"], "{\"a\": 2, \"b\": 3}");
+    assert_eq!(lines[3]["output"], "5");
+}
+
+const NESTED_IN_TOOL: &str = "@agent(capabilities=[\"io\"])\nasync def inner() -> Result[str, LlmError] uses io, llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"x\")], max_tokens=0)\n    return await llm_generate[str](req)\n\n@tool(description=\"Delegate.\")\nasync def delegate() -> str uses io, llm:\n    match await inner():\n        case Ok(t):\n            return t\n        case Err(e):\n            return e.kind\n\n@agent(tools=[delegate])\nasync def outer() -> Result[str, LlmError] uses io, llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm:\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"delegate\", args_json=\"{}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"done\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    match await outer():\n        case Ok(t):\n            print(t)\n        case Err(e):\n            print(e.kind)\n";
+
+#[test]
+fn events_of_an_agent_inside_a_tool_belong_to_that_agent() {
+    // ツールの中で入った agent のイベントは、外側の `tool_call` ではなくその agent のスパンに付く（Fable のレビュー）
+    let path = scratch("nested_in_tool", NESTED_IN_TOOL);
+    let trace = path.with_extension("trace.jsonl");
+    let _ = std::fs::remove_file(&trace);
+    let out = cli_env(
+        &["run", path.to_str().unwrap()],
+        &[
+            ("WYS_VIRTUAL_TIME", "1"),
+            ("WYS_TRACE", trace.to_str().unwrap()),
+        ],
+    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "done\n");
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(&trace)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let denied = lines
+        .iter()
+        .find(|v| v["event"] == "capability_denied")
+        .unwrap();
+    let inner = lines
+        .iter()
+        .find(|v| v["name"] == "agent" && v["agent"] == "inner")
+        .unwrap();
+    let tool = lines.iter().find(|v| v["name"] == "tool_call").unwrap();
+    assert_eq!(denied["span"], inner["span"]);
+    assert_eq!(inner["parent"], tool["parent"]);
 }
 
 #[test]

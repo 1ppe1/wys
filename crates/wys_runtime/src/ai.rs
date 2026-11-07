@@ -88,6 +88,10 @@ struct Ctx {
     model: String,
     /// このコンテキストを持つスタックの数（`spawn` で引き継ぐと増える）。0 になったら表の場所を再利用する
     refs: usize,
+    /// トレースの agent のスパン（ADR-0025 論点 2。根は 0 = なし）と、その親・開始時刻
+    span: u64,
+    span_parent: u64,
+    span_start: i64,
 }
 
 impl Ctx {
@@ -108,6 +112,9 @@ impl Ctx {
             virtual_ms: 0,
             model: String::new(),
             refs: 1,
+            span: 0,
+            span_parent: 0,
+            span_start: 0,
         }
     }
 
@@ -192,6 +199,45 @@ struct State {
     provider: Provider,
     /// ビルドしたコンパイラの絶対パス（生成コードが `wys_llm_set_compiler` で渡す。`wys llm-proxy` の探索に使う）
     compiler: Option<String>,
+    trace: Trace,
+}
+
+/// トレース（ADR-0025 論点 1〜4、`docs/design/ai-sdk.md` §18）。
+struct Trace {
+    /// `WYS_TRACE`（`<path>` か `stderr`。未設定なら出さない）
+    dest: Option<String>,
+    /// `WYS_TRACE_CONTENT=1`
+    content: bool,
+    next_span: u64,
+    /// プロセス全体のモック（と再生）の応答の `latency_ms` の累計（トレースの時計に足す）
+    latency_ms: i64,
+    /// タスクごとの、いま開いているスパン（イベントをどのスパンに付けるか）
+    active: HashMap<usize, Vec<u64>>,
+    /// `WYS_TRACE=<path>` のファイル（最初の 1 行で開き、開けなければ以後は出さない）
+    file: Option<std::fs::File>,
+    file_failed: bool,
+}
+
+impl Trace {
+    fn from_env() -> Trace {
+        Trace {
+            dest: std::env::var("WYS_TRACE").ok().filter(|d| !d.is_empty()),
+            content: std::env::var("WYS_TRACE_CONTENT").is_ok_and(|v| v == "1"),
+            next_span: 0,
+            latency_ms: 0,
+            active: HashMap::new(),
+            file: None,
+            file_failed: false,
+        }
+    }
+}
+
+/// トレースの時計の起点（ランタイムの初期化で取る。`trace_now_ms`）
+static TRACE_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// ランタイムの初期化（`wys_runtime_init`）で時計の起点を取る。
+pub(crate) fn init_clock() {
+    TRACE_START.get_or_init(Instant::now);
 }
 
 impl State {
@@ -208,6 +254,7 @@ impl State {
             failure: None,
             provider: Provider::Idle,
             compiler: None,
+            trace: Trace::from_env(),
         }
     }
 
@@ -332,7 +379,118 @@ fn audit(s: &mut State, kind: &'static str, tool: Option<&str>, detail: String) 
             let _ = writeln!(f, "{line}");
         }
     }
+    if s.trace.dest.is_some() {
+        let span = current_span(s);
+        let line = serde_json::json!({
+            "kind": "event", "span": span_ref(span), "t_ms": trace_now_ms(s), "seq": s.audit.len(),
+            "event": ev.kind, "agent": ev.agent, "tool": ev.tool, "detail": ev.detail
+        });
+        trace_write(s, &line);
+    }
     s.audit.push(ev);
+}
+
+/// トレースの時計（ADR-0025 論点 3）: 有効な時計（仮想時計か、起点からの単調時計）に、プロセス全体の
+/// モックと再生の `latency_ms` の累計を足したミリ秒。両方のモードで同じ式
+fn trace_now_ms(s: &State) -> i64 {
+    let base = if crate::task::virtual_time_enabled() {
+        crate::task::virtual_now_ms()
+    } else {
+        let start = TRACE_START.get_or_init(Instant::now);
+        i64::try_from(start.elapsed().as_millis()).unwrap_or(i64::MAX)
+    };
+    base.saturating_add(s.trace.latency_ms)
+}
+
+/// スパンの番号の JSON（0 はなし）
+fn span_ref(span: u64) -> serde_json::Value {
+    if span == 0 {
+        serde_json::Value::Null
+    } else {
+        span.into()
+    }
+}
+
+/// イベントを付けるスパン: このタスクで開いている最内のスパン（agent / `llm_call` / `tool_call`）。なければ
+/// 現在のコンテキストの agent のスパン（`spawn` した子は親の agent のスパン）
+fn current_span(s: &State) -> u64 {
+    s.trace
+        .active
+        .get(&crate::task::current_task())
+        .and_then(|v| v.last().copied())
+        .unwrap_or_else(|| s.top().span)
+}
+
+fn new_span(s: &mut State) -> u64 {
+    s.trace.next_span += 1;
+    s.trace.next_span
+}
+
+/// `llm_call` / `tool_call` のスパンを開く（イベントはこのスパンに付く）。番号と開始時刻
+fn open_span(s: &mut State) -> (u64, i64) {
+    let id = new_span(s);
+    s.trace
+        .active
+        .entry(crate::task::current_task())
+        .or_default()
+        .push(id);
+    (id, trace_now_ms(s))
+}
+
+fn close_span(s: &mut State, id: u64) {
+    if let Some(v) = s.trace.active.get_mut(&crate::task::current_task())
+        && let Some(at) = v.iter().rposition(|&x| x == id)
+    {
+        v.remove(at);
+    }
+}
+
+fn trace_write(s: &mut State, line: &serde_json::Value) {
+    let t = &mut s.trace;
+    let Some(dest) = &t.dest else {
+        return;
+    };
+    let line = line.to_string();
+    if dest == "stderr" {
+        eprintln!("{line}");
+        return;
+    }
+    if t.file.is_none() && !t.file_failed {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dest)
+        {
+            Ok(f) => t.file = Some(f),
+            Err(_) => t.file_failed = true,
+        }
+    }
+    if let Some(f) = &mut t.file {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+/// 終わったスパンを 1 行出す（ADR-0025 論点 2）。`extra` は名前に固有の項目
+fn emit_span(s: &mut State, id: u64, name: &str, start: i64, extra: serde_json::Value) {
+    if s.trace.dest.is_none() {
+        return;
+    }
+    let top = s.top();
+    let mut line = serde_json::json!({
+        "kind": "span", "span": id, "parent": span_ref(top.span), "task": crate::task::current_task(),
+        "name": name, "agent": top.name, "tool": null, "start_ms": start, "end_ms": trace_now_ms(s)
+    });
+    if let (Some(o), serde_json::Value::Object(e)) = (line.as_object_mut(), extra) {
+        o.extend(e);
+    }
+    trace_write(s, &line);
+}
+
+fn failure_result(s: &State) -> String {
+    match &s.failure {
+        Some((kind, _)) => format!("error:{kind}"),
+        None => "ok".into(),
+    }
 }
 
 fn event_json(seq: usize, ev: &AuditEvent) -> serde_json::Value {
@@ -423,11 +581,54 @@ pub(crate) fn task_finished(id: usize) {
                 s.unref(i);
             }
         }
+        // タスクの番号は再利用されるので、開いたままのスパンを持ち越さない
+        s.trace.active.remove(&id);
     });
 }
 
-/// 1 回のプロバイダの呼び出し（予算の検査、使用量の加算、監査）。失敗なら `Err(null)`
+/// 1 回のプロバイダの呼び出しと、その `llm_call` のスパン（ADR-0025 論点 2）。失敗なら `Err(null)`
 fn provider_step(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
+    let (id, start) = open_span(s);
+    let before = (s.arena[0].llm_calls, s.arena[0].usage);
+    let r = provider_step_inner(s, call);
+    close_span(s, id);
+    if s.trace.dest.is_some() {
+        // 応答が届いた（根の回数が増えた）ときだけ使用量を持つ
+        let usage = if s.arena[0].llm_calls > before.0 {
+            let (a, b) = (s.arena[0].usage, before.1);
+            serde_json::json!({
+                "input_tokens": a.input_tokens - b.input_tokens,
+                "output_tokens": a.output_tokens - b.output_tokens
+            })
+        } else {
+            serde_json::Value::Null
+        };
+        let result = if r.is_ok() {
+            "ok".to_string()
+        } else {
+            failure_result(s)
+        };
+        let mut extra = serde_json::json!({"result": result, "usage": usage, "cost_usd": null});
+        if s.trace.content {
+            extra["request"] = serde_json::json!({
+                "system": call.req["system"], "messages": call.messages, "schema": call.schema
+            });
+            if let Ok(reply) = &r {
+                let calls: Vec<serde_json::Value> = reply
+                    .tool_calls
+                    .iter()
+                    .map(|(cid, name, args)| serde_json::json!({"id": cid, "name": name, "args": args}))
+                    .collect();
+                extra["reply"] = serde_json::json!({"text": reply.text, "tool_calls": calls});
+            }
+        }
+        emit_span(s, id, "llm_call", start, extra);
+    }
+    r
+}
+
+/// 1 回のプロバイダの呼び出し（予算の検査、使用量の加算、監査）。失敗なら `Err(null)`
+fn provider_step_inner(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
     if let Some((kind, what)) = over_budget(s, false) {
         audit(s, "budget_exceeded", None, what.into());
         return Err(fail(s, kind, format!("{what} exceeded")));
@@ -465,6 +666,7 @@ fn provider_step(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
         a.usage.add(reply.usage);
         a.virtual_ms += reply.latency_ms;
     }
+    s.trace.latency_ms = s.trace.latency_ms.saturating_add(reply.latency_ms);
     audit(
         s,
         "llm_called",
@@ -919,10 +1121,31 @@ pub unsafe extern "C" fn wys_llm_generate(
         }
         messages.push(serde_json::json!({"role": "assistant", "content": reply.assistant}));
         for (id, name, args) in &reply.tool_calls {
+            // `tool_call` のスパン（ADR-0025 論点 2）。拒否されたものも 1 つ出す
+            let (span, start) = STATE.with(|cell| open_span(&mut cell.borrow_mut()));
+            let end = |result: &str, output: Option<&str>| {
+                STATE.with(|cell| {
+                    let mut s = cell.borrow_mut();
+                    close_span(&mut s, span);
+                    let mut extra = serde_json::json!({"tool": name, "result": result});
+                    if s.trace.content {
+                        extra["args"] = args.as_str().into();
+                        if let Some(o) = output {
+                            extra["output"] = o.into();
+                        }
+                    }
+                    emit_span(&mut s, span, "tool_call", start, extra);
+                });
+            };
+            let failed = || STATE.with(|cell| failure_result(&cell.borrow()));
             let g = STATE.with(|cell| gate(&mut cell.borrow_mut(), name, args));
             let entry = match g {
-                Gate::Stop(p) => return p,
+                Gate::Stop(p) => {
+                    end(&failed(), None);
+                    return p;
+                }
                 Gate::Refused => {
+                    end("refused", None);
                     messages.push(serde_json::json!({
                         "role": "tool", "id": id, "content": "denied by approver", "is_error": true
                     }));
@@ -959,13 +1182,16 @@ pub unsafe extern "C" fn wys_llm_generate(
                     crate::json::last_failure_message()
                 };
                 let msg = format!("tool `{name}`: {why}");
-                return STATE.with(|cell| {
+                let p = STATE.with(|cell| {
                     let mut s = cell.borrow_mut();
                     audit(&mut s, "schema_rejected", Some(name), why);
                     fail(&mut s, "schema", msg)
                 });
+                end("error:schema", None);
+                return p;
             }
             let is_error = TOOL_ERR.with(|c| c.replace(false));
+            end(if is_error { "tool_error" } else { "ok" }, Some(&result));
             messages.push(serde_json::json!({
                 "role": "tool", "id": id, "content": result, "is_error": is_error
             }));
@@ -1081,6 +1307,21 @@ pub extern "C" fn wys_audit_json() -> *mut Header {
     })
 }
 
+/// `llm_usage()` の本体: 現在のコンテキスト（根なら全体）の使用量の JSON（参照カウント 1。ADR-0025 論点 5）。
+#[unsafe(no_mangle)]
+pub extern "C" fn wys_usage_json() -> *mut Header {
+    STATE.with(|s| {
+        let s = s.borrow();
+        let c = s.top();
+        let v = serde_json::json!({
+            "llm_calls": c.llm_calls, "tool_calls": c.tool_calls,
+            "input_tokens": c.usage.input_tokens, "output_tokens": c.usage.output_tokens,
+            "cost_usd": 0.0
+        });
+        embed::new_object(v.to_string().as_bytes())
+    })
+}
+
 /// ツール表を登録する（生成コードの `main` が最初に呼ぶ）。
 ///
 /// # Safety
@@ -1137,6 +1378,16 @@ pub unsafe extern "C" fn wys_agent_enter(cfg: *const AgentCfg) {
         let mut ctx = Ctx::new(name, tools, caps, limits);
         // SAFETY: 生成コードの文字列定数。
         ctx.model = unsafe { cstr(c.model) };
+        ctx.span_parent = s.top().span;
+        ctx.span = new_span(&mut s);
+        ctx.span_start = trace_now_ms(&s);
+        // ツールの中で入った agent のイベントが、外側の `tool_call` に付かないように積む（Fable のレビュー）
+        let span = ctx.span;
+        s.trace
+            .active
+            .entry(crate::task::current_task())
+            .or_default()
+            .push(span);
         let i = s.alloc(ctx);
         let task = crate::task::current_task();
         let mut chain = s.chain();
@@ -1155,7 +1406,18 @@ pub extern "C" fn wys_agent_exit() {
         if chain.len() <= 1 {
             embed::runtime_error("agent context mismatch (this is a compiler bug)");
         }
-        let i = chain.pop().expect("checked above");
+        let i = *chain.last().expect("checked above");
+        // agent のスパン（ADR-0025 論点 2）: 結果は持たず、出る時点のその agent の合計を持つ
+        let c = &s.arena[i];
+        let extra = serde_json::json!({
+            "parent": span_ref(c.span_parent),
+            "usage": {"input_tokens": c.usage.input_tokens, "output_tokens": c.usage.output_tokens},
+            "cost_usd": 0.0
+        });
+        let (span, start) = (c.span, c.span_start);
+        close_span(&mut s, span);
+        emit_span(&mut s, span, "agent", start, extra);
+        chain.pop();
         s.unref(i);
         s.stacks.insert(task, chain);
     });

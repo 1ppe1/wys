@@ -518,6 +518,21 @@ impl Types {
         )
     }
 
+    /// `llm_usage()` の結果（ADR-0025 論点 5）。
+    pub fn llm_usage(&mut self) -> Ty {
+        self.record_named(
+            vec![
+                ("llm_calls".into(), Ty::Int),
+                ("tool_calls".into(), Ty::Int),
+                ("input_tokens".into(), Ty::Int),
+                ("output_tokens".into(), Ty::Int),
+                ("cost_usd".into(), Ty::Float),
+            ],
+            Some("LlmUsage".into()),
+            vec![],
+        )
+    }
+
     pub fn mock_tool_call(&mut self) -> Ty {
         self.record_named(
             vec![("name".into(), Ty::Str), ("args_json".into(), Ty::Str)],
@@ -552,6 +567,7 @@ impl Types {
             "LlmRequest" => self.llm_request(),
             "LlmError" => self.llm_error(),
             "AuditEvent" => self.audit_event(),
+            "LlmUsage" => self.llm_usage(),
             "MockToolCall" => self.mock_tool_call(),
             "MockResponse" => self.mock_response(),
             _ => return None,
@@ -803,7 +819,7 @@ fn is_async_builtin(name: &str) -> bool {
 }
 
 /// 組み込みのレコードの名前（再定義は E0209。`Name(...)` で作れる）。
-pub const BUILTIN_RECORDS: [&str; 9] = [
+pub const BUILTIN_RECORDS: [&str; 10] = [
     "PyError",
     "JsonError",
     "SchemaError",
@@ -811,6 +827,7 @@ pub const BUILTIN_RECORDS: [&str; 9] = [
     "LlmRequest",
     "LlmError",
     "AuditEvent",
+    "LlmUsage",
     "MockToolCall",
     "MockResponse",
 ];
@@ -5390,6 +5407,19 @@ impl<'a> FnCk<'a> {
                 }
                 let ev = self.cx.types.audit_event();
                 return self.cx.types.list(ev);
+            }
+            "llm_usage" => {
+                if !args.is_empty() {
+                    self.cx.diags.push(Diagnostic::error(
+                        "E0205",
+                        format!(
+                            "`llm_usage` takes no arguments but {} were given",
+                            args.len()
+                        ),
+                        span,
+                    ));
+                }
+                return self.cx.types.llm_usage();
             }
             "to_json" => {
                 if args.len() != 1 {
