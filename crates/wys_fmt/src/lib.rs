@@ -4,7 +4,10 @@
 //!
 //! - インデントは空白4つ。行末の空白は取り除き、連続する空行は1行にまとめる。ファイルの先頭の空行は消す。
 //! - 演算子・カンマ・コロンなどの前後の空白を正規化する（規則は `space_between`）。
-//! - 長い行の折り返しはしない。括弧の中で複数行にわたる式は1行にまとめる（v0 の制限）。
+//! - 括弧の中で複数行にわたる式は、いったん1行にまとめる。
+//! - 1行が `MAX_WIDTH` 文字を超えたら、カンマで区切られた要素を持つ最初の括弧で折り返す（要素を1行に1つ、
+//!   インデントを1段深くし、閉じ括弧は元の段に戻す）。要素がまだ長ければ、同じ規則で入れ子に折り返す。
+//!   カンマを持つ括弧がない行（長い文字列だけの行など）は折り返さない。末尾のカンマは足さない（トークン列を変えない）。
 //! - 字句エラーのあるファイルは整形しない。
 //!
 //! 整形しても意味が変わらないこと（コメントと空行を除いたトークン列が同じ）と、
@@ -48,13 +51,19 @@ pub fn format_source(src: &str) -> Result<String, Vec<Diagnostic>> {
             TokenKind::Newline => {
                 if !line.is_empty() {
                     flush_blank(&mut out, &mut blank);
-                    out.push_str(&"    ".repeat(level));
-                    out.push_str(&render(src, &line));
-                    if let Some(c) = trailing {
-                        out.push_str("  ");
-                        out.push_str(c);
+                    let mut lines = Vec::new();
+                    wrap(src, &line, level, 0, &mut lines);
+                    let last = lines.len() - 1;
+                    for (i, l) in lines.iter().enumerate() {
+                        out.push_str(l);
+                        if i == last
+                            && let Some(c) = trailing
+                        {
+                            out.push_str("  ");
+                            out.push_str(c);
+                        }
+                        out.push('\n');
                     }
-                    out.push('\n');
                 }
                 line.clear();
                 trailing = None;
@@ -66,12 +75,103 @@ pub fn format_source(src: &str) -> Result<String, Vec<Diagnostic>> {
     Ok(out)
 }
 
+/// 1行の幅の上限（インデントを含む文字数）。
+pub const MAX_WIDTH: usize = 100;
+
+fn is_open(k: &TokenKind) -> bool {
+    matches!(
+        k,
+        TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace
+    )
+}
+
+fn is_close(k: &TokenKind) -> bool {
+    matches!(
+        k,
+        TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace
+    )
+}
+
+/// `line`（括弧の深さ `depth` から始まるトークン列）を `level` 段のインデントで出力する。長すぎれば折り返す。
+fn wrap(src: &str, line: &[&Token], level: usize, depth: usize, out: &mut Vec<String>) {
+    let indent = "    ".repeat(level);
+    let flat = format!("{indent}{}", render(src, line, depth));
+    if flat.chars().count() <= MAX_WIDTH {
+        out.push(flat);
+        return;
+    }
+    // カンマで区切られた要素を持つ、この行の深さで最初の括弧を探す
+    let mut d = 0usize;
+    let mut open = None;
+    for (i, t) in line.iter().enumerate() {
+        if is_open(&t.kind) {
+            if d == 0 {
+                open = Some(i);
+            }
+            d += 1;
+        } else if is_close(&t.kind) {
+            d = d.saturating_sub(1);
+            if d == 0
+                && let Some(o) = open.take()
+            {
+                let items = split_items(&line[o + 1..i]);
+                if items.len() > 1 || items.first().is_some_and(|it| splittable(it)) {
+                    out.push(format!("{indent}{}", render(src, &line[..=o], depth)));
+                    for item in items {
+                        wrap(src, item, level + 1, depth + 1, out);
+                    }
+                    wrap(src, &line[i..], level, depth + 1, out);
+                    return;
+                }
+            }
+        }
+    }
+    out.push(flat);
+}
+
+/// トークン列のどこかに、カンマで区切られた要素を持つ括弧があるか（1要素の括弧の中で折り返せるか）。
+fn splittable(tokens: &[&Token]) -> bool {
+    let mut d = 0usize;
+    for t in tokens {
+        if is_open(&t.kind) {
+            d += 1;
+        } else if is_close(&t.kind) {
+            d = d.saturating_sub(1);
+        } else if d > 0 && matches!(t.kind, TokenKind::Comma) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 括弧の中のトークン列を、深さ 0 のカンマで要素に分ける（カンマは前の要素の末尾に残す）。
+fn split_items<'a, 'b>(inner: &'b [&'a Token]) -> Vec<&'b [&'a Token]> {
+    let mut items = Vec::new();
+    let mut d = 0usize;
+    let mut start = 0;
+    for (i, t) in inner.iter().enumerate() {
+        if is_open(&t.kind) {
+            d += 1;
+        } else if is_close(&t.kind) {
+            d = d.saturating_sub(1);
+        } else if d == 0 && matches!(t.kind, TokenKind::Comma) {
+            items.push(&inner[start..=i]);
+            start = i + 1;
+        }
+    }
+    if start < inner.len() {
+        items.push(&inner[start..]);
+    }
+    items
+}
+
 /// 1つの論理行のトークンを、空白の規則に従ってつなげる。トークンの表記はソースのまま使う。
-fn render(src: &str, line: &[&Token]) -> String {
+/// `depth` は先頭のトークンの前の括弧の深さ（折り返した要素の中の `=` をキーワード引数として扱うため）。
+fn render(src: &str, line: &[&Token], depth: usize) -> String {
     let mut out = String::new();
     let mut prev: Option<&TokenKind> = None;
     let mut prev_unary_minus = false;
-    let mut depth = 0usize;
+    let mut depth = depth;
     for t in line {
         let k = &t.kind;
         if let Some(p) = prev
@@ -209,6 +309,68 @@ mod tests {
             fmt("def main() -> None:\n    print(add(1,\n              2))\n"),
             "def main() -> None:\n    print(add(1, 2))\n"
         );
+    }
+
+    #[test]
+    fn wraps_long_lines_at_the_first_bracket() {
+        let args = (0..12)
+            .map(|i| format!("argument_{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let src = format!("def main() -> None:\n    total = compute({args})  # note\n");
+        let items = (0..12)
+            .map(|i| format!("        argument_{i}"))
+            .collect::<Vec<_>>()
+            .join(",\n");
+        assert_eq!(
+            fmt(&src),
+            format!("def main() -> None:\n    total = compute(\n{items}\n    )  # note\n")
+        );
+    }
+
+    #[test]
+    fn wraps_nested_brackets_that_are_still_too_long() {
+        let inner = (0..8)
+            .map(|i| format!("field_{i}=value_{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let src = format!("def main() -> None:\n    push(Response(text=\"\", {inner}), [1, 2])\n");
+        let fields = (0..8)
+            .map(|i| format!("            field_{i}=value_{i}"))
+            .collect::<Vec<_>>()
+            .join(",\n");
+        assert_eq!(
+            fmt(&src),
+            format!(
+                "def main() -> None:\n    push(\n        Response(\n            text=\"\",\n{fields}\n        ),\n        [1, 2]\n    )\n"
+            )
+        );
+    }
+
+    #[test]
+    fn wraps_inside_a_bracket_with_one_element() {
+        let fields = (0..8)
+            .map(|i| format!("field_{i}=value_{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let src = format!("def main() -> None:\n    push(Response({fields}))\n");
+        let lines = (0..8)
+            .map(|i| format!("            field_{i}=value_{i}"))
+            .collect::<Vec<_>>()
+            .join(",\n");
+        assert_eq!(
+            fmt(&src),
+            format!(
+                "def main() -> None:\n    push(\n        Response(\n{lines}\n        )\n    )\n"
+            )
+        );
+    }
+
+    #[test]
+    fn keeps_long_lines_without_brackets() {
+        let long = "x".repeat(120);
+        let src = format!("def main() -> None:\n    print(\"{long}\")\n    y = \"{long}\"\n");
+        assert_eq!(fmt(&src), src);
     }
 
     #[test]
