@@ -180,6 +180,7 @@ enum Provider {
 }
 
 /// 記録の 1 回分の応答（ADR-0025 論点 6）。
+#[derive(Clone)]
 enum Outcome {
     /// 届いた JSON の応答（`error` 行と、`parse_reply` が拒む形を含む）
     Line(serde_json::Value),
@@ -191,17 +192,23 @@ enum Outcome {
 
 /// 記録の再生（`WYS_LLM_PROVIDER=replay:<path>`、ADR-0025 論点 7・8）。最初の呼び出しでファイルを全部読む
 struct Replay {
-    /// (要求, 応答, `latency_ms`)
-    exchanges: Vec<(serde_json::Value, Outcome)>,
-    latencies: Vec<i64>,
+    exchanges: Vec<Exchange>,
     next: usize,
     /// 一度失敗したら、以後の呼び出しも同じ失敗を返す
     failed: Option<String>,
 }
 
+/// 記録の 1 行（要求、応答、待ち時間）
+struct Exchange {
+    request: serde_json::Value,
+    outcome: Outcome,
+    latency_ms: i64,
+}
+
 /// 記録（`WYS_LLM_RECORD=<path>`、ADR-0025 論点 6）
 #[derive(Default)]
 struct Record {
+    path: String,
     file: Option<std::fs::File>,
     seq: usize,
     failed: Option<String>,
@@ -268,6 +275,13 @@ static TRACE_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 /// ランタイムの初期化（`wys_runtime_init`）で時計の起点を取る。
 pub(crate) fn init_clock() {
     TRACE_START.get_or_init(Instant::now);
+    // 記録はプロセスの最初に作り直す（LLM を呼ぶ前に落ちても、古い記録が残らないように。Fable のレビュー）。
+    // 失敗は最初の LLM の呼び出しで `Err(kind="provider")` になる
+    if record_path().is_some() {
+        STATE.with(|cell| {
+            let _ = record_prepare(&mut cell.borrow_mut());
+        });
+    }
 }
 
 impl State {
@@ -661,6 +675,7 @@ fn provider_step(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
 
 /// プロバイダか記録から届いた応答を受け取る。届いた応答は、壊れていても回数とトークンを数える
 /// （失敗を繰り返す呼び出しも予算で止まる。Codex のレビュー）。届かなかったら数えない。
+/// `latency_ms` は時計に足す待ち時間（届いた応答なら、成功でも失敗でも足す。届かなければ足さない）。
 fn accept(s: &mut State, outcome: Outcome, latency_ms: i64) -> Result<Reply, *mut Header> {
     let parsed = match outcome {
         Outcome::Line(v) => parse_reply(&v),
@@ -676,7 +691,9 @@ fn accept(s: &mut State, outcome: Outcome, latency_ms: i64) -> Result<Reply, *mu
             for i in s.chain() {
                 s.arena[i].llm_calls += 1;
                 s.arena[i].usage.add(usage);
+                s.arena[i].virtual_ms += latency_ms;
             }
+            s.trace.latency_ms = s.trace.latency_ms.saturating_add(latency_ms);
             audit(s, "llm_called", None, format!("tokens={}", usage.total()));
             Err(fail(s, "provider", m))
         }
@@ -725,35 +742,34 @@ fn replay_load(s: &mut State) -> Result<(), String> {
             return Err("the first line is not a version 1 header".into());
         }
         let mut exchanges = Vec::new();
-        let mut latencies = Vec::new();
         for (n, l) in lines.enumerate() {
             let v: serde_json::Value =
                 serde_json::from_str(l).map_err(|e| format!("line {}: {e}", n + 2))?;
             if v["kind"] != "exchange" || !v["request"].is_object() {
                 return Err(format!("line {}: not an exchange", n + 2));
             }
-            let outcome = match &v["reply"] {
-                serde_json::Value::Null => Outcome::Transport(
-                    v["transport"]
-                        .as_str()
-                        .unwrap_or("the provider exited")
-                        .to_string(),
-                ),
-                serde_json::Value::String(raw) => {
-                    let m = match serde_json::from_str::<serde_json::Value>(raw) {
-                        Err(e) => malformed_message(&e),
-                        Ok(_) => "malformed provider response".into(),
-                    };
-                    Outcome::Malformed(raw.clone(), m)
-                }
-                r => Outcome::Line(r.clone()),
+            // 応答の形は項目の有無で決める（JSON の型で決めると、`null` や文字列の行とぶつかる。Fable のレビュー）
+            let outcome = if let Some(m) = v["transport"].as_str() {
+                Outcome::Transport(m.to_string())
+            } else if let Some(raw) = v["malformed"].as_str() {
+                let m = match serde_json::from_str::<serde_json::Value>(raw) {
+                    Err(e) => malformed_message(&e),
+                    Ok(_) => "malformed provider response".into(),
+                };
+                Outcome::Malformed(raw.to_string(), m)
+            } else if let Some(r) = v.get("reply") {
+                Outcome::Line(r.clone())
+            } else {
+                return Err(format!("line {}: the exchange has no reply", n + 2));
             };
-            exchanges.push((v["request"].clone(), outcome));
-            latencies.push(v["latency_ms"].as_i64().unwrap_or(0).max(0));
+            exchanges.push(Exchange {
+                request: v["request"].clone(),
+                outcome,
+                latency_ms: v["latency_ms"].as_i64().unwrap_or(0).max(0),
+            });
         }
         Ok(Replay {
             exchanges,
-            latencies,
             next: 0,
             failed: None,
         })
@@ -767,7 +783,6 @@ fn replay_load(s: &mut State) -> Result<(), String> {
             let m = bad(why);
             s.replay = Some(Replay {
                 exchanges: Vec::new(),
-                latencies: Vec::new(),
                 next: 0,
                 failed: Some(m.clone()),
             });
@@ -821,7 +836,7 @@ fn replay_next(s: &mut State, request: &serde_json::Value) -> Result<(Outcome, i
         return Err(m.clone());
     }
     let n = r.next;
-    let Some((recorded, _)) = r.exchanges.get(n) else {
+    let Some(recorded) = r.exchanges.get(n).map(|e| &e.request) else {
         let m = format!("recording exhausted after {} exchanges", r.exchanges.len());
         r.failed = Some(m.clone());
         return Err(m);
@@ -832,12 +847,8 @@ fn replay_next(s: &mut State, request: &serde_json::Value) -> Result<(Outcome, i
         return Err(m);
     }
     r.next += 1;
-    let outcome = match &r.exchanges[n].1 {
-        Outcome::Line(v) => Outcome::Line(v.clone()),
-        Outcome::Malformed(raw, m) => Outcome::Malformed(raw.clone(), m.clone()),
-        Outcome::Transport(m) => Outcome::Transport(m.clone()),
-    };
-    Ok((outcome, r.latencies[n]))
+    let e = &r.exchanges[n];
+    Ok((e.outcome.clone(), e.latency_ms))
 }
 
 /// `WYS_LLM_RECORD` の場所（未設定なら記録しない）
@@ -878,6 +889,13 @@ fn record_prepare(s: &mut State) -> Result<(), String> {
         let mut f = opts
             .open(&path)
             .map_err(|e| format!("cannot write the recording {path}: {e}"))?;
+        // `mode` は作るときにしか効かないので、既にあったファイルも 0600 にする（Fable のレビュー）
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("cannot write the recording {path}: {e}"))?;
+        }
         let header = serde_json::json!({
             "kind": "header", "v": 1, "provider": provider_kind(),
             "model": std::env::var("WYS_LLM_MODEL").ok()
@@ -888,6 +906,7 @@ fn record_prepare(s: &mut State) -> Result<(), String> {
     match result {
         Ok(f) => {
             s.record.file = Some(f);
+            s.record.path = path;
             Ok(())
         }
         Err(m) => {
@@ -926,13 +945,10 @@ fn record_write(
     });
     match outcome {
         Outcome::Line(v) => line["reply"] = v.clone(),
-        Outcome::Malformed(raw, _) => line["reply"] = raw.as_str().into(),
-        Outcome::Transport(m) => {
-            line["reply"] = serde_json::Value::Null;
-            line["transport"] = m.as_str().into();
-        }
+        Outcome::Malformed(raw, _) => line["malformed"] = raw.as_str().into(),
+        Outcome::Transport(m) => line["transport"] = m.as_str().into(),
     }
-    let path = record_path().unwrap_or_default();
+    let path = s.record.path.clone();
     writeln!(f, "{line}").map_err(|e| {
         let m = format!("cannot write the recording {path}: {e}");
         s.record.failed = Some(m.clone());
@@ -974,8 +990,14 @@ fn provider_step_inner(s: &mut State, call: &Call) -> Result<Reply, *mut Header>
         if let Err(m) = record_write(s, &request, &outcome, waited) {
             return Err(fail(s, "provider", m));
         }
-        // 実際に待った時間は時計がすでに数えている
-        accept(s, outcome, 0)?
+        // 実時間のモードでは、実際に待った時間を時計がすでに数えている。仮想時計のモードでは数えないので、
+        // 待った時間を足す（記録の `latency_ms` を再生で足すのと対称にする。Fable のレビュー）
+        let counted = if crate::task::virtual_time_enabled() {
+            waited
+        } else {
+            0
+        };
+        accept(s, outcome, counted)?
     } else {
         let Some(reply) = s.mock.pop_front() else {
             return Err(fail(s, "mock_exhausted", "no mock response left".into()));
@@ -1770,6 +1792,45 @@ pub extern "C" fn wys_agent_exit() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_names_the_first_difference() {
+        let base = serde_json::json!({
+            "v": 1, "model": "m", "system": "s", "timeout_ms": 10, "max_tokens": 0, "schema": null,
+            "messages": [{"role": "user", "content": "a"}],
+            "tools": [{"name": "add", "description": "d", "input_schema": {}}]
+        });
+        // `v` と `timeout_ms` は指紋に入らない
+        let mut other = base.clone();
+        other["timeout_ms"] = 99.into();
+        other["v"] = 2.into();
+        assert_eq!(first_difference(&base, &other), None);
+        let mut other = base.clone();
+        other["messages"][0]["content"] = "b".into();
+        assert_eq!(
+            first_difference(&base, &other).as_deref(),
+            Some("messages[0].content")
+        );
+        let mut other = base.clone();
+        other["messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"role": "user", "content": "c"}));
+        assert_eq!(
+            first_difference(&base, &other).as_deref(),
+            Some("messages[1]")
+        );
+        let mut other = base.clone();
+        other["tools"][0]["name"] = "sub".into();
+        assert_eq!(
+            first_difference(&base, &other).as_deref(),
+            Some("tools[0].name")
+        );
+        let mut other = base.clone();
+        other["schema"] = serde_json::json!({"type": "object"});
+        other["model"] = "n".into();
+        assert_eq!(first_difference(&base, &other).as_deref(), Some("model"));
+    }
 
     #[test]
     fn replies_keep_input_and_output_tokens_apart() {
