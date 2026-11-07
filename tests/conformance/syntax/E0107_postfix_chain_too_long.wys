@@ -1,0 +1,5 @@
+# 後置（フィールド・添字・メソッド・`?`）の連なりも 1 段ずつ数える（左に深い構文木になる）
+# expect-error: E0107 4:134
+def main() -> None:
+    x = s.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a
+    print(x)

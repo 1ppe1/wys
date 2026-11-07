@@ -73,8 +73,13 @@ struct Parser<'t> {
 }
 
 /// 入れ子の深さの上限（ADR-0026 論点 14）。構文木の再帰（型検査・lowering も同じ深さで再帰する）でスタックが
-/// 溢れるとプロセスごと止まる（LSP のサーバーも）ので、パーサで止めて診断にする
-pub const MAX_NESTING: u32 = 100;
+/// 溢れるとプロセスごと止まる（LSP のサーバーも）ので、パーサで止めて診断にする。
+///
+/// 根拠（2026-11 の計測。上限を外した debug ビルドの `wys check` が溢れる深さ）: 最も重いのは呼び出しの入れ子
+/// `f(f(...))` で、8 MiB のメインスレッドで約 400 段、2 MiB のスレッド（Rust のテストのスレッド）で約 96 段
+/// （1 段あたりおよそ 20 KB。型検査の `expr` のフレーム）。64 段なら 2 MiB のスレッドでも余裕がある。既存のコード
+/// （examples と Conformance）の最大は 12 段。Release ビルドは 4 倍以上の余裕がある
+pub const MAX_NESTING: u32 = 64;
 
 impl Parser<'_> {
     // ---- token helpers ----
@@ -1095,6 +1100,14 @@ impl Parser<'_> {
 
     fn postfix_after(&mut self, mut e: Expr, allow_try: bool) -> PResult<Expr> {
         loop {
+            // 後置（フィールド・添字・メソッド・`?`）の連なりも左に深い構文木になるので、1 つにつき 1 段数える
+            // （`nested` を出るときに戻る。Fable のレビュー）
+            if matches!(
+                self.peek(),
+                TokenKind::Question | TokenKind::LBracket | TokenKind::Dot
+            ) {
+                self.deeper()?;
+            }
             if self.at(&TokenKind::Question) {
                 if !allow_try {
                     return Ok(e);
@@ -1309,6 +1322,8 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
 
+    use super::*;
+
     #[test]
     fn nesting_is_limited_before_the_stack_overflows() {
         let deep = |n: usize| {
@@ -1318,9 +1333,9 @@ mod tests {
                 ")".repeat(n)
             )
         };
-        // 関数の本体（1 段）と式（1 段）に、括弧 98 段で 100 段
-        assert!(parse_source(&deep(98)).1.is_empty());
-        let codes: Vec<String> = parse_source(&deep(99))
+        // 関数の本体（1 段）と式（1 段）に、括弧 62 段で 64 段
+        assert!(parse_source(&deep(62)).1.is_empty());
+        let codes: Vec<String> = parse_source(&deep(63))
             .1
             .iter()
             .map(|d| d.code.to_string())
@@ -1333,6 +1348,18 @@ mod tests {
             .map(|d| d.code.to_string())
             .collect();
         assert_eq!(codes, vec!["E0107"]);
+        for postfix in [".a", "[0]", "?", ".m()"] {
+            let src = format!(
+                "def main() -> None:\n    x = s{}\n",
+                postfix.repeat(200_000)
+            );
+            let codes: Vec<String> = parse_source(&src)
+                .1
+                .iter()
+                .map(|d| d.code.to_string())
+                .collect();
+            assert_eq!(codes, vec!["E0107"], "{postfix}");
+        }
         let chain = format!(
             "def main() -> None:\n    x = {}\n",
             vec!["1"; 200_000].join(" + ")
@@ -1344,8 +1371,6 @@ mod tests {
             .collect();
         assert_eq!(codes, vec!["E0107"]);
     }
-
-    use super::*;
 
     fn ok(src: &str) -> Module {
         let (m, d) = parse_source(src);
