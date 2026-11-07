@@ -823,8 +823,10 @@ pub struct FuncSig {
     pub params: Vec<Ty>,
     pub ret: Ty,
     pub span: Span,
-    /// `uses` 節で宣言した Effect（ADR-0014）。注釈がなければ `None`（検査しない）。
+    /// `uses` 節で宣言した Effect（ADR-0014）。注釈がなければ `None`（推論する。`inferred_effects`）。
     pub effects: Option<EffectSet>,
+    /// 注釈のない関数の推論した Effect（ADR-0024）。注釈があれば `None`。
+    pub inferred_effects: Option<EffectSet>,
     /// `async def`（ADR-0020）
     pub is_async: bool,
     /// `@tool(...)`（ADR-0022 論点 13）
@@ -998,11 +1000,198 @@ pub fn builtin_effects(name: &str) -> Option<EffectSet> {
 pub struct EffectSite {
     pub callee: String,
     pub span: Span,
-    /// 呼び出し先の Effect。注釈のない関数なら `None`。
+    /// 呼び出し先の Effect。注釈のない関数は推論した Effect（ADR-0024。本体の検査の間だけ `None`）。
     pub effects: Option<EffectSet>,
+    /// 呼び出し先が組み込み関数か、`uses` 節のある関数か。
+    pub annotated: bool,
 }
 
 use wys_ast::BUILTINS;
+
+/// 注釈のない関数の Effect を推論する（ADR-0024 論点 2・3）。すべての注釈のない関数を空集合から始め、
+/// 呼び出しの Effect の和を変化がなくなるまで取る（集合は単調に増えるだけなので、再帰があっても止まる）。
+/// その後、呼び出しの記録の注釈のない呼び出し先を、推論した Effect で埋める。
+fn infer_effects(cx: &mut Ctx, funcs: &mut [FuncInfo]) {
+    let n = funcs.len();
+    let mut inferred = vec![EffectSet::default(); n];
+    let site_effects = |site: &EffectSite, inferred: &[EffectSet], cx: &Ctx| match site.effects {
+        Some(e) => e,
+        None => cx
+            .sig_index
+            .get(&site.callee)
+            .and_then(|&j| inferred.get(j).copied())
+            .unwrap_or_default(),
+    };
+    loop {
+        let mut changed = false;
+        for i in 0..n {
+            if cx.sigs[i].effects.is_some() {
+                continue;
+            }
+            let s = funcs[i]
+                .effect_sites
+                .iter()
+                .fold(EffectSet::default(), |acc, site| {
+                    acc.union(site_effects(site, &inferred, cx))
+                });
+            if s != inferred[i] {
+                inferred[i] = s;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for (sig, &e) in cx.sigs.iter_mut().zip(&inferred) {
+        if sig.effects.is_none() {
+            sig.inferred_effects = Some(e);
+        }
+    }
+    for f in funcs.iter_mut() {
+        for site in &mut f.effect_sites {
+            if site.effects.is_none() {
+                site.effects = Some(site_effects(site, &inferred, cx));
+            }
+        }
+    }
+}
+
+/// 注釈のある関数 `f`（`index` 番目）の E1102（ADR-0024 論点 5）。呼び出しの位置の順で、すべての E1102 に同じ修正案
+/// （足りない Effect の和集合を `uses` 節に足す）を付ける。どれを適用しても結果が同じになり、1回で全部の E1102 が消える。
+/// `uses` 節に未知の名前（E1101）があれば出さない（E1102 を連鎖させない）。
+fn effect_diagnostics(cx: &Ctx, f: &FuncDef, index: usize, funcs: &[FuncInfo]) -> Vec<Diagnostic> {
+    let (Some(declared), Some(clause)) = (cx.sigs[index].effects, &f.effects) else {
+        return Vec::new();
+    };
+    if !clause
+        .names
+        .iter()
+        .all(|n| n.name == "pure" || Effect::parse(&n.name).is_some())
+    {
+        return Vec::new();
+    }
+    let declared_text = if declared.iter().is_empty() {
+        "pure".to_string()
+    } else {
+        declared.names().join(", ")
+    };
+    let mut out = Vec::new();
+    let mut all_missing = EffectSet::default();
+    for site in &funcs[index].effect_sites {
+        if site.callee == f.name.name {
+            continue;
+        }
+        let effects = site.effects.unwrap_or_default();
+        let missing = effects.missing_from(declared);
+        if missing.is_empty() {
+            continue;
+        }
+        for &e in &missing {
+            all_missing.insert(e);
+        }
+        let names: Vec<String> = missing.iter().map(|e| format!("`{}`", e.name())).collect();
+        let plural = if names.len() == 1 {
+            "effect"
+        } else {
+            "effects"
+        };
+        let callee = cx.sig_index.get(&site.callee).copied();
+        let mut d = if site.annotated {
+            Diagnostic::error(
+                "E1102",
+                format!(
+                    "`{}` calls `{}`, which has {plural} {}, but declares only `uses {declared_text}`",
+                    f.name.name,
+                    site.callee,
+                    names.join(", ")
+                ),
+                site.span,
+            )
+        } else {
+            // 由来を 1 段だけたどる: 足りない Effect ごとに、それを生む呼び出し先の中の最初の呼び出し
+            let origins: Vec<&EffectSite> = callee
+                .map(|j| {
+                    missing
+                        .iter()
+                        .filter_map(|&e| {
+                            funcs[j]
+                                .effect_sites
+                                .iter()
+                                .filter(|s| s.callee != site.callee)
+                                .find(|s| s.effects.unwrap_or_default().contains(e))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut via: Vec<String> = Vec::new();
+            for o in &origins {
+                let name = format!("`{}`", o.callee);
+                if !via.contains(&name) {
+                    via.push(name);
+                }
+            }
+            Diagnostic::error(
+                "E1102",
+                format!(
+                    "`{}` calls `{}`, which has inferred {plural} {}, but declares only `uses {declared_text}`",
+                    f.name.name,
+                    site.callee,
+                    names.join(", ")
+                ),
+                site.span,
+            )
+            .with_cause(format!(
+                "`{}` has no `uses` clause, so its effects are inferred from its calls ({})",
+                site.callee,
+                via.join(", ")
+            ))
+        };
+        if let Some(j) = callee {
+            d = d.with_related(RelatedKind::Function, &site.callee, Some(cx.sigs[j].span));
+        }
+        if !site.annotated
+            && let Some(j) = callee
+        {
+            let mut seen: Vec<Span> = Vec::new();
+            for &e in &missing {
+                // 呼び出し先の自己再帰は由来ではない（不動点は自己呼び出し以外から生まれる）
+                if let Some(o) = funcs[j]
+                    .effect_sites
+                    .iter()
+                    .filter(|s| s.callee != site.callee)
+                    .find(|s| s.effects.unwrap_or_default().contains(e))
+                    && !seen.contains(&o.span)
+                {
+                    seen.push(o.span);
+                    d = d.with_related(RelatedKind::Function, &o.callee, Some(o.span));
+                }
+            }
+        }
+        out.push(d);
+    }
+    if out.is_empty() {
+        return out;
+    }
+    let names = all_missing.names().join(", ");
+    let hint = match clause.names.iter().find(|n| n.name == "pure") {
+        Some(p) => Hint {
+            message: format!("declare `uses {names}`"),
+            replacement: Some((p.span, names.clone())),
+        },
+        None => Hint {
+            message: format!("add {names} to the `uses` clause"),
+            replacement: Some((
+                Span::new(clause.span.end, clause.span.end),
+                format!(", {names}"),
+            )),
+        },
+    };
+    for d in &mut out {
+        d.hints.push(hint.clone());
+    }
+    out
+}
 
 /// 一度も読まれないローカル変数（W0201、ADR-0016 論点 20）。代入先、`for` の変数、`case Ok(x)` の束縛が対象で、
 /// `_` で始まる名前と引数は除く。読まれたかどうかは関数の中の名前で判定する（スコープは区別しない）。
@@ -1220,6 +1409,7 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
             ret,
             span: f.name.span,
             effects,
+            inferred_effects: None,
             is_async: f.is_async,
             tool: None,
             agent: None,
@@ -1249,9 +1439,28 @@ pub fn check_program(module: &Module, require_main: bool) -> (TypeckResult, Vec<
         funcs.push(FnCk::run(&mut cx, f, i));
         ranges.push(start..cx.diags.len());
     }
-    // 未使用の変数（W0201）。エラーのある関数（署名のエラーを含む。範囲で判定する）では出さない
-    // （修正の途中の雑音になる。DX-005）。出すときは、その関数の警告と位置の順に並べる
-    for (f, range) in module.funcs.iter().zip(ranges).rev() {
+    infer_effects(&mut cx, &mut funcs);
+    // Effect の検査（E1102、ADR-0024 論点 3・5）と未使用の変数（W0201）。後ろの関数から、その関数の診断の範囲に差し込む。
+    // W0201 はエラーのある関数（署名のエラーを含む。範囲で判定する）では出さない（修正の途中の雑音になる。DX-005）。
+    // 出すときは、その関数の警告と位置の順に並べる
+    for (i, (f, range)) in module.funcs.iter().zip(ranges).enumerate().rev() {
+        let effect_errors = effect_diagnostics(&cx, f, i, &funcs);
+        let range = if effect_errors.is_empty() {
+            range
+        } else {
+            let k = effect_errors.len();
+            let mut merged: Vec<Diagnostic> = cx.diags.splice(range.clone(), []).collect();
+            // 既存の診断の順は変えず、位置の順に差し込む
+            for d in effect_errors {
+                let at = merged
+                    .iter()
+                    .position(|m| m.span.start > d.span.start)
+                    .unwrap_or(merged.len());
+                merged.insert(at, d);
+            }
+            cx.diags.splice(range.start..range.start, merged);
+            range.start..range.end + k
+        };
         let inside = |d: &Diagnostic| d.span.start >= f.span.start && d.span.end <= f.span.end;
         if cx.diags.iter().any(|d| d.is_error() && inside(d)) {
             continue;
@@ -2181,12 +2390,9 @@ struct FnCk<'a> {
     local_spans: Vec<Span>,
     /// 式ごとの絞り込み（ループで同じ式を検査し直したら上書きする）。
     narrowings: HashMap<ExprId, Narrowing>,
-    /// 検査している関数の名前と `uses` 節（ADR-0014）。
+    /// 検査している関数の名前（ADR-0014）。
     fn_name: String,
-    effects: Option<(EffectSet, EffectClause)>,
     effect_sites: Vec<EffectSite>,
-    /// E1102 の診断の位置（`cx.diags` の添字）と、関数全体で足りない Effect（修正案を1つにまとめるため）。
-    missing_effects: (Vec<usize>, EffectSet),
     /// フィールド参照の式ごとの、レコード定義上のフィールドの型（絞り込む前の型。ADR-0016）。
     field_decl: HashMap<ExprId, Ty>,
     /// 検査している関数が `async def` か、その名前の位置（E1301 の related。ADR-0020）
@@ -2207,14 +2413,7 @@ impl<'a> FnCk<'a> {
             local_spans: Vec::new(),
             narrowings: HashMap::new(),
             fn_name: f.name.name.clone(),
-            // 未知の名前（E1101）がある `uses` 節では本体を検査しない（E1102 を連鎖させない）
-            effects: sig.effects.zip(f.effects.clone()).filter(|(_, c)| {
-                c.names
-                    .iter()
-                    .all(|n| n.name == "pure" || Effect::parse(&n.name).is_some())
-            }),
             effect_sites: Vec::new(),
-            missing_effects: (Vec::new(), EffectSet::default()),
             field_decl: HashMap::new(),
             is_async: f.is_async,
             fn_span: f.name.span,
@@ -2258,7 +2457,6 @@ impl<'a> FnCk<'a> {
                 .with_hint("add a `return` at the end of the function"),
             );
         }
-        ck.attach_effect_fix();
         let mut narrowings: Vec<Narrowing> = ck.narrowings.into_values().collect();
         narrowings.sort_by_key(|n| (n.span.start, n.span.end));
         let mut effect_sites = ck.effect_sites;
@@ -4772,7 +4970,8 @@ impl<'a> FnCk<'a> {
         }
     }
 
-    /// 呼び出しの Effect を記録し、呼び出し元に `uses` があれば検査する（ADR-0014 論点 5）。
+    /// 呼び出しの Effect を記録する。注釈のない呼び出し先の Effect は、すべての本体を検査した後に推論し、
+    /// E1102 もそのときに出す（ADR-0024 論点 3）。
     fn check_effects(&mut self, callee: &Ident) {
         let effects = match builtin_effects(&callee.name) {
             Some(e) => Some(e),
@@ -4786,100 +4985,8 @@ impl<'a> FnCk<'a> {
             callee: callee.name.clone(),
             span: callee.span,
             effects,
+            annotated: effects.is_some(),
         });
-        let Some((declared, _)) = &self.effects else {
-            return;
-        };
-        if callee.name == self.fn_name {
-            return;
-        }
-        let callee_span = self
-            .cx
-            .sig_index
-            .get(&callee.name)
-            .map(|&i| self.cx.sigs[i].span);
-        let Some(effects) = effects else {
-            self.cx.diags.push(
-                Diagnostic::error(
-                    "E1103",
-                    format!(
-                        "`{}` declares its effects but calls `{}`, which does not",
-                        self.fn_name, callee.name
-                    ),
-                    callee.span,
-                )
-                .with_cause("only built-in functions and functions with a `uses` clause can be called from a function with a `uses` clause")
-                .with_hint(format!(
-                    "add `uses ...` to `{}` (or `uses pure` if it has no effects)",
-                    callee.name
-                ))
-                .with_related(RelatedKind::Function, &callee.name, callee_span),
-            );
-            return;
-        };
-        let missing = effects.missing_from(*declared);
-        if missing.is_empty() {
-            return;
-        }
-        let names: Vec<String> = missing.iter().map(|e| format!("`{}`", e.name())).collect();
-        let declared_text = if declared.iter().is_empty() {
-            "pure".to_string()
-        } else {
-            declared.names().join(", ")
-        };
-        let mut d = Diagnostic::error(
-            "E1102",
-            format!(
-                "`{}` calls `{}`, which has {} {}, but declares only `uses {declared_text}`",
-                self.fn_name,
-                callee.name,
-                if names.len() == 1 {
-                    "effect"
-                } else {
-                    "effects"
-                },
-                names.join(", ")
-            ),
-            callee.span,
-        );
-        if callee_span.is_some() {
-            d = d.with_related(RelatedKind::Function, &callee.name, callee_span);
-        }
-        // 修正案は関数の検査を終えてから、足りない Effect の和集合で付ける（attach_effect_fix）
-        self.missing_effects.0.push(self.cx.diags.len());
-        for e in missing {
-            self.missing_effects.1.insert(e);
-        }
-        self.cx.diags.push(d);
-    }
-
-    /// 関数の E1102 すべてに、同じ修正案（足りない Effect の和集合を `uses` 節に足す）を付ける。
-    /// どれを適用しても結果が同じになり、1回で全部の E1102 が消える。
-    fn attach_effect_fix(&mut self) {
-        let (indices, missing) = std::mem::take(&mut self.missing_effects);
-        let Some((_, clause)) = &self.effects else {
-            return;
-        };
-        if indices.is_empty() {
-            return;
-        }
-        let names = missing.names().join(", ");
-        let hint = match clause.names.iter().find(|n| n.name == "pure") {
-            Some(p) => Hint {
-                message: format!("declare `uses {names}`"),
-                replacement: Some((p.span, names.clone())),
-            },
-            None => Hint {
-                message: format!("add {names} to the `uses` clause"),
-                replacement: Some((
-                    Span::new(clause.span.end, clause.span.end),
-                    format!(", {names}"),
-                )),
-            },
-        };
-        for i in indices {
-            self.cx.diags[i].hints.push(hint.clone());
-        }
     }
 
     /// `async def` の関数（と `sleep_ms`）の呼び出しか（ADR-0020 論点 6）。
@@ -5566,9 +5673,57 @@ mod tests {
         assert_eq!(run(&with_main(panics)), Vec::<&str>::new());
         let both_missing = "def f() -> None uses pure:\n    print(1)\n    exit(1)\n";
         assert_eq!(run(&with_main(both_missing)), vec!["E1102", "E1102"]);
-        // 未知の名前があれば本体は検査しない（E1102 を連鎖させない）
+        // 未知の名前があれば E1102 を出さない（連鎖させない）
         let unknown = "def f() -> None uses foo:\n    print(1)\n";
         assert_eq!(run(&with_main(unknown)), vec!["E1101"]);
+    }
+
+    #[test]
+    fn inference_reaches_a_fixed_point_through_recursion() {
+        // 相互再帰と自己再帰、注釈のある関数を経由する呼び出し（宣言した集合を使う）
+        let src = "def a(n: int) -> None:\n    if n > 0:\n        b(n - 1)\n\ndef b(n: int) -> None:\n    c()\n    a(n)\n\ndef c() -> None uses exit:\n    exit(1)\n\ndef d(n: int) -> None:\n    if n > 0:\n        d(n - 1)\n\ndef main() -> None:\n    a(1)\n    d(1)\n";
+        let (m, _) = wys_parser::parse_source(src);
+        let (tc, diags) = check(&m);
+        assert!(diags.is_empty(), "{diags:?}");
+        let inferred = |i: usize| tc.sigs[i].inferred_effects.map(|e| e.names());
+        assert_eq!(inferred(0), Some(vec!["exit"]));
+        assert_eq!(inferred(1), Some(vec!["exit"]));
+        assert_eq!(inferred(2), None);
+        assert_eq!(inferred(3), Some(vec![]));
+        assert_eq!(inferred(4), Some(vec!["exit"]));
+    }
+
+    #[test]
+    fn inferred_e1102_points_at_the_origin() {
+        let src = with_main(
+            "def g() -> None:\n    print(1)\n    exit(2)\n\ndef f() -> None uses io:\n    g()\n",
+        );
+        let (m, _) = wys_parser::parse_source(&src);
+        let diags = check(&m).1;
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        let d = &diags[0];
+        assert_eq!(d.code, "E1102");
+        assert!(
+            d.message.contains("inferred effect `exit`"),
+            "{}",
+            d.message
+        );
+        let related: Vec<&str> = d.related.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(related, vec!["g", "exit"]);
+        assert_eq!(d.hints[0].replacement.as_ref().unwrap().1, ", exit");
+    }
+
+    #[test]
+    fn the_origin_skips_the_callee_calling_itself() {
+        let src = with_main(
+            "def show(x: int) -> None:\n    print(x)\n\ndef again(n: int) -> None:\n    if n > 0:\n        again(n - 1)\n    show(n)\n\ndef run() -> None uses pure:\n    again(1)\n",
+        );
+        let (m, _) = wys_parser::parse_source(&src);
+        let diags = check(&m).1;
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        let related: Vec<&str> = diags[0].related.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(related, vec!["again", "show"]);
+        assert!(diags[0].cause.as_deref().unwrap_or("").contains("`show`"));
     }
 
     #[test]
@@ -5601,12 +5756,20 @@ mod tests {
         assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(tc.sigs[0].effects.map(|e| e.names()), Some(vec!["io"]));
         assert_eq!(tc.sigs[2].effects, None);
-        let main: Vec<(&str, Option<Vec<&str>>)> = tc.funcs[1]
+        assert_eq!(tc.sigs[2].inferred_effects.map(|e| e.names()), Some(vec![]));
+        assert_eq!(
+            tc.sigs[1].inferred_effects.map(|e| e.names()),
+            Some(vec!["io"])
+        );
+        let main: Vec<(&str, Option<Vec<&str>>, bool)> = tc.funcs[1]
             .effect_sites
             .iter()
-            .map(|s| (s.callee.as_str(), s.effects.map(|e| e.names())))
+            .map(|s| (s.callee.as_str(), s.effects.map(|e| e.names()), s.annotated))
             .collect();
-        assert_eq!(main, vec![("f", Some(vec!["io"])), ("g", None)]);
+        assert_eq!(
+            main,
+            vec![("f", Some(vec!["io"]), true), ("g", Some(vec![]), false)]
+        );
     }
 
     #[test]

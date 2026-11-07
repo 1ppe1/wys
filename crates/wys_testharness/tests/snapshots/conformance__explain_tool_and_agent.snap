@@ -87,6 +87,7 @@ expression: json
       "effects": {
         "declared": [],
         "required": [],
+        "inferred": null,
         "sites": []
       },
       "tool": {
@@ -131,6 +132,7 @@ expression: json
           "llm"
         ],
         "required": [],
+        "inferred": null,
         "sites": [
           {
             "callee": "add",
@@ -205,6 +207,7 @@ expression: json
         "required": [
           "llm"
         ],
+        "inferred": null,
         "sites": [
           {
             "callee": "planner",

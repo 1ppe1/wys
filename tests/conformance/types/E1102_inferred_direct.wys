@@ -1,0 +1,11 @@
+# 注釈のない関数の Effect を推論し、注釈のある呼び出し元の宣言と突き合わせる（ADR-0024 論点 5）
+# expect-error: E1102 8:12
+def helper(x: int) -> int:
+    print(x)
+    return x + 1
+
+def f(x: int) -> int uses pure:
+    return helper(x)
+
+def main() -> None:
+    print(f(1))

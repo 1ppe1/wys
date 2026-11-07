@@ -1,0 +1,339 @@
+---
+source: crates/wys_testharness/tests/conformance.rs
+expression: json
+---
+{
+  "schema_version": "0",
+  "kind": "file",
+  "file": "tests/conformance/explain/effects_inferred.wys",
+  "functions": [
+    {
+      "name": "show",
+      "async": false,
+      "span": {
+        "file": "tests/conformance/explain/effects_inferred.wys",
+        "start": {
+          "line": 4,
+          "column": 5,
+          "byte": 217
+        },
+        "end": {
+          "line": 4,
+          "column": 9,
+          "byte": 221
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [
+          {
+            "name": "x",
+            "type": "int"
+          }
+        ],
+        "return": "None"
+      },
+      "locals": [
+        {
+          "name": "x",
+          "type": "int",
+          "kind": "param",
+          "span": {
+            "file": "tests/conformance/explain/effects_inferred.wys",
+            "start": {
+              "line": 4,
+              "column": 10,
+              "byte": 222
+            },
+            "end": {
+              "line": 4,
+              "column": 11,
+              "byte": 223
+            }
+          }
+        }
+      ],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "show",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ],
+      "effects": {
+        "declared": null,
+        "required": [
+          "io"
+        ],
+        "inferred": [
+          "io"
+        ],
+        "sites": [
+          {
+            "callee": "print",
+            "span": {
+              "file": "tests/conformance/explain/effects_inferred.wys",
+              "start": {
+                "line": 5,
+                "column": 5,
+                "byte": 243
+              },
+              "end": {
+                "line": 5,
+                "column": 10,
+                "byte": 248
+              }
+            },
+            "effects": [
+              "io"
+            ],
+            "annotated": true
+          }
+        ]
+      },
+      "tool": null,
+      "agent": null
+    },
+    {
+      "name": "again",
+      "async": false,
+      "span": {
+        "file": "tests/conformance/explain/effects_inferred.wys",
+        "start": {
+          "line": 7,
+          "column": 5,
+          "byte": 257
+        },
+        "end": {
+          "line": 7,
+          "column": 10,
+          "byte": 262
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [
+          {
+            "name": "n",
+            "type": "int"
+          }
+        ],
+        "return": "None"
+      },
+      "locals": [
+        {
+          "name": "n",
+          "type": "int",
+          "kind": "param",
+          "span": {
+            "file": "tests/conformance/explain/effects_inferred.wys",
+            "start": {
+              "line": 7,
+              "column": 11,
+              "byte": 263
+            },
+            "end": {
+              "line": 7,
+              "column": 12,
+              "byte": 264
+            }
+          }
+        }
+      ],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "again",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ],
+      "effects": {
+        "declared": null,
+        "required": [
+          "io"
+        ],
+        "inferred": [
+          "io"
+        ],
+        "sites": [
+          {
+            "callee": "again",
+            "span": {
+              "file": "tests/conformance/explain/effects_inferred.wys",
+              "start": {
+                "line": 9,
+                "column": 9,
+                "byte": 302
+              },
+              "end": {
+                "line": 9,
+                "column": 14,
+                "byte": 307
+              }
+            },
+            "effects": [
+              "io"
+            ],
+            "annotated": false
+          },
+          {
+            "callee": "show",
+            "span": {
+              "file": "tests/conformance/explain/effects_inferred.wys",
+              "start": {
+                "line": 10,
+                "column": 5,
+                "byte": 319
+              },
+              "end": {
+                "line": 10,
+                "column": 9,
+                "byte": 323
+              }
+            },
+            "effects": [
+              "io"
+            ],
+            "annotated": false
+          }
+        ]
+      },
+      "tool": null,
+      "agent": null
+    },
+    {
+      "name": "run",
+      "async": false,
+      "span": {
+        "file": "tests/conformance/explain/effects_inferred.wys",
+        "start": {
+          "line": 12,
+          "column": 5,
+          "byte": 332
+        },
+        "end": {
+          "line": 12,
+          "column": 8,
+          "byte": 335
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [],
+        "return": "None"
+      },
+      "locals": [],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "run",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ],
+      "effects": {
+        "declared": [
+          "io"
+        ],
+        "required": [
+          "io"
+        ],
+        "inferred": null,
+        "sites": [
+          {
+            "callee": "again",
+            "span": {
+              "file": "tests/conformance/explain/effects_inferred.wys",
+              "start": {
+                "line": 13,
+                "column": 5,
+                "byte": 359
+              },
+              "end": {
+                "line": 13,
+                "column": 10,
+                "byte": 364
+              }
+            },
+            "effects": [
+              "io"
+            ],
+            "annotated": false
+          }
+        ]
+      },
+      "tool": null,
+      "agent": null
+    },
+    {
+      "name": "main",
+      "async": false,
+      "span": {
+        "file": "tests/conformance/explain/effects_inferred.wys",
+        "start": {
+          "line": 15,
+          "column": 5,
+          "byte": 373
+        },
+        "end": {
+          "line": 15,
+          "column": 9,
+          "byte": 377
+        }
+      },
+      "signature": {
+        "type_params": [],
+        "params": [],
+        "return": "None"
+      },
+      "locals": [],
+      "narrowing": [],
+      "arc": [
+        {
+          "instance": "main",
+          "retains": 0,
+          "releases": 0,
+          "ops": []
+        }
+      ],
+      "effects": {
+        "declared": null,
+        "required": [
+          "io"
+        ],
+        "inferred": [
+          "io"
+        ],
+        "sites": [
+          {
+            "callee": "run",
+            "span": {
+              "file": "tests/conformance/explain/effects_inferred.wys",
+              "start": {
+                "line": 16,
+                "column": 5,
+                "byte": 393
+              },
+              "end": {
+                "line": 16,
+                "column": 8,
+                "byte": 396
+              }
+            },
+            "effects": [
+              "io"
+            ],
+            "annotated": true
+          }
+        ]
+      },
+      "tool": null,
+      "agent": null
+    }
+  ]
+}

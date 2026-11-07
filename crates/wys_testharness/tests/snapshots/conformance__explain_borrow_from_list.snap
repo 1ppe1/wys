@@ -96,6 +96,7 @@ expression: json
       "effects": {
         "declared": null,
         "required": [],
+        "inferred": [],
         "sites": []
       },
       "tool": null,
@@ -199,6 +200,9 @@ expression: json
       "effects": {
         "declared": null,
         "required": [
+          "io"
+        ],
+        "inferred": [
           "io"
         ],
         "sites": [

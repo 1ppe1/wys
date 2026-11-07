@@ -1,0 +1,24 @@
+# 注釈のある関数から注釈のない関数を呼べる（推論した Effect が宣言に収まる。E1103 は廃止。ADR-0024 論点 6）
+# expect-stdout: 2
+# expect-stdout: 3
+def helper(x: int) -> int:
+    return x + 1
+
+def show(x: int) -> None:
+    print(x)
+
+def count(n: int) -> int:
+    if n == 0:
+        return 0
+    return 1 + count(n - 1)
+
+def f(x: int) -> int uses io:
+    show(helper(x))
+    return helper(helper(x))
+
+def g[T](x: T) -> T:
+    return x
+
+def main() -> None uses io:
+    y = f(1)
+    print(g(count(y)))

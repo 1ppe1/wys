@@ -558,6 +558,7 @@ fn tool_trampoline(
         elided_rc: Vec::new(),
         is_async: sig.is_async,
         effects: None,
+        effects_inferred: false,
         tool: None,
         agent: None,
     };
@@ -633,6 +634,7 @@ fn test_dispatcher(tests: &[FuncId], is_async: bool) -> Function {
         blocks,
         elided_rc: Vec::new(),
         effects: None,
+        effects_inferred: false,
         tool: None,
         agent: None,
         is_async,
@@ -763,7 +765,8 @@ impl<'s, 't> FnLower<'s, 't> {
             blocks,
             elided_rc: Vec::new(),
             is_async: sig.is_async,
-            effects: sig.effects.map(|es| {
+            effects_inferred: sig.effects.is_none() && sig.inferred_effects.is_some(),
+            effects: sig.effects.or(sig.inferred_effects).map(|es| {
                 es.iter()
                     .into_iter()
                     .map(|e| match e {
@@ -3424,7 +3427,7 @@ mod tests {
         let p = lower_src("def main() -> None:\n    x = 1 + 2\n    print(x)\n");
         assert_eq!(
             p.to_string(),
-            "entry f0\n\nfn f0 main() {\n  local l0: int\nbb0:\n  t0 = const 1\n  t1 = const 2\n  t2 = add t0, t1\n  store l0, t2\n  t3 = load l0\n  call @print_int(t3)\n  return\n}\n"
+            "entry f0\n\nfn f0 main() uses(inferred) io {\n  local l0: int\nbb0:\n  t0 = const 1\n  t1 = const 2\n  t2 = add t0, t1\n  store l0, t2\n  t3 = load l0\n  call @print_int(t3)\n  return\n}\n"
         );
     }
 }

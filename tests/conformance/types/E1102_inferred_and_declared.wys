@@ -1,0 +1,15 @@
+# 注釈のある呼び出し先と、ない呼び出し先の E1102 が位置の順に並ぶ（修正案は 1 つにまとめる。ADR-0024 論点 3・5）
+# expect-error: E1102 11:5
+# expect-error: E1102 12:5
+def shout(s: str) -> None uses io:
+    print(s)
+
+def stop() -> None:
+    exit(1)
+
+def run() -> None uses pure:
+    shout("a")
+    stop()
+
+def main() -> None:
+    run()
