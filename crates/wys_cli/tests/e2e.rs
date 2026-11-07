@@ -2230,6 +2230,15 @@ fn eval_replays_cases_and_reports_the_success_rate() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // 壊れた記録はテストの失敗ではなく 2（Codex のレビュー）
+    let good = std::fs::read_to_string(case.join("recordings/test_bye.jsonl")).unwrap();
+    for broken in ["", "not json\n", "{\"kind\":\"header\",\"v\":2}\n"] {
+        std::fs::write(case.join("recordings/test_bye.jsonl"), broken).unwrap();
+        let out = cli(&["eval", case_s]);
+        assert_eq!(out.status.code(), Some(2), "{broken:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("cannot read the recording"));
+    }
+    std::fs::write(case.join("recordings/test_bye.jsonl"), good).unwrap();
     // テストのないケースは 0 件で、成功率は null
     let empty = root.join("empty");
     std::fs::create_dir_all(&empty).unwrap();

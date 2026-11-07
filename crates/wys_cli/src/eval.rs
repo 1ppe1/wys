@@ -145,6 +145,21 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     })
 }
 
+/// 記録の先頭のヘッダ（`{"kind":"header","v":1,...}`）。読めない・形が違えば失敗
+fn read_header(rec: &Path) -> Result<serde_json::Value, String> {
+    let bad = |why: String| format!("cannot read the recording {}: {why}", rec.display());
+    let text = std::fs::read_to_string(rec).map_err(|e| bad(e.to_string()))?;
+    let first = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .ok_or_else(|| bad("the file is empty".into()))?;
+    let header: serde_json::Value = serde_json::from_str(first).map_err(|e| bad(e.to_string()))?;
+    if header["kind"] != "header" || header["v"] != 1 {
+        return Err(bad("the first line is not a version 1 header".into()));
+    }
+    Ok(header)
+}
+
 fn run_case(dir: &Path, record: bool) -> Result<CaseResult, String> {
     let name = dir
         .file_name()
@@ -176,12 +191,10 @@ fn run_case(dir: &Path, record: bool) -> Result<CaseResult, String> {
         std::fs::create_dir_all(&recordings)
             .map_err(|e| format!("cannot create {}: {e}", recordings.display()))?;
     } else {
-        // リンクの前に、すべての記録があるかを確かめる
+        // リンクの前に、すべての記録が読めて、先頭が版 1 のヘッダかを確かめる（読めない記録はテストの失敗ではなく 2。Codex のレビュー）
         for test in &tests {
             let rec = recordings.join(format!("{test}.jsonl"));
-            if let Err(e) = std::fs::metadata(&rec) {
-                return Err(format!("cannot read the recording {}: {e}", rec.display()));
-            }
+            read_header(&rec)?;
         }
     }
     // テストのない記録（消したテストの記録）を知らせる
@@ -227,13 +240,7 @@ fn run_case(dir: &Path, record: bool) -> Result<CaseResult, String> {
         if record {
             cmd.env("WYS_LLM_RECORD", &rec);
         } else {
-            let header = std::fs::read_to_string(&rec)
-                .map_err(|e| format!("cannot read the recording {}: {e}", rec.display()))?;
-            let header: serde_json::Value = header
-                .lines()
-                .next()
-                .and_then(|l| serde_json::from_str(l).ok())
-                .unwrap_or_default();
+            let header = read_header(&rec)?;
             cmd.env("WYS_LLM_PROVIDER", format!("replay:{}", rec.display()));
             // 記録したときのモデル（要求の `model` に入り、指紋を変える。ADR-0025 論点 11）
             if let Some(m) = header["model"].as_str() {
