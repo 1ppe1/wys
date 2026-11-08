@@ -92,7 +92,9 @@ CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は 
 | AC-006（AI 出力が宣言スキーマと不一致になると Runtime 検証で失敗として処理される） | **検査済み（M5 T6・T8・T11）**。`ai/llm_schema_mismatch`、`lang/validate_*`、e2e の `llm_output_is_validated_against_the_declared_type`・`provider_failures_are_err_provider`。M5 の出口で合格（`docs/plans/m5.md`） |
 | AC-007（未許可ツールの呼び出しは Runtime で実行前に拒否され、監査イベントが残る） | **検査済み（M5 T9）**。`ai/agent_unlisted_tool`・`agent_capability_denied`・`llm_errors`・`agent_nested_rejection_does_not_leak`、`python/py_capability_denied_in_agent`、e2e の `tools_run_after_the_runtime_checks_them`。M5 の出口で合格 |
 | AC-008（予算・回数・時間の制限を超えると実行停止または失敗になる） | **検査済み（M5 T10）**。`ai/budget_*`・`agent_budget_and_timeout`・`timeout_counts_task_sleep`、e2e の `agent_timeout_uses_the_real_clock_without_virtual_time`・`malformed_provider_replies_count_against_the_call_budget`。M5 の出口で合格 |
-| AC-009（モック / 再生でテストできる） | M6（モックは M5 にある。記録済み応答の再生と評価ケースは M6） |
+| AC-009（AI モデルの応答をモックしてテストする: 外部モデル呼び出しなしで同じテスト入力を再実行できる） | **検査済み（M5 T8・M6 T6〜T7）**。モック（`ai/llm_*` / `agent_*`）、記録と再生（`ai/replay_*`、e2e の `record_then_replay_reproduces_the_run`）、評価ケースの再生（`tests/evals/` を CI で）。M6 の出口で合格（`docs/plans/m6.md`） |
+| AI-007〜AI-009（トレース、記録と再生と評価ケース、Effect と Runtime の連携） | **検査済み（M6）**。根拠の対応は `docs/plans/m6.md` の出口判定の表と、上の M6 の行 |
+| DX-003 の初期版（LSP） | **検査済み（M6 T9〜T11）**。診断・ホバー・定義ジャンプ・quickfix・整形（上の LSP の行）。補完は公開準備。エディタでの確認はユーザー（`docs/poc/poc6-results.md` の基準 2） |
 | AI-001〜AI-006（型付き LLM API、スキーマ検証、ツールの宣言、Capability、承認、予算） | **検査済み（M5）**。根拠の対応は `docs/plans/m5.md` の出口判定の表。上の M5 T5〜T11 の行と、e2e の `agent_demo_runs_with_the_mock_provider`（`examples/agent_demo.wys`: 型付きの出力、ツール、承認の deny / allow、監査、AC-004 の依存の検査）。費用の上限（AI-006 の一部）は M6 |
 | `validate` の処理時間 | `benches/programs/validate_json.wys`（約 1 MB の JSON の `parse_json` + `validate[list[Row]]`。絶対値だけ。値は `docs/poc/poc4-results.md`） |
 
