@@ -1363,6 +1363,7 @@ dependencies = [
  "serde_json",
  "wys_ast",
  "wys_driver",
+ "wys_fmt",
  "wys_span",
  "wys_typeck",
 ]

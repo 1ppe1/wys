@@ -107,15 +107,51 @@ pub fn analyze(
         } else {
             DiagnosticSeverity::WARNING
         };
+        let range_of = |span: wys_span::Span| Range {
+            start: lsp_position(&fe.file, span.start, enc),
+            end: lsp_position(&fe.file, span.end, enc),
+        };
+        // 診断 JSON の `related`（位置のあるものだけ。ADR-0026 論点 7）
+        let related: Vec<lsp_types::DiagnosticRelatedInformation> = d
+            .related
+            .iter()
+            .filter_map(|r| {
+                let span = r.span?;
+                let uri: Uri = path_to_uri(Path::new(fe.file.file_name(span.start)))
+                    .parse()
+                    .ok()?;
+                Some(lsp_types::DiagnosticRelatedInformation {
+                    location: lsp_types::Location {
+                        uri,
+                        range: range_of(span),
+                    },
+                    message: r.name.clone(),
+                })
+            })
+            .collect();
+        // quickfix: `replacement` のある修正案を `data` に入れる。`codeAction` はクライアントが送り返す
+        // `data` から編集を作る（ADR-0026 論点 12）。編集先は `replacement` の位置のファイル
+        let fixes: Vec<serde_json::Value> = d
+            .hints
+            .iter()
+            .filter_map(|h| {
+                let (span, text) = h.replacement.as_ref()?;
+                Some(serde_json::json!({
+                    "title": h.message,
+                    "path": fe.file.file_name(span.start),
+                    "range": range_of(*span),
+                    "text": text,
+                }))
+            })
+            .collect();
         out.entry(file).or_default().push(Diagnostic {
-            range: Range {
-                start: lsp_position(&fe.file, d.span.start, enc),
-                end: lsp_position(&fe.file, d.span.end, enc),
-            },
+            range: range_of(d.span),
             severity: Some(severity),
             code: Some(NumberOrString::String(d.code.to_string())),
             source: Some("wys".into()),
             message: d.message.clone(),
+            related_information: (!related.is_empty()).then_some(related),
+            data: (!fixes.is_empty()).then(|| serde_json::json!({ "fixes": fixes })),
             ..Diagnostic::default()
         });
     }
@@ -215,6 +251,13 @@ pub fn serve(conn: &Connection) -> Result<bool, String> {
         }),
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
+        code_action_provider: Some(lsp_types::CodeActionProviderCapability::Options(
+            lsp_types::CodeActionOptions {
+                code_action_kinds: Some(vec![lsp_types::CodeActionKind::QUICKFIX]),
+                ..lsp_types::CodeActionOptions::default()
+            },
+        )),
+        document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         ..ServerCapabilities::default()
     };
@@ -333,12 +376,94 @@ impl Server {
                     });
                 lsp_server::Response::new_ok(req.id, result.unwrap_or(serde_json::Value::Null))
             }
+            "textDocument/codeAction" => {
+                let p: lsp_types::CodeActionParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => return invalid(e),
+                };
+                lsp_server::Response::new_ok(req.id, self.code_actions(&p.context.diagnostics))
+            }
+            "textDocument/formatting" => {
+                let p: lsp_types::DocumentFormattingParams =
+                    match serde_json::from_value(req.params) {
+                        Ok(p) => p,
+                        Err(e) => return invalid(e),
+                    };
+                let result = self
+                    .docs
+                    .get(p.text_document.uri.as_str())
+                    .map_or(serde_json::Value::Null, |(_, text)| self.format(text));
+                lsp_server::Response::new_ok(req.id, result)
+            }
             _ => lsp_server::Response::new_err(
                 req.id,
                 lsp_server::ErrorCode::MethodNotFound as i32,
                 format!("`{}` is not supported", req.method),
             ),
         }
+    }
+
+    /// 診断の `data` の修正案を quickfix の code action にする（修正案ごとに 1 つ）
+    fn code_actions(&self, diagnostics: &[Diagnostic]) -> serde_json::Value {
+        let mut actions = Vec::new();
+        for d in diagnostics {
+            let Some(fixes) = d.data.as_ref().and_then(|v| v["fixes"].as_array()) else {
+                continue;
+            };
+            for f in fixes {
+                let (Some(title), Some(path), Some(text)) =
+                    (f["title"].as_str(), f["path"].as_str(), f["text"].as_str())
+                else {
+                    continue;
+                };
+                let path = PathBuf::from(path);
+                let uri = self
+                    .docs
+                    .iter()
+                    .find(|(_, (p, _))| *p == path)
+                    .map(|(u, _)| u.clone())
+                    .unwrap_or_else(|| path_to_uri(&path));
+                actions.push(serde_json::json!({
+                    "title": title,
+                    "kind": "quickfix",
+                    "diagnostics": [d],
+                    "edit": {"changes": {uri: [{"range": f["range"], "newText": text}]}},
+                }));
+            }
+        }
+        serde_json::Value::Array(actions)
+    }
+
+    /// 全文を整形する（`wys fmt` と同じ。ADR-0026 論点 13）。字句エラーなら `null`、変わらなければ空の配列
+    fn format(&self, text: &str) -> serde_json::Value {
+        let Ok(formatted) = wys_fmt::format_source(text) else {
+            return serde_json::Value::Null;
+        };
+        if formatted == text {
+            return serde_json::json!([]);
+        }
+        // 全文の置き換え: 終わりは最後の行の後（行の数、0 文字目）
+        let lines = text.split_inclusive('\n').count() as u32;
+        let end = if text.ends_with('\n') || text.is_empty() {
+            Position {
+                line: lines,
+                character: 0,
+            }
+        } else {
+            let last = text.rsplit('\n').next().unwrap_or("");
+            let character = match self.enc {
+                Encoding::Utf8 => last.len(),
+                Encoding::Utf16 => last.encode_utf16().count(),
+            } as u32;
+            Position {
+                line: lines.saturating_sub(1),
+                character,
+            }
+        };
+        serde_json::json!([{
+            "range": Range { start: Position { line: 0, character: 0 }, end },
+            "newText": formatted,
+        }])
     }
 
     /// 開いている文書 `uri` の解析の結果と、位置のバイト位置（エントリのファイルは基準位置 0）
@@ -804,6 +929,68 @@ mod tests {
                 .send(req(10, "textDocument/completion", 0, 0))
                 .unwrap();
             assert!(response(c).error.is_some());
+        });
+    }
+
+    #[test]
+    fn quickfixes_and_formatting_answer_requests() {
+        with_server(|c| {
+            let uri = "file:///tmp/wys-lsp-fix/main.wys";
+            let text = "def say(x: int) -> None uses io:\n    print(x)\n\ndef log(x: int) -> None uses pure:\n    say(x)\n\ndef main() -> None:\n  log( 1 )\n";
+            note(
+                c,
+                "textDocument/didOpen",
+                serde_json::json!({"textDocument": {"uri": uri, "languageId": "wys", "version": 1, "text": text}}),
+            );
+            // 診断を受け取り、そのまま codeAction に送り返す（data に修正案が入っている）
+            let diag = loop {
+                let Message::Notification(n) = c.receiver.recv().unwrap() else {
+                    continue;
+                };
+                if n.method == "textDocument/publishDiagnostics" {
+                    break n.params["diagnostics"][0].clone();
+                }
+            };
+            assert_eq!(diag["code"], "E1102");
+            assert_eq!(diag["relatedInformation"][0]["message"], "say");
+            let response = |c: &Connection| loop {
+                if let Message::Response(r) = c.receiver.recv().unwrap() {
+                    return r;
+                }
+            };
+            c.sender
+                .send(Message::Request(lsp_server::Request::new(
+                    3.into(),
+                    "textDocument/codeAction".into(),
+                    serde_json::json!({"textDocument": {"uri": uri}, "range": diag["range"], "context": {"diagnostics": [diag]}}),
+                )))
+                .unwrap();
+            let actions = response(c).result.unwrap();
+            let action = &actions[0];
+            assert_eq!(action["kind"], "quickfix");
+            let edit = &action["edit"]["changes"][uri][0];
+            assert_eq!(edit["newText"], "io");
+            assert_eq!(
+                edit["range"]["start"],
+                serde_json::json!({"line": 3, "character": 29})
+            );
+            // 整形は全文の置き換え
+            c.sender
+                .send(Message::Request(lsp_server::Request::new(
+                    4.into(),
+                    "textDocument/formatting".into(),
+                    serde_json::json!({"textDocument": {"uri": uri}, "options": {"tabSize": 4, "insertSpaces": true}}),
+                )))
+                .unwrap();
+            let edits = response(c).result.unwrap();
+            assert_eq!(
+                edits[0]["newText"],
+                "def say(x: int) -> None uses io:\n    print(x)\n\ndef log(x: int) -> None uses pure:\n    say(x)\n\ndef main() -> None:\n    log(1)\n"
+            );
+            assert_eq!(
+                edits[0]["range"]["end"],
+                serde_json::json!({"line": 8, "character": 0})
+            );
         });
     }
 

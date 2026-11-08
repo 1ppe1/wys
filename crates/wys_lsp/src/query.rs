@@ -475,12 +475,20 @@ fn local_def(info: &FuncInfo, name: &str, at: u32) -> Option<Span> {
         .map(|(_, s)| s)
 }
 
-/// モジュール `a.b` のファイルの先頭（エントリと同じディレクトリの `a/b.wys`）
+/// モジュール `a.b` のファイルの先頭（ローダーと同じく、エントリのファイルのディレクトリの `a/b.wys`。末尾の一致で
+/// 探すと `pkg/lib.wys` と `lib.wys` を取り違える。Codex のレビュー）
 fn module_start(fe: &Frontend, module: &str) -> Option<Span> {
-    let suffix = format!("/{}.wys", module.replace('.', "/"));
-    let base = fe
-        .file
-        .base_of_file(|name| name.ends_with(&suffix) || name == &suffix[1..])?;
+    let root = std::path::Path::new(&fe.file.entry().name)
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let mut want = root;
+    for part in module.split('.') {
+        want.push(part);
+    }
+    want.set_extension("wys");
+    let want = want.display().to_string();
+    let base = fe.file.base_of_file(|name| name == want)?;
     Some(Span::new(base, base))
 }
 
