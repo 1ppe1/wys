@@ -1,0 +1,9 @@
+# import の定義ジャンプは、モジュールのパス全体でファイルを探す（`pkg.lib` と `lib` を取り違えない。Codex のレビュー）
+# expect-definition: 5:8 -> pkg/lib.wys:1:1
+# expect-definition: 6:8 -> lib.wys:1:1
+# expect-definition: 9:21 -> pkg/lib.wys:1:9
+import pkg.lib
+import lib
+
+def main() -> None uses io:
+    print(lib.f() + pkg.lib.g())
