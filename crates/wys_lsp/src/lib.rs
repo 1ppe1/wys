@@ -7,6 +7,8 @@
 //!
 //! transport を含まない純粋な部分（`diagnostics`、位置の変換）は単体テストで、JSON-RPC の全体は e2e で確かめる。
 
+pub mod query;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -50,15 +52,52 @@ pub fn diagnostics(
     overlay: &HashMap<PathBuf, String>,
     enc: Encoding,
 ) -> HashMap<PathBuf, Vec<Diagnostic>> {
+    analyze(path, text, overlay, enc).0
+}
+
+/// LSP の位置（交渉した符号化）を、文書の中のバイト位置にする。行末を超える `character` は行末に、文字の途中は
+/// 文字の先頭に丸める（ADR-0026 論点 8）
+pub fn byte_at(text: &str, pos: Position, enc: Encoding) -> u32 {
+    let mut start = 0usize;
+    for (i, line) in text.split_inclusive('\n').enumerate() {
+        if i as u32 == pos.line {
+            let body = line.trim_end_matches(['\n', '\r']);
+            let mut used = 0u32;
+            let mut off = 0usize;
+            for ch in body.chars() {
+                let w = match enc {
+                    Encoding::Utf8 => ch.len_utf8() as u32,
+                    Encoding::Utf16 => ch.len_utf16() as u32,
+                };
+                if used + w > pos.character {
+                    break;
+                }
+                used += w;
+                off += ch.len_utf8();
+            }
+            return (start + off) as u32;
+        }
+        start += line.len();
+    }
+    text.len() as u32
+}
+
+/// エントリのファイル `path` を解析し、診断（ファイルごと）と、ホバー・定義のための解析の結果を返す
+pub fn analyze(
+    path: &Path,
+    text: &str,
+    overlay: &HashMap<PathBuf, String>,
+    enc: Encoding,
+) -> (HashMap<PathBuf, Vec<Diagnostic>>, wys_driver::Frontend) {
     let read = |p: &Path| {
         overlay
             .get(p)
             .cloned()
             .or_else(|| std::fs::read_to_string(p).ok())
     };
-    // エディタで開くファイルの多くは `main` のないモジュールなので、`main` を求めない（`wys test` と同じ入口。
-    // `main` があれば検査する）
-    let (fe, _) = wys_driver::frontend_tests_with(&path.display().to_string(), text, &read);
+    // エディタで開くファイルの多くは `main` のないモジュールなので、`main` を求めない（`main` があれば検査する）。
+    // 型のエラーがあっても、ホバーと定義のために型検査まで進めた結果を残す（ADR-0026 論点 6・9）
+    let fe = wys_driver::frontend_for_editor(&path.display().to_string(), text, &read);
     let mut out: HashMap<PathBuf, Vec<Diagnostic>> = HashMap::new();
     out.insert(path.to_path_buf(), Vec::new());
     for d in &fe.diagnostics {
@@ -80,7 +119,7 @@ pub fn diagnostics(
             ..Diagnostic::default()
         });
     }
-    out
+    (out, fe)
 }
 
 /// `file://` の URI のパス（host は空か `localhost` だけ。クエリとフラグメントは落とす）。ほかの URI は `None`。
@@ -175,6 +214,8 @@ pub fn serve(conn: &Connection) -> Result<bool, String> {
             Encoding::Utf16 => PositionEncodingKind::UTF16,
         }),
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
+        definition_provider: Some(lsp_types::OneOf::Left(true)),
         ..ServerCapabilities::default()
     };
     let result = serde_json::json!({
@@ -188,6 +229,7 @@ pub fn serve(conn: &Connection) -> Result<bool, String> {
     let mut server = Server {
         docs: HashMap::new(),
         published: HashMap::new(),
+        analyses: HashMap::new(),
         enc,
     };
     for msg in &conn.receiver {
@@ -198,12 +240,7 @@ pub fn serve(conn: &Connection) -> Result<bool, String> {
                     Ok(false) => {}
                     Err(e) => return Err(e.to_string()),
                 }
-                // PoC6 では診断だけ。ほかの要求には「未対応」で答える
-                let resp = lsp_server::Response::new_err(
-                    req.id,
-                    lsp_server::ErrorCode::MethodNotFound as i32,
-                    format!("`{}` is not supported yet", req.method),
-                );
+                let resp = server.request(req);
                 send(conn, Message::Response(resp))?;
             }
             Message::Notification(n) if n.method == "exit" => return Ok(false),
@@ -232,10 +269,85 @@ struct Server {
     docs: HashMap<String, (PathBuf, String)>,
     /// いま診断を配っている URI と、その診断（変わった URI だけ配り直し、消えた URI は空で配る）
     published: HashMap<String, Vec<Diagnostic>>,
+    /// 開いている文書ごとの、その文書をエントリにした最後の解析の結果（ホバーと定義が使う。ADR-0026 論点 14）
+    analyses: HashMap<String, wys_driver::Frontend>,
     enc: Encoding,
 }
 
 impl Server {
+    /// 要求に答える（ホバー・定義。ほかは `MethodNotFound`。壊れた引数は `InvalidParams`）
+    fn request(&self, req: lsp_server::Request) -> lsp_server::Response {
+        let id = req.id.clone();
+        let invalid = |e: serde_json::Error| {
+            lsp_server::Response::new_err(
+                id.clone(),
+                lsp_server::ErrorCode::InvalidParams as i32,
+                e.to_string(),
+            )
+        };
+        match req.method.as_str() {
+            "textDocument/hover" => {
+                let p: lsp_types::HoverParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => return invalid(e),
+                };
+                let tp = p.text_document_position_params;
+                let result = self
+                    .at(tp.text_document.uri.as_str(), tp.position)
+                    .and_then(|(fe, byte)| {
+                        let h = query::hover_at(fe, byte)?;
+                        Some(serde_json::json!({
+                            "contents": {"kind": "markdown", "value": h.markdown()},
+                            "range": Range {
+                                start: lsp_position(&fe.file, h.span.start, self.enc),
+                                end: lsp_position(&fe.file, h.span.end, self.enc),
+                            },
+                        }))
+                    });
+                lsp_server::Response::new_ok(req.id, result.unwrap_or(serde_json::Value::Null))
+            }
+            "textDocument/definition" => {
+                let p: lsp_types::GotoDefinitionParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => return invalid(e),
+                };
+                let tp = p.text_document_position_params;
+                let result = self
+                    .at(tp.text_document.uri.as_str(), tp.position)
+                    .and_then(|(fe, byte)| {
+                        let span = query::definition_at(fe, byte)?;
+                        let file = PathBuf::from(fe.file.file_name(span.start));
+                        let uri = self
+                            .docs
+                            .iter()
+                            .find(|(_, (p, _))| *p == file)
+                            .map(|(u, _)| u.clone())
+                            .unwrap_or_else(|| path_to_uri(&file));
+                        Some(serde_json::json!({
+                            "uri": uri,
+                            "range": Range {
+                                start: lsp_position(&fe.file, span.start, self.enc),
+                                end: lsp_position(&fe.file, span.end, self.enc),
+                            },
+                        }))
+                    });
+                lsp_server::Response::new_ok(req.id, result.unwrap_or(serde_json::Value::Null))
+            }
+            _ => lsp_server::Response::new_err(
+                req.id,
+                lsp_server::ErrorCode::MethodNotFound as i32,
+                format!("`{}` is not supported", req.method),
+            ),
+        }
+    }
+
+    /// 開いている文書 `uri` の解析の結果と、位置のバイト位置（エントリのファイルは基準位置 0）
+    fn at(&self, uri: &str, pos: Position) -> Option<(&wys_driver::Frontend, u32)> {
+        let (_, text) = self.docs.get(uri)?;
+        let fe = self.analyses.get(uri)?;
+        Some((fe, byte_at(text, pos, self.enc)))
+    }
+
     /// 通知を処理する。中身の誤りはサーバーを止めずに `window/logMessage` で知らせ、`Err` は送信の失敗だけ
     fn notify(&mut self, conn: &Connection, n: Notification) -> Result<(), String> {
         use lsp_types::notification::{
@@ -297,10 +409,15 @@ impl Server {
             .map(|(u, (p, _))| (p.clone(), u.clone()))
             .collect();
         let mut now: HashMap<String, Vec<Diagnostic>> = HashMap::new();
-        for (path, text) in self.docs.values() {
-            let by_file = match isolated_diagnostics(path, text, &overlay, self.enc) {
-                Ok(d) => d,
+        let mut analyses = HashMap::new();
+        for (doc_uri, (path, text)) in &self.docs {
+            let by_file = match isolated_analyze(path, text, &overlay, self.enc) {
+                Ok((d, fe)) => {
+                    analyses.insert(doc_uri.clone(), fe);
+                    d
+                }
                 Err(why) => {
+                    // 解析が落ちた文書は結果を捨てる（古い結果は位置がずれる）
                     log(conn, format!("cannot analyze {}: {why}", path.display()))?;
                     continue;
                 }
@@ -329,22 +446,25 @@ impl Server {
             }
         }
         self.published = now;
+        self.analyses = analyses;
         Ok(())
     }
 }
 
 /// `diagnostics` を大きなスタックの別スレッドで回す。フロントエンドのパニックやスタックの溢れ（深い入れ子の式）で
 /// サーバーが落ちないように（`catch_unwind` ではスタックの溢れは拾えない）
-fn isolated_diagnostics(
+type Analyzed = (HashMap<PathBuf, Vec<Diagnostic>>, wys_driver::Frontend);
+
+fn isolated_analyze(
     path: &Path,
     text: &str,
     overlay: &HashMap<PathBuf, String>,
     enc: Encoding,
-) -> Result<HashMap<PathBuf, Vec<Diagnostic>>, String> {
+) -> Result<Analyzed, String> {
     let (path, text, overlay) = (path.to_path_buf(), text.to_string(), overlay.clone());
     std::thread::Builder::new()
         .stack_size(256 << 20)
-        .spawn(move || diagnostics(&path, &text, &overlay, enc))
+        .spawn(move || analyze(&path, &text, &overlay, enc))
         .map_err(|e| e.to_string())?
         .join()
         .map_err(|_| "the compiler panicked".to_string())
@@ -559,6 +679,135 @@ mod tests {
     }
 
     #[test]
+    fn positions_map_back_to_bytes() {
+        let text = "a\nあい x\n😀y\n";
+        // UTF-16: 「あい」は 2 単位、😀 は 2 単位（代理ペア）
+        assert_eq!(
+            byte_at(
+                text,
+                Position {
+                    line: 1,
+                    character: 3
+                },
+                Encoding::Utf16
+            ),
+            2 + 7
+        );
+        assert_eq!(
+            byte_at(
+                text,
+                Position {
+                    line: 2,
+                    character: 2
+                },
+                Encoding::Utf16
+            ),
+            11 + 4
+        );
+        // 代理ペアの途中は文字の先頭に、行末を超えたら行末に丸める
+        assert_eq!(
+            byte_at(
+                text,
+                Position {
+                    line: 2,
+                    character: 1
+                },
+                Encoding::Utf16
+            ),
+            11
+        );
+        assert_eq!(
+            byte_at(
+                text,
+                Position {
+                    line: 0,
+                    character: 99
+                },
+                Encoding::Utf16
+            ),
+            1
+        );
+        assert_eq!(
+            byte_at(
+                text,
+                Position {
+                    line: 1,
+                    character: 7
+                },
+                Encoding::Utf8
+            ),
+            2 + 7
+        );
+        assert_eq!(
+            byte_at(
+                text,
+                Position {
+                    line: 9,
+                    character: 0
+                },
+                Encoding::Utf8
+            ),
+            text.len() as u32
+        );
+    }
+
+    #[test]
+    fn hover_and_definition_answer_requests() {
+        with_server(|c| {
+            let uri = "file:///tmp/wys-lsp-hover/main.wys";
+            // 型のエラーがあっても答える
+            let text = "def twice(n: int) -> int:\n    return n * 2\n\ndef main() -> None:\n    k = twice(3)\n    s: str = k\n";
+            note(
+                c,
+                "textDocument/didOpen",
+                serde_json::json!({"textDocument": {"uri": uri, "languageId": "wys", "version": 1, "text": text}}),
+            );
+            let (_, codes) = next_publish(c);
+            assert_eq!(codes, vec!["E0201".to_string()]);
+            let req = |id: i32, method: &str, line: u32, character: u32| {
+                Message::Request(lsp_server::Request::new(
+                    id.into(),
+                    method.into(),
+                    serde_json::json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}),
+                ))
+            };
+            let response = |c: &Connection| loop {
+                if let Message::Response(r) = c.receiver.recv().unwrap() {
+                    return r;
+                }
+            };
+            c.sender.send(req(7, "textDocument/hover", 4, 9)).unwrap();
+            let r = response(c);
+            let value = r.result.unwrap()["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                value.starts_with("```wys\ndef twice(n: int) -> int uses(inferred) pure\n```"),
+                "{value}"
+            );
+            c.sender
+                .send(req(8, "textDocument/definition", 5, 13))
+                .unwrap();
+            let r = response(c);
+            let loc = r.result.unwrap();
+            assert_eq!(loc["uri"], uri);
+            assert_eq!(
+                loc["range"]["start"],
+                serde_json::json!({"line": 4, "character": 4})
+            );
+            // 空白の上は null
+            c.sender.send(req(9, "textDocument/hover", 2, 0)).unwrap();
+            assert_eq!(response(c).result, Some(serde_json::Value::Null));
+            // 知らない要求は MethodNotFound
+            c.sender
+                .send(req(10, "textDocument/completion", 0, 0))
+                .unwrap();
+            assert!(response(c).error.is_some());
+        });
+    }
+
+    #[test]
     fn exit_without_shutdown_is_not_clean() {
         let (server, client) = Connection::memory();
         let t = std::thread::spawn(move || serve(&server));
@@ -584,6 +833,6 @@ mod tests {
             "(".repeat(500),
             ")".repeat(500)
         );
-        assert!(isolated_diagnostics(&path, &text, &HashMap::new(), Encoding::Utf16).is_ok());
+        assert!(isolated_analyze(&path, &text, &HashMap::new(), Encoding::Utf16).is_ok());
     }
 }

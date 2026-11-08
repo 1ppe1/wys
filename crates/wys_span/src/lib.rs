@@ -103,6 +103,14 @@ impl SourceMap {
         file.position(byte - base)
     }
 
+    /// 名前が `matches` に合う最初のファイルの基準位置。
+    pub fn base_of_file(&self, matches: impl Fn(&str) -> bool) -> Option<u32> {
+        self.files
+            .iter()
+            .find(|(_, f)| matches(&f.name))
+            .map(|(b, _)| *b)
+    }
+
     /// 位置 `byte` を含むファイル。
     pub fn file_at(&self, byte: u32) -> &SourceFile {
         self.find(byte).1

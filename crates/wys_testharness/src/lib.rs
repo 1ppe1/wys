@@ -12,6 +12,9 @@
 //! # expect-env: WYS_APPROVAL=allow 実行時に設定する環境変数（`KEY=VALUE`。複数書ける。ADR-0023 の影響）。
 //!                                   値の `${CASE_DIR}` はケースのファイルがあるディレクトリの絶対パスに置き換える
 //! # expect-mode: test               `wys test` と同じ検査（main 不要、test_* の検査）で診断だけを確かめる
+//! # expect-hover: 5:9 x: int        LSP のホバー（行:列 の位置。コードブロックの 1 行目と完全一致。`-` なら何も出ない）
+//! # expect-definition: 7:5 -> lib.wys:1:9   LSP の定義ジャンプ（ファイルはケースのディレクトリからの相対。`-` なら定義なし）
+//!                                   ホバー・定義のあるケースは実行せず、LSP と同じ入口で解析だけ行う（ADR-0026 論点 15）
 //! ```
 //!
 //! 診断（エラーと警告）は、ファイルに書いた順で過不足なく一致しなければならない。
@@ -33,6 +36,34 @@ pub struct Expectations {
     pub env: Vec<(String, String)>,
     /// `# expect-mode: test`
     pub test_mode: bool,
+    /// `# expect-hover: 行:列 文字列`（`None` は何も出ないこと）
+    pub hovers: Vec<(u32, u32, Option<String>)>,
+    /// `# expect-definition: 行:列 -> ファイル:行:列`（`None` は定義がないこと）
+    pub definitions: Vec<(u32, u32, Option<Location>)>,
+}
+
+/// 定義の位置（ケースのディレクトリからの相対のファイル、行、列）
+pub type Location = (String, u32, u32);
+
+impl Expectations {
+    /// LSP のケース（ホバーか定義の期待がある）
+    pub fn is_lsp(&self) -> bool {
+        !self.hovers.is_empty() || !self.definitions.is_empty()
+    }
+}
+
+/// `行:列` を読む
+fn line_col(s: &str, line: usize) -> Result<(u32, u32), String> {
+    let (l, c) = s
+        .trim()
+        .split_once(':')
+        .ok_or_else(|| format!("line {line}: expected `LINE:COL`"))?;
+    let num = |s: &str| {
+        s.trim()
+            .parse::<u32>()
+            .map_err(|_| format!("line {line}: bad number `{s}`"))
+    };
+    Ok((num(l)?, num(c)?))
 }
 
 /// `# expect-env:` の値の `${CASE_DIR}` を、ケースのファイルがあるディレクトリに置き換える（記録の再生などでケースの隣のファイルを指すため）。
@@ -98,6 +129,30 @@ pub fn parse_expectations(src: &str) -> Result<Expectations, String> {
                 None => return Err(format!("line {}: `expect-env` needs KEY=VALUE", i + 1)),
             },
             "mode" if value.trim() == "test" => e.test_mode = true,
+            "hover" => {
+                let (pos, text) = value.split_once(' ').unwrap_or((value, ""));
+                let (l, c) = line_col(pos, i + 1)?;
+                let text = text.trim();
+                e.hovers
+                    .push((l, c, (text != "-").then(|| text.to_string())));
+            }
+            "definition" => {
+                let (pos, target) = value.split_once("->").ok_or_else(|| {
+                    format!("line {}: expected `LINE:COL -> FILE:LINE:COL`", i + 1)
+                })?;
+                let (l, c) = line_col(pos, i + 1)?;
+                let target = target.trim();
+                let to = if target == "-" {
+                    None
+                } else {
+                    let (file, lc) = target
+                        .split_once(':')
+                        .ok_or_else(|| format!("line {}: expected `FILE:LINE:COL`", i + 1))?;
+                    let (tl, tc) = line_col(lc, i + 1)?;
+                    Some((file.to_string(), tl, tc))
+                };
+                e.definitions.push((l, c, to));
+            }
             other => return Err(format!("line {}: unknown expectation `{other}`", i + 1)),
         }
     }
@@ -132,18 +187,19 @@ pub fn collect_cases(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// `modules/<ケース名>/` の中では `main.wys` だけがケースで、ほかのファイルは import されるモジュール。
+/// `modules/<ケース名>/` と `lsp/<ケース名>/` の中では `main.wys` だけがケースで、ほかのファイルは import される
+/// モジュール。
 fn is_case(p: &Path) -> bool {
-    let under_modules = p
+    let is_group = |n: &std::ffi::OsStr| n == "modules" || n == "lsp";
+    let under_group = p
         .ancestors()
         .skip(1)
-        .any(|a| a.file_name().is_some_and(|n| n == "modules"));
-    if !under_modules {
+        .any(|a| a.file_name().is_some_and(is_group));
+    if !under_group {
         return true;
     }
     let case_dir_parent = p.parent().and_then(Path::parent).and_then(Path::file_name);
-    p.file_name().is_some_and(|n| n == "main.wys")
-        && case_dir_parent.is_some_and(|n| n == "modules")
+    p.file_name().is_some_and(|n| n == "main.wys") && case_dir_parent.is_some_and(is_group)
 }
 
 /// ケースのフロントエンドを実行する。`display_name` は `path` のリポジトリからの相対パスで、
@@ -156,10 +212,66 @@ pub fn frontend_for_case(path: &Path, display_name: &str, src: &str) -> wys_driv
         .unwrap_or(Path::new(""))
         .to_path_buf();
     let read = |p: &Path| std::fs::read_to_string(root.join(p)).ok();
-    if parse_expectations(src).is_ok_and(|e| e.test_mode) {
+    if parse_expectations(src).is_ok_and(|e| e.is_lsp()) {
+        wys_driver::frontend_for_editor(display_name, src, &read)
+    } else if parse_expectations(src).is_ok_and(|e| e.test_mode) {
         wys_driver::frontend_tests_with(display_name, src, &read).0
     } else {
         wys_driver::frontend_with(display_name, src, &read)
+    }
+}
+
+/// 行・列（1 始まり、列は Unicode スカラー値）をバイト位置にする
+fn byte_of(src: &str, line: u32, col: u32) -> u32 {
+    let start: usize = src
+        .split_inclusive('\n')
+        .take(line.saturating_sub(1) as usize)
+        .map(str::len)
+        .sum();
+    let rest = &src[start..];
+    let off: usize = rest
+        .chars()
+        .take(col.saturating_sub(1) as usize)
+        .map(char::len_utf8)
+        .sum();
+    (start + off) as u32
+}
+
+/// LSP のホバーと定義ジャンプの期待を確かめる（ADR-0026 論点 15）
+fn check_lsp(
+    exp: &Expectations,
+    fe: &wys_driver::Frontend,
+    display_name: &str,
+    src: &str,
+) -> Result<(), String> {
+    let mut problems = Vec::new();
+    for (l, c, want) in &exp.hovers {
+        let got = wys_lsp::query::hover_at(fe, byte_of(src, *l, *c)).map(|h| h.code);
+        if &got != want {
+            problems.push(format!("hover {l}:{c}: expected {want:?}, got {got:?}"));
+        }
+    }
+    let case_dir = Path::new(display_name).parent().unwrap_or(Path::new(""));
+    for (l, c, want) in &exp.definitions {
+        let got = wys_lsp::query::definition_at(fe, byte_of(src, *l, *c)).map(|span| {
+            let file = fe.file.file_name(span.start);
+            let rel = Path::new(file)
+                .strip_prefix(case_dir)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| file.to_string());
+            let p = fe.file.position(span.start);
+            (rel, p.line, p.column)
+        });
+        if &got != want {
+            problems.push(format!(
+                "definition {l}:{c}: expected {want:?}, got {got:?}"
+            ));
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("\n"))
     }
 }
 
@@ -188,6 +300,9 @@ pub fn run_case(
             actual,
             wys_driver::to_text(&fe.file, &fe.diagnostics)
         ));
+    }
+    if exp.is_lsp() {
+        return check_lsp(&exp, &fe, display_name, &src);
     }
     if exp.test_mode {
         return Ok(()); // 診断だけを確かめる

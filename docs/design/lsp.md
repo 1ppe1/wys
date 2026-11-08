@@ -24,8 +24,8 @@ wys lsp（wys_cli の副コマンド）── wys_lsp::run_stdio ── serve(&C
 | `initialize` / `initialized` | M6 T9 | `positionEncoding`（UTF-8 か UTF-16）、`textDocumentSync: Full` を返す。T11 で `hoverProvider` / `definitionProvider` / `codeActionProvider`（`quickfix`）/ `documentFormattingProvider` を足す |
 | `textDocument/didOpen` / `didChange` / `didClose` | M6 T9 | 開いているすべての文書を解析し直し、診断を配る（3 章） |
 | `textDocument/publishDiagnostics` | M6 T9 | サーバー → クライアント |
-| `textDocument/hover` | M6 T11 | 4 章 |
-| `textDocument/definition` | M6 T11 | 5 章 |
+| `textDocument/hover` | M6 T11（実装済み） | 4 章 |
+| `textDocument/definition` | M6 T11（実装済み） | 5 章 |
 | `textDocument/codeAction` | M6 T11 | 診断の `replacement` を quickfix に（6 章） |
 | `textDocument/formatting` | M6 T11 | `wys fmt` と同じ整形（全文の置き換え） |
 | `shutdown` / `exit` | M6 T9 | `shutdown` なしの `exit` は終了コード 1 |
