@@ -11,6 +11,7 @@ pub mod query;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use lsp_server::{Connection, Message, Notification};
 use lsp_types::notification::Notification as _;
@@ -92,6 +93,7 @@ pub fn analyze(
     let read = |p: &Path| {
         overlay
             .get(p)
+            .or_else(|| overlay.get(&canon(p)))
             .cloned()
             .or_else(|| std::fs::read_to_string(p).ok())
     };
@@ -191,6 +193,12 @@ pub fn path_to_uri(path: &Path) -> String {
         }
     }
     s
+}
+
+/// 実のパス（シンボリックリンクと macOS の `/tmp` → `/private/tmp` を解く）。解けない（まだない）ファイルはそのまま。
+/// 開いている文書・import 先・編集先を同じパスで突き合わせる（ADR-0026 論点 5）
+fn canon(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn percent_decode(s: &str) -> String {
@@ -359,13 +367,7 @@ impl Server {
                     .at(tp.text_document.uri.as_str(), tp.position)
                     .and_then(|(fe, byte)| {
                         let span = query::definition_at(fe, byte)?;
-                        let file = PathBuf::from(fe.file.file_name(span.start));
-                        let uri = self
-                            .docs
-                            .iter()
-                            .find(|(_, (p, _))| *p == file)
-                            .map(|(u, _)| u.clone())
-                            .unwrap_or_else(|| path_to_uri(&file));
+                        let uri = self.uri_of(Path::new(fe.file.file_name(span.start)));
                         Some(serde_json::json!({
                             "uri": uri,
                             "range": Range {
@@ -416,13 +418,7 @@ impl Server {
                 else {
                     continue;
                 };
-                let path = PathBuf::from(path);
-                let uri = self
-                    .docs
-                    .iter()
-                    .find(|(_, (p, _))| *p == path)
-                    .map(|(u, _)| u.clone())
-                    .unwrap_or_else(|| path_to_uri(&path));
+                let uri = self.uri_of(Path::new(path));
                 actions.push(serde_json::json!({
                     "title": title,
                     "kind": "quickfix",
@@ -464,6 +460,16 @@ impl Server {
             "range": Range { start: Position { line: 0, character: 0 }, end },
             "newText": formatted,
         }])
+    }
+
+    /// ファイル `path` の URI（開いていれば受け取った URI、なければパスから作る）
+    fn uri_of(&self, path: &Path) -> String {
+        let path = canon(path);
+        self.docs
+            .iter()
+            .find(|(_, (p, _))| *p == path)
+            .map(|(u, _)| u.clone())
+            .unwrap_or_else(|| path_to_uri(&path))
     }
 
     /// 開いている文書 `uri` の解析の結果と、位置のバイト位置（エントリのファイルは基準位置 0）
@@ -513,7 +519,7 @@ impl Server {
     fn open(&mut self, uri: &str, text: String) -> bool {
         match uri_to_path(uri) {
             Some(path) => {
-                self.docs.insert(uri.to_string(), (path, text));
+                self.docs.insert(uri.to_string(), (canon(&path), text));
                 true
             }
             None => false,
@@ -523,20 +529,17 @@ impl Server {
     /// 開いているすべての文書をエントリとして解析し直し、URI ごとに診断の和集合を配る（同じモジュールを import する
     /// 文書があっても消し合わない）。変わった URI だけ配り、もう診断のない URI には空を配る
     fn republish(&mut self, conn: &Connection) -> Result<(), String> {
-        let overlay: HashMap<PathBuf, String> = self
-            .docs
-            .values()
-            .map(|(p, t)| (p.clone(), t.clone()))
-            .collect();
-        let uri_of: HashMap<PathBuf, String> = self
-            .docs
-            .iter()
-            .map(|(u, (p, _))| (p.clone(), u.clone()))
-            .collect();
+        // 解析のスレッドごとに全文を複製しないように、`Arc` で共有する
+        let overlay: Arc<HashMap<PathBuf, String>> = Arc::new(
+            self.docs
+                .values()
+                .map(|(p, t)| (p.clone(), t.clone()))
+                .collect(),
+        );
         let mut now: HashMap<String, Vec<Diagnostic>> = HashMap::new();
         let mut analyses = HashMap::new();
         for (doc_uri, (path, text)) in &self.docs {
-            let by_file = match isolated_analyze(path, text, &overlay, self.enc) {
+            let by_file = match isolated_analyze(path, text, Arc::clone(&overlay), self.enc) {
                 Ok((d, fe)) => {
                     analyses.insert(doc_uri.clone(), fe);
                     d
@@ -548,10 +551,7 @@ impl Server {
                 }
             };
             for (file, ds) in by_file {
-                let uri = uri_of
-                    .get(&file)
-                    .cloned()
-                    .unwrap_or_else(|| path_to_uri(&file));
+                let uri = self.uri_of(&file);
                 let slot = now.entry(uri).or_default();
                 for d in ds {
                     if !slot.contains(&d) {
@@ -583,10 +583,10 @@ type Analyzed = (HashMap<PathBuf, Vec<Diagnostic>>, wys_driver::Frontend);
 fn isolated_analyze(
     path: &Path,
     text: &str,
-    overlay: &HashMap<PathBuf, String>,
+    overlay: Arc<HashMap<PathBuf, String>>,
     enc: Encoding,
 ) -> Result<Analyzed, String> {
-    let (path, text, overlay) = (path.to_path_buf(), text.to_string(), overlay.clone());
+    let (path, text) = (path.to_path_buf(), text.to_string());
     std::thread::Builder::new()
         .stack_size(256 << 20)
         .spawn(move || analyze(&path, &text, &overlay, enc))
@@ -801,6 +801,43 @@ mod tests {
             assert_eq!(uri, "file:///tmp/wys-lsp-shared/lib.wys");
             assert!(codes.is_empty());
         });
+    }
+
+    /// シンボリックリンク越しに開いた文書も、実のパスで開いた import 先と重ね合わせる（ADR-0026 論点 5）
+    #[cfg(unix)]
+    #[test]
+    fn documents_opened_through_symlinks_share_the_overlay() {
+        let root = std::env::temp_dir().join(format!("wys-lsp-symlink-{}", std::process::id()));
+        let real = root.join("real");
+        let link = root.join("link");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        // ディスクの lib には `f` がある。開いたバッファでは `g` に変えた
+        std::fs::write(real.join("lib.wys"), "pub def f() -> int:\n    return 1\n").unwrap();
+        std::fs::write(real.join("main.wys"), "").unwrap();
+        let lib_uri = path_to_uri(&real.join("lib.wys"));
+        let main_uri = path_to_uri(&link.join("main.wys"));
+        with_server(|c| {
+            let open = |uri: &str, text: &str| {
+                note(
+                    c,
+                    "textDocument/didOpen",
+                    serde_json::json!({"textDocument": {"uri": uri, "languageId": "wys", "version": 1, "text": text}}),
+                );
+            };
+            open(&lib_uri, "pub def g() -> int:\n    return 1\n");
+            assert_eq!(next_publish(c), (lib_uri.clone(), vec![]));
+            open(
+                &main_uri,
+                "import lib\n\ndef h() -> int:\n    return lib.f()\n",
+            );
+            // バッファの lib には `f` がないので、main に名前解決のエラーが出る。lib の診断は開いた URI のまま
+            let (uri, codes) = next_publish(c);
+            assert_eq!(uri, main_uri);
+            assert_eq!(codes.len(), 1, "{codes:?}");
+        });
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1020,6 +1057,6 @@ mod tests {
             "(".repeat(500),
             ")".repeat(500)
         );
-        assert!(isolated_analyze(&path, &text, &HashMap::new(), Encoding::Utf16).is_ok());
+        assert!(isolated_analyze(&path, &text, Arc::default(), Encoding::Utf16).is_ok());
     }
 }

@@ -51,3 +51,4 @@ PoC6（T9、`docs/poc/poc6-results.md`）で、次のことが分かった。
 
 - 論点 11: `case` の束縛は `FuncInfo.locals` / `local_spans` には入れず、別の `FuncInfo.bindings`（名前・型・位置）に記録する。lowering が `locals` から関数の先頭で IR のローカルを作るので、`locals` に入れると使われないローカルが増え、生成コードが変わるため（試して分かった）。`wys explain` の `locals` には `kind: "binding"` として続けて出す。
 
+- 論点 5: パスの正規化は T11 の時点で実装が漏れていた（M6 の後の自己点検で判明）。開いた文書のパスを `std::fs::canonicalize`（解けなければそのまま）で実のパスにして持ち、import 先の読み込み・診断の配り先・定義と quickfix の編集先の URI も、実のパスで開いている文書と突き合わせる。シンボリックリンク越しに開いた文書のテストを足した。
