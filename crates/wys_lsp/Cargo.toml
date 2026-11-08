@@ -12,6 +12,7 @@ wys_driver = { path = "../wys_driver" }
 wys_span = { path = "../wys_span" }
 wys_ast = { path = "../wys_ast" }
 wys_typeck = { path = "../wys_typeck" }
+wys_fmt = { path = "../wys_fmt" }
 lsp-server = "0.7"
 lsp-types = "0.97"
 serde_json = "1"

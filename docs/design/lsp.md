@@ -26,8 +26,8 @@ wys lsp（wys_cli の副コマンド）── wys_lsp::run_stdio ── serve(&C
 | `textDocument/publishDiagnostics` | M6 T9 | サーバー → クライアント |
 | `textDocument/hover` | M6 T11（実装済み） | 4 章 |
 | `textDocument/definition` | M6 T11（実装済み） | 5 章 |
-| `textDocument/codeAction` | M6 T11 | 診断の `replacement` を quickfix に（6 章） |
-| `textDocument/formatting` | M6 T11 | `wys fmt` と同じ整形（全文の置き換え） |
+| `textDocument/codeAction` | M6 T11（実装済み） | 診断の `replacement` を quickfix に（6 章） |
+| `textDocument/formatting` | M6 T11（実装済み） | `wys fmt` と同じ整形（全文の置き換え。字句エラーなら `null`、変わらなければ空の配列） |
 | `shutdown` / `exit` | M6 T9 | `shutdown` なしの `exit` は終了コード 1 |
 | それ以外 | — | 要求は `MethodNotFound`、壊れた通知は無視して `window/logMessage` |
 
