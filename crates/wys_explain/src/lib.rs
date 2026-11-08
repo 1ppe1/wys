@@ -238,6 +238,12 @@ fn function_json<'a>(
             },
             span: span_json(map, *span),
         })
+        .chain(info.bindings.iter().map(|(name, t, span)| LocalJson {
+            name,
+            ty: ty(*t),
+            kind: "binding",
+            span: span_json(map, *span),
+        }))
         .collect();
     let narrowing = info
         .narrowings
@@ -555,6 +561,32 @@ mod tests {
         assert_eq!(id["signature"]["type_params"][0], "T");
         assert_eq!(id["arc"].as_array().unwrap().len(), 2);
         assert_eq!(func(&v, "unused")["arc"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn case_bindings_are_reported_as_locals() {
+        let v = report(
+            "def f(r: Result[int, str]) -> int:\n    match r:\n        case Ok(x):\n            return x\n        case Err(e):\n            return len(e)\n\ndef main() -> None:\n    print(f(Ok(1)))\n",
+        );
+        let locals = func(&v, "f")["locals"].as_array().unwrap().clone();
+        let kinds: Vec<(&str, &str, &str)> = locals
+            .iter()
+            .map(|l| {
+                (
+                    l["name"].as_str().unwrap(),
+                    l["kind"].as_str().unwrap(),
+                    l["type"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("r", "param", "Result[int, str]"),
+                ("x", "binding", "int"),
+                ("e", "binding", "str")
+            ]
+        );
     }
 
     #[test]

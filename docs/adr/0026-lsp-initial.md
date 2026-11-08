@@ -46,3 +46,8 @@ PoC6（T9、`docs/poc/poc6-results.md`）で、次のことが分かった。
 - 新しいエラーコードはない。`wys explain` は `locals` の `kind` に `binding` が増える（論点 11）。
 - 更新する文書: `docs/design/lsp.md`（新規）、用語集（`LSP` の行の書き換え、ホバー、定義ジャンプ、quickfix、位置の符号化）、`explain-schema.json`（`kind` の `binding`）、`docs/test-plan.md`（DX-003 の行）、`docs/README.md`（`lsp.md`）、CLAUDE.md（`wys lsp`）、ADR 一覧。
 - 制限: 補完などは公開準備。Windows は CI の対象外。壊れた枠でサーバーが止まる（論点 2）。パーサに入れ子の深さの上限がない（`wys check` も深い入れ子で落ちる。LSP は論点 14 で隔離するが、パーサの上限は別の作業）。
+
+## 訂正（2026-11-08、M6 T11）
+
+- 論点 11: `case` の束縛は `FuncInfo.locals` / `local_spans` には入れず、別の `FuncInfo.bindings`（名前・型・位置）に記録する。lowering が `locals` から関数の先頭で IR のローカルを作るので、`locals` に入れると使われないローカルが増え、生成コードが変わるため（試して分かった）。`wys explain` の `locals` には `kind: "binding"` として続けて出す。
+

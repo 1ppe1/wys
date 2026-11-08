@@ -22,6 +22,16 @@ pub struct Frontend {
     pub unsupported: Option<String>,
     /// 型検査の結果（`wys explain` 用）。`program` と同じく、エラーがないときだけ `Some`。
     pub typeck: Option<wys_typeck::TypeckResult>,
+    /// エディタ用の解析の結果（ADR-0026 論点 9）。`frontend_for_editor` だけが埋める。構文エラーと名前解決の
+    /// エラーがなければ、型のエラーがあっても `Some`
+    pub analysis: Option<Analysis>,
+}
+
+/// 構文木と、その型検査の結果（エラーがあっても型検査まで進めたもの。LSP のホバーと定義ジャンプが使う）。
+#[derive(Debug, Clone)]
+pub struct Analysis {
+    pub module: wys_ast::Module,
+    pub typeck: wys_typeck::TypeckResult,
 }
 
 impl Frontend {
@@ -59,6 +69,16 @@ pub fn frontend_tests(name: &str, text: &str) -> (Frontend, Vec<String>) {
     run_frontend(name, text, &|p| std::fs::read_to_string(p).ok(), true)
 }
 
+/// エディタ（LSP）用: `main` を求めず（`main` があれば検査する）、エラーがあっても型検査まで進めた結果を
+/// `Frontend.analysis` に入れる（ADR-0026 論点 6・9）。
+pub fn frontend_for_editor(
+    name: &str,
+    text: &str,
+    read: &dyn Fn(&std::path::Path) -> Option<String>,
+) -> Frontend {
+    run_frontend_with(name, text, read, true, true).0
+}
+
 /// `frontend_tests` の、import 先の読み方を指定する版。
 pub fn frontend_tests_with(
     name: &str,
@@ -74,10 +94,21 @@ fn run_frontend(
     read: &dyn Fn(&std::path::Path) -> Option<String>,
     test_mode: bool,
 ) -> (Frontend, Vec<String>) {
+    run_frontend_with(name, text, read, test_mode, false)
+}
+
+fn run_frontend_with(
+    name: &str,
+    text: &str,
+    read: &dyn Fn(&std::path::Path) -> Option<String>,
+    test_mode: bool,
+    want_analysis: bool,
+) -> (Frontend, Vec<String>) {
     let loaded = wys_resolve::load_program(name, text, read);
     let file = loaded.sources;
     let module = loaded.module;
-    let failed = |file, diagnostics| {
+    let mut analysis: Option<Analysis> = None;
+    let failed = |file, diagnostics, analysis| {
         (
             Frontend {
                 file,
@@ -85,14 +116,21 @@ fn run_frontend(
                 program: None,
                 unsupported: None,
                 typeck: None,
+                analysis,
             },
             Vec::new(),
         )
     };
     if loaded.diagnostics.iter().any(Diagnostic::is_error) {
-        return failed(file, loaded.diagnostics);
+        return failed(file, loaded.diagnostics, None);
     }
     let (tc, mut diagnostics) = wys_typeck::check_program(&module, !test_mode);
+    if want_analysis {
+        analysis = Some(Analysis {
+            module: module.clone(),
+            typeck: tc.clone(),
+        });
+    }
     diagnostics.splice(0..0, loaded.diagnostics);
     // テスト関数（エントリファイルの `test_*`）。引数なし・戻り値 None でなければ E0801
     let mut tests = Vec::new();
@@ -122,7 +160,7 @@ fn run_frontend(
         }
     }
     if diagnostics.iter().any(Diagnostic::is_error) {
-        return failed(file, diagnostics);
+        return failed(file, diagnostics, analysis);
     }
     let names = tests
         .iter()
@@ -136,6 +174,7 @@ fn run_frontend(
                 program: None,
                 unsupported: None,
                 typeck: None,
+                analysis,
             },
             names,
         );
@@ -156,7 +195,7 @@ fn run_frontend(
         Ok(p) => p,
         Err(d) => {
             diagnostics.push(*d);
-            return failed(file, diagnostics);
+            return failed(file, diagnostics, analysis);
         }
     };
     let mut program = program;
@@ -176,6 +215,7 @@ fn run_frontend(
             program: Some(program),
             unsupported: None,
             typeck: Some(tc),
+            analysis,
         },
         names,
     )
@@ -501,5 +541,35 @@ mod tests {
         let fe = frontend("t.wys", "def main() -> None:\n    print(\"hi\")\n");
         assert!(!fe.has_errors());
         assert!(fe.program.is_some());
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+
+    #[test]
+    fn editor_analysis_survives_type_errors_but_not_syntax_errors() {
+        let read = |_: &std::path::Path| None;
+        // 型のエラーがあっても、構文木と型検査の結果を返す（`main` も求めない）
+        let fe = frontend_for_editor(
+            "lib.wys",
+            "def f() -> int:\n    return \"x\"\n\ndef g() -> int:\n    return 1\n",
+            &read,
+        );
+        assert!(fe.has_errors());
+        let a = fe.analysis.expect("type errors keep the analysis");
+        assert_eq!(a.module.funcs.len(), 2);
+        assert_eq!(a.typeck.sigs.len(), 2);
+        assert!(fe.typeck.is_none());
+        // 構文エラーがあれば解析の結果はない
+        let fe = frontend_for_editor("lib.wys", "def f( -> int:\n", &read);
+        assert!(fe.analysis.is_none());
+        // ほかの入口は解析の結果を作らない
+        assert!(
+            frontend_with("lib.wys", "def main() -> None:\n    pass\n", &read)
+                .analysis
+                .is_none()
+        );
     }
 }
