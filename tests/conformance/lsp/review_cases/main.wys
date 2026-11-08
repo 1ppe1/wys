@@ -1,0 +1,18 @@
+# LSP のレビューで直した場合（Codex）: デコレータの中の関数名、呼び出しの型引数、式の中の空白
+# expect-hover: 18:17 -
+# expect-hover: 18:15 int
+# expect-definition: 12:15 -> main.wys:9:5
+# expect-definition: 15:31 -> main.wys:6:6
+type Plan = {title: str}
+
+@tool(description="Add.")
+def add(a: int, b: int) -> int uses pure:
+    return a + b
+
+@agent(tools=[add])
+async def run() -> Result[Plan, LlmError] uses io, llm:
+    req = LlmRequest(model="", system="", messages=[], max_tokens=0)
+    return await llm_generate[Plan](req)
+
+def main() -> None uses io:
+    print(add(1, 2))

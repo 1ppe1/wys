@@ -36,6 +36,16 @@ impl Hover {
 /// 位置 `pos` のホバー。何もなければ `None`（キーワード・空白・コメント・文字列の中・型注釈の上など）
 pub fn hover_at(fe: &Frontend, pos: u32) -> Option<Hover> {
     let a = fe.analysis.as_ref()?;
+    // 空白（式の中の、カンマの後など）の上は出さない（Codex のレビュー）
+    let file = fe.file.file_at(pos);
+    let local = fe.file.position(pos).byte as usize;
+    if file.text[local..]
+        .chars()
+        .next()
+        .is_none_or(char::is_whitespace)
+    {
+        return None;
+    }
     let tc = &a.typeck;
     let (fi, f) = a
         .module
@@ -385,14 +395,12 @@ pub fn definition_at(fe: &Frontend, pos: u32) -> Option<Span> {
             return s;
         }
     }
-    let (fi, f) = a
-        .module
-        .funcs
-        .iter()
-        .enumerate()
-        .find(|(_, f)| contains(f.span, pos))?;
+    let (fi, f) = a.module.funcs.iter().enumerate().find(|(_, f)| {
+        let start = f.decorators.first().map_or(f.span.start, |d| d.span.start);
+        contains(Span::new(start.min(f.span.start), f.span.end), pos)
+    })?;
     let info = &tc.funcs[fi];
-    // デコレータの関数名（`@agent(tools=[add, m.f])`）
+    // デコレータの関数名（`@agent(tools=[add, m.f])`。デコレータは関数の範囲の前にある）
     for d in &f.decorators {
         for arg in &d.args {
             if let AttrValue::List(elems) = &arg.value {
@@ -433,6 +441,11 @@ pub fn definition_at(fe: &Frontend, pos: u32) -> Option<Span> {
                 named_def(a, &callee.name)
             }
             ExprKind::Name(n) => local_def(info, n, e.span.start),
+            // 呼び出しの型引数（`validate[Plan](u)`、`f[Plan](x)`。Codex のレビュー）
+            ExprKind::Call { type_args, .. } | ExprKind::MethodCall { type_args, .. } => type_args
+                .iter()
+                .find_map(|t| type_expr_ref(a, t, pos))
+                .flatten(),
             _ => None,
         },
     }
