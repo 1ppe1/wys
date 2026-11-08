@@ -92,8 +92,8 @@ pub fn analyze(
 ) -> (HashMap<PathBuf, Vec<Diagnostic>>, wys_driver::Frontend) {
     let read = |p: &Path| {
         overlay
-            .get(p)
-            .or_else(|| overlay.get(&canon(p)))
+            .get(&canon(p))
+            .or_else(|| overlay.get(p))
             .cloned()
             .or_else(|| std::fs::read_to_string(p).ok())
     };
@@ -462,14 +462,33 @@ impl Server {
         }])
     }
 
-    /// ファイル `path` の URI（開いていれば受け取った URI、なければパスから作る）
-    fn uri_of(&self, path: &Path) -> String {
-        let path = canon(path);
-        self.docs
+    /// ファイル `path` の URI。同じパスで開いている文書があればその URI、なければ実のパスが同じ文書の URI
+    /// （シンボリックリンクの両側を開いていればすべて）、どれもなければパスから作る（ADR-0026 論点 5）
+    fn uris_of(&self, path: &Path) -> Vec<String> {
+        let mut uris: Vec<String> = self
+            .docs
             .iter()
-            .find(|(_, (p, _))| *p == path)
+            .filter(|(_, (p, _))| p == path)
             .map(|(u, _)| u.clone())
-            .unwrap_or_else(|| path_to_uri(&path))
+            .collect();
+        if uris.is_empty() {
+            let real = canon(path);
+            uris = self
+                .docs
+                .iter()
+                .filter(|(_, (p, _))| canon(p) == real)
+                .map(|(u, _)| u.clone())
+                .collect();
+        }
+        if uris.is_empty() {
+            uris.push(path_to_uri(path));
+        }
+        uris.sort();
+        uris
+    }
+
+    fn uri_of(&self, path: &Path) -> String {
+        self.uris_of(path).swap_remove(0)
     }
 
     /// 開いている文書 `uri` の解析の結果と、位置のバイト位置（エントリのファイルは基準位置 0）
@@ -519,7 +538,7 @@ impl Server {
     fn open(&mut self, uri: &str, text: String) -> bool {
         match uri_to_path(uri) {
             Some(path) => {
-                self.docs.insert(uri.to_string(), (canon(&path), text));
+                self.docs.insert(uri.to_string(), (path, text));
                 true
             }
             None => false,
@@ -529,11 +548,13 @@ impl Server {
     /// 開いているすべての文書をエントリとして解析し直し、URI ごとに診断の和集合を配る（同じモジュールを import する
     /// 文書があっても消し合わない）。変わった URI だけ配り、もう診断のない URI には空を配る
     fn republish(&mut self, conn: &Connection) -> Result<(), String> {
-        // 解析のスレッドごとに全文を複製しないように、`Arc` で共有する
+        // 読み込みは実のパスで突き合わせる。エントリには受け取ったパスのまま渡す（import はそのディレクトリから
+        // 探すので、リンクの先のディレクトリに変えない。Codex のレビュー）。解析のスレッドごとに全文を複製しないように
+        // `Arc` で共有する
         let overlay: Arc<HashMap<PathBuf, String>> = Arc::new(
             self.docs
                 .values()
-                .map(|(p, t)| (p.clone(), t.clone()))
+                .map(|(p, t)| (canon(p), t.clone()))
                 .collect(),
         );
         let mut now: HashMap<String, Vec<Diagnostic>> = HashMap::new();
@@ -551,11 +572,19 @@ impl Server {
                 }
             };
             for (file, ds) in by_file {
-                let uri = self.uri_of(&file);
-                let slot = now.entry(uri).or_default();
-                for d in ds {
-                    if !slot.contains(&d) {
-                        slot.push(d);
+                // エントリの診断はその文書の URI だけに（同じファイルを別の URI でも開いていれば、そちらは
+                // そちらの全文で解析する。Codex のレビュー）
+                let uris = if file == *path {
+                    vec![doc_uri.clone()]
+                } else {
+                    self.uris_of(&file)
+                };
+                for uri in uris {
+                    let slot = now.entry(uri).or_default();
+                    for d in &ds {
+                        if !slot.contains(d) {
+                            slot.push(d.clone());
+                        }
                     }
                 }
             }
@@ -836,6 +865,50 @@ mod tests {
             let (uri, codes) = next_publish(c);
             assert_eq!(uri, main_uri);
             assert_eq!(codes.len(), 1, "{codes:?}");
+        });
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// エントリ自体がリンクなら、import はリンクのあるディレクトリから探す。リンクと実のパスの両方を開けば、
+    /// それぞれの URI にそれぞれの全文の診断を配る（Codex のレビュー）
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_entries_keep_their_import_root_and_aliases_keep_their_diagnostics() {
+        let root = std::env::temp_dir().join(format!("wys-lsp-alias-{}", std::process::id()));
+        let project = root.join("project");
+        let shared = root.join("shared");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(
+            project.join("lib.wys"),
+            "pub def f() -> int:\n    return 1\n",
+        )
+        .unwrap();
+        std::fs::write(shared.join("main.wys"), "").unwrap();
+        std::os::unix::fs::symlink(shared.join("main.wys"), project.join("main.wys")).unwrap();
+        let link_uri = path_to_uri(&project.join("main.wys"));
+        let real_uri = path_to_uri(&shared.join("main.wys"));
+        with_server(|c| {
+            let open = |uri: &str, text: &str| {
+                note(
+                    c,
+                    "textDocument/didOpen",
+                    serde_json::json!({"textDocument": {"uri": uri, "languageId": "wys", "version": 1, "text": text}}),
+                );
+            };
+            // `project/lib.wys` が見つかる（`shared/` には lib がない）
+            open(
+                &link_uri,
+                "import lib\n\ndef h() -> int:\n    return lib.f()\n",
+            );
+            assert_eq!(next_publish(c), (link_uri.clone(), vec![]));
+            // 実のパスの側は別の全文（型のエラー）。リンクの側の診断は空のまま
+            open(&real_uri, "def h() -> int:\n    return \"x\"\n");
+            assert_eq!(
+                next_publish(c),
+                (real_uri.clone(), vec!["E0201".to_string()])
+            );
         });
         let _ = std::fs::remove_dir_all(&root);
     }
