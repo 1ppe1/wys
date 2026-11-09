@@ -11,6 +11,7 @@ pub mod query;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use lsp_server::{Connection, Message, Notification};
 use lsp_types::notification::Notification as _;
@@ -92,6 +93,7 @@ pub fn analyze(
     let read = |p: &Path| {
         overlay
             .get(p)
+            .or_else(|| overlay.get(&canon(p)))
             .cloned()
             .or_else(|| std::fs::read_to_string(p).ok())
     };
@@ -191,6 +193,12 @@ pub fn path_to_uri(path: &Path) -> String {
         }
     }
     s
+}
+
+/// 実のパス（シンボリックリンクと macOS の `/tmp` → `/private/tmp` を解く）。解けない（まだない）ファイルはそのまま。
+/// 開いている文書・import 先・編集先を同じパスで突き合わせる（ADR-0026 論点 5）
+fn canon(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn percent_decode(s: &str) -> String {
@@ -359,13 +367,7 @@ impl Server {
                     .at(tp.text_document.uri.as_str(), tp.position)
                     .and_then(|(fe, byte)| {
                         let span = query::definition_at(fe, byte)?;
-                        let file = PathBuf::from(fe.file.file_name(span.start));
-                        let uri = self
-                            .docs
-                            .iter()
-                            .find(|(_, (p, _))| *p == file)
-                            .map(|(u, _)| u.clone())
-                            .unwrap_or_else(|| path_to_uri(&file));
+                        let uri = self.uri_of(Path::new(fe.file.file_name(span.start)));
                         Some(serde_json::json!({
                             "uri": uri,
                             "range": Range {
@@ -416,13 +418,7 @@ impl Server {
                 else {
                     continue;
                 };
-                let path = PathBuf::from(path);
-                let uri = self
-                    .docs
-                    .iter()
-                    .find(|(_, (p, _))| *p == path)
-                    .map(|(u, _)| u.clone())
-                    .unwrap_or_else(|| path_to_uri(&path));
+                let uri = self.uri_of(Path::new(path));
                 actions.push(serde_json::json!({
                     "title": title,
                     "kind": "quickfix",
@@ -464,6 +460,35 @@ impl Server {
             "range": Range { start: Position { line: 0, character: 0 }, end },
             "newText": formatted,
         }])
+    }
+
+    /// ファイル `path` の URI。同じパスで開いている文書があればその URI、なければ実のパスが同じ文書の URI
+    /// （シンボリックリンクの両側を開いていればすべて）、どれもなければパスから作る（ADR-0026 論点 5）
+    fn uris_of(&self, path: &Path) -> Vec<String> {
+        let mut uris: Vec<String> = self
+            .docs
+            .iter()
+            .filter(|(_, (p, _))| p == path)
+            .map(|(u, _)| u.clone())
+            .collect();
+        if uris.is_empty() {
+            let real = canon(path);
+            uris = self
+                .docs
+                .iter()
+                .filter(|(_, (p, _))| canon(p) == real)
+                .map(|(u, _)| u.clone())
+                .collect();
+        }
+        if uris.is_empty() {
+            uris.push(path_to_uri(path));
+        }
+        uris.sort();
+        uris
+    }
+
+    fn uri_of(&self, path: &Path) -> String {
+        self.uris_of(path).swap_remove(0)
     }
 
     /// 開いている文書 `uri` の解析の結果と、位置のバイト位置（エントリのファイルは基準位置 0）
@@ -523,20 +548,24 @@ impl Server {
     /// 開いているすべての文書をエントリとして解析し直し、URI ごとに診断の和集合を配る（同じモジュールを import する
     /// 文書があっても消し合わない）。変わった URI だけ配り、もう診断のない URI には空を配る
     fn republish(&mut self, conn: &Connection) -> Result<(), String> {
-        let overlay: HashMap<PathBuf, String> = self
+        // 読み込みは実のパスで突き合わせる。エントリには受け取ったパスのまま渡す（import はそのディレクトリから
+        // 探すので、リンクの先のディレクトリに変えない。Codex のレビュー）。解析のスレッドごとに全文を複製しないように
+        // `Arc` で共有する
+        // 同じパスの文書を優先し、実のパスはそれがないときだけ（リンクと実のパスの両方を開いていても、
+        // どちらの全文を読むかが決まる。Codex のレビュー）
+        let mut overlay: HashMap<PathBuf, String> = self
             .docs
             .values()
             .map(|(p, t)| (p.clone(), t.clone()))
             .collect();
-        let uri_of: HashMap<PathBuf, String> = self
-            .docs
-            .iter()
-            .map(|(u, (p, _))| (p.clone(), u.clone()))
-            .collect();
+        for (p, t) in self.docs.values() {
+            overlay.entry(canon(p)).or_insert_with(|| t.clone());
+        }
+        let overlay = Arc::new(overlay);
         let mut now: HashMap<String, Vec<Diagnostic>> = HashMap::new();
         let mut analyses = HashMap::new();
         for (doc_uri, (path, text)) in &self.docs {
-            let by_file = match isolated_analyze(path, text, &overlay, self.enc) {
+            let by_file = match isolated_analyze(path, text, Arc::clone(&overlay), self.enc) {
                 Ok((d, fe)) => {
                     analyses.insert(doc_uri.clone(), fe);
                     d
@@ -548,14 +577,19 @@ impl Server {
                 }
             };
             for (file, ds) in by_file {
-                let uri = uri_of
-                    .get(&file)
-                    .cloned()
-                    .unwrap_or_else(|| path_to_uri(&file));
-                let slot = now.entry(uri).or_default();
-                for d in ds {
-                    if !slot.contains(&d) {
-                        slot.push(d);
+                // エントリの診断はその文書の URI だけに（同じファイルを別の URI でも開いていれば、そちらは
+                // そちらの全文で解析する。Codex のレビュー）
+                let uris = if file == *path {
+                    vec![doc_uri.clone()]
+                } else {
+                    self.uris_of(&file)
+                };
+                for uri in uris {
+                    let slot = now.entry(uri).or_default();
+                    for d in &ds {
+                        if !slot.contains(d) {
+                            slot.push(d.clone());
+                        }
                     }
                 }
             }
@@ -583,10 +617,10 @@ type Analyzed = (HashMap<PathBuf, Vec<Diagnostic>>, wys_driver::Frontend);
 fn isolated_analyze(
     path: &Path,
     text: &str,
-    overlay: &HashMap<PathBuf, String>,
+    overlay: Arc<HashMap<PathBuf, String>>,
     enc: Encoding,
 ) -> Result<Analyzed, String> {
-    let (path, text, overlay) = (path.to_path_buf(), text.to_string(), overlay.clone());
+    let (path, text) = (path.to_path_buf(), text.to_string());
     std::thread::Builder::new()
         .stack_size(256 << 20)
         .spawn(move || analyze(&path, &text, &overlay, enc))
@@ -801,6 +835,127 @@ mod tests {
             assert_eq!(uri, "file:///tmp/wys-lsp-shared/lib.wys");
             assert!(codes.is_empty());
         });
+    }
+
+    /// シンボリックリンク越しに開いた文書も、実のパスで開いた import 先と重ね合わせる（ADR-0026 論点 5）
+    #[cfg(unix)]
+    #[test]
+    fn documents_opened_through_symlinks_share_the_overlay() {
+        let root = std::env::temp_dir().join(format!("wys-lsp-symlink-{}", std::process::id()));
+        let real = root.join("real");
+        let link = root.join("link");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        // ディスクの lib には `f` がある。開いたバッファでは `g` に変えた
+        std::fs::write(real.join("lib.wys"), "pub def f() -> int:\n    return 1\n").unwrap();
+        std::fs::write(real.join("main.wys"), "").unwrap();
+        let lib_uri = path_to_uri(&real.join("lib.wys"));
+        let main_uri = path_to_uri(&link.join("main.wys"));
+        with_server(|c| {
+            let open = |uri: &str, text: &str| {
+                note(
+                    c,
+                    "textDocument/didOpen",
+                    serde_json::json!({"textDocument": {"uri": uri, "languageId": "wys", "version": 1, "text": text}}),
+                );
+            };
+            open(&lib_uri, "pub def g() -> int:\n    return 1\n");
+            assert_eq!(next_publish(c), (lib_uri.clone(), vec![]));
+            open(
+                &main_uri,
+                "import lib\n\ndef h() -> int:\n    return lib.f()\n",
+            );
+            // バッファの lib には `f` がないので、main に名前解決のエラーが出る。lib の診断は開いた URI のまま
+            let (uri, codes) = next_publish(c);
+            assert_eq!(uri, main_uri);
+            assert_eq!(codes.len(), 1, "{codes:?}");
+        });
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// エントリ自体がリンクなら、import はリンクのあるディレクトリから探す。リンクと実のパスの両方を開けば、
+    /// それぞれの URI にそれぞれの全文の診断を配る（Codex のレビュー）
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_entries_keep_their_import_root_and_aliases_keep_their_diagnostics() {
+        let root = std::env::temp_dir().join(format!("wys-lsp-alias-{}", std::process::id()));
+        let project = root.join("project");
+        let shared = root.join("shared");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(
+            project.join("lib.wys"),
+            "pub def f() -> int:\n    return 1\n",
+        )
+        .unwrap();
+        std::fs::write(shared.join("main.wys"), "").unwrap();
+        std::os::unix::fs::symlink(shared.join("main.wys"), project.join("main.wys")).unwrap();
+        let link_uri = path_to_uri(&project.join("main.wys"));
+        let real_uri = path_to_uri(&shared.join("main.wys"));
+        with_server(|c| {
+            let open = |uri: &str, text: &str| {
+                note(
+                    c,
+                    "textDocument/didOpen",
+                    serde_json::json!({"textDocument": {"uri": uri, "languageId": "wys", "version": 1, "text": text}}),
+                );
+            };
+            // `project/lib.wys` が見つかる（`shared/` には lib がない）
+            open(
+                &link_uri,
+                "import lib\n\ndef h() -> int:\n    return lib.f()\n",
+            );
+            assert_eq!(next_publish(c), (link_uri.clone(), vec![]));
+            // 実のパスの側は別の全文（型のエラー）。リンクの側の診断は空のまま
+            open(&real_uri, "def h() -> int:\n    return \"x\"\n");
+            assert_eq!(
+                next_publish(c),
+                (real_uri.clone(), vec!["E0201".to_string()])
+            );
+        });
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// import 先のリンクと実のパスを両方開いて全文が違えば、import したパスと同じ文書の全文を読む（Codex のレビュー。
+    /// `HashMap` の順序に左右されないことを、サーバーを作り直して何度か確かめる）
+    #[cfg(unix)]
+    #[test]
+    fn imports_read_the_buffer_opened_at_the_same_path() {
+        let root = std::env::temp_dir().join(format!("wys-lsp-exact-{}", std::process::id()));
+        let project = root.join("project");
+        let shared = root.join("shared");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("lib.wys"), "").unwrap();
+        std::os::unix::fs::symlink(shared.join("lib.wys"), project.join("lib.wys")).unwrap();
+        let lib_link = path_to_uri(&project.join("lib.wys"));
+        let lib_real = path_to_uri(&shared.join("lib.wys"));
+        let main = path_to_uri(&project.join("main.wys"));
+        for _ in 0..8 {
+            with_server(|c| {
+                let open = |uri: &str, text: &str| {
+                    note(
+                        c,
+                        "textDocument/didOpen",
+                        serde_json::json!({"textDocument": {"uri": uri, "languageId": "wys", "version": 1, "text": text}}),
+                    );
+                    let _ = next_publish(c);
+                };
+                open(&lib_real, "pub def g() -> int:\n    return 1\n");
+                open(&lib_link, "pub def k() -> int:\n    return 1\n");
+                // 実のパスの全文（`g` だけ）を読めば名前解決のエラーになる
+                note(
+                    c,
+                    "textDocument/didOpen",
+                    serde_json::json!({"textDocument": {"uri": main, "languageId": "wys", "version": 1, "text": "import lib\n\ndef h() -> int:\n    return lib.k()\n"}}),
+                );
+                assert_eq!(next_publish(c), (main.clone(), vec![]));
+            });
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1020,6 +1175,6 @@ mod tests {
             "(".repeat(500),
             ")".repeat(500)
         );
-        assert!(isolated_analyze(&path, &text, &HashMap::new(), Encoding::Utf16).is_ok());
+        assert!(isolated_analyze(&path, &text, Arc::default(), Encoding::Utf16).is_ok());
     }
 }

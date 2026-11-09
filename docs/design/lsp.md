@@ -57,7 +57,7 @@ wys lsp（wys_cli の副コマンド）── wys_lsp::run_stdio ── serve(&C
 
 ## 6. quickfix（T11）
 
-診断の `hints` のうち `replacement` のあるものごとに `quickfix` を作る（いまは E0103 / E0104 / E1102 / W0203）。修正は配る診断の `data` に入れ（`{fixes: [{title, uri, range, text}]}`）、`codeAction` はクライアントが送り返す `context.diagnostics[].data` から `WorkspaceEdit` を作る。編集先の URI は `replacement` の位置のファイル。CLI の修正案（`check --format json` の `hints[].replacement`）と同じ。
+診断の `hints` のうち `replacement` のあるものごとに `quickfix` を作る（いまは E0103 / E0104 / E1102 / W0203）。修正は配る診断の `data` に入れ（`{fixes: [{title, path, range, text}]}`）、`codeAction` はクライアントが送り返す `context.diagnostics[].data` から `WorkspaceEdit` を作る。編集先は `replacement` の位置のファイルで、開いていればその文書の URI、なければパスから作った URI。CLI の修正案（`check --format json` の `hints[].replacement`）と同じ。
 
 ## 7. 検査
 
@@ -85,4 +85,4 @@ VS Code: 任意の言語サーバーを設定で起動できる汎用の拡張�
 
 ## 9. 制限と今後
 
-補完・リネーム・参照検索・シグネチャのヘルプ・セマンティックトークン・増分の解析・エディタの拡張は公開準備。Windows は CI の対象外。壊れた枠（`Content-Length` の中身が JSON でない）でサーバーが止まる（`lsp-server` の制限）。同じファイルを別のパスで開いたときの重ね合わせは T11 でパスを正規化して扱う。
+補完・リネーム・参照検索・シグネチャのヘルプ・セマンティックトークン・増分の解析・エディタの拡張は公開準備。Windows は CI の対象外。壊れた枠（`Content-Length` の中身が JSON でない）でサーバーが止まる（`lsp-server` の制限）。開いた文書は受け取ったパスのまま解析し（import はそのディレクトリから探す）、import 先の読み込みと診断の配り先は、同じパスで開いた文書を優先し、なければ実のパス（`std::fs::canonicalize`。解けなければそのまま）でも突き合わせるので、シンボリックリンクや macOS の `/tmp` と `/private/tmp` でも重ね合わせは外れない。
