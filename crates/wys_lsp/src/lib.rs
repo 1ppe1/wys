@@ -92,8 +92,8 @@ pub fn analyze(
 ) -> (HashMap<PathBuf, Vec<Diagnostic>>, wys_driver::Frontend) {
     let read = |p: &Path| {
         overlay
-            .get(&canon(p))
-            .or_else(|| overlay.get(p))
+            .get(p)
+            .or_else(|| overlay.get(&canon(p)))
             .cloned()
             .or_else(|| std::fs::read_to_string(p).ok())
     };
@@ -551,12 +551,17 @@ impl Server {
         // 読み込みは実のパスで突き合わせる。エントリには受け取ったパスのまま渡す（import はそのディレクトリから
         // 探すので、リンクの先のディレクトリに変えない。Codex のレビュー）。解析のスレッドごとに全文を複製しないように
         // `Arc` で共有する
-        let overlay: Arc<HashMap<PathBuf, String>> = Arc::new(
-            self.docs
-                .values()
-                .map(|(p, t)| (canon(p), t.clone()))
-                .collect(),
-        );
+        // 同じパスの文書を優先し、実のパスはそれがないときだけ（リンクと実のパスの両方を開いていても、
+        // どちらの全文を読むかが決まる。Codex のレビュー）
+        let mut overlay: HashMap<PathBuf, String> = self
+            .docs
+            .values()
+            .map(|(p, t)| (p.clone(), t.clone()))
+            .collect();
+        for (p, t) in self.docs.values() {
+            overlay.entry(canon(p)).or_insert_with(|| t.clone());
+        }
+        let overlay = Arc::new(overlay);
         let mut now: HashMap<String, Vec<Diagnostic>> = HashMap::new();
         let mut analyses = HashMap::new();
         for (doc_uri, (path, text)) in &self.docs {
@@ -910,6 +915,46 @@ mod tests {
                 (real_uri.clone(), vec!["E0201".to_string()])
             );
         });
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// import 先のリンクと実のパスを両方開いて全文が違えば、import したパスと同じ文書の全文を読む（Codex のレビュー。
+    /// `HashMap` の順序に左右されないことを、サーバーを作り直して何度か確かめる）
+    #[cfg(unix)]
+    #[test]
+    fn imports_read_the_buffer_opened_at_the_same_path() {
+        let root = std::env::temp_dir().join(format!("wys-lsp-exact-{}", std::process::id()));
+        let project = root.join("project");
+        let shared = root.join("shared");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("lib.wys"), "").unwrap();
+        std::os::unix::fs::symlink(shared.join("lib.wys"), project.join("lib.wys")).unwrap();
+        let lib_link = path_to_uri(&project.join("lib.wys"));
+        let lib_real = path_to_uri(&shared.join("lib.wys"));
+        let main = path_to_uri(&project.join("main.wys"));
+        for _ in 0..8 {
+            with_server(|c| {
+                let open = |uri: &str, text: &str| {
+                    note(
+                        c,
+                        "textDocument/didOpen",
+                        serde_json::json!({"textDocument": {"uri": uri, "languageId": "wys", "version": 1, "text": text}}),
+                    );
+                    let _ = next_publish(c);
+                };
+                open(&lib_real, "pub def g() -> int:\n    return 1\n");
+                open(&lib_link, "pub def k() -> int:\n    return 1\n");
+                // 実のパスの全文（`g` だけ）を読めば名前解決のエラーになる
+                note(
+                    c,
+                    "textDocument/didOpen",
+                    serde_json::json!({"textDocument": {"uri": main, "languageId": "wys", "version": 1, "text": "import lib\n\ndef h() -> int:\n    return lib.k()\n"}}),
+                );
+                assert_eq!(next_publish(c), (main.clone(), vec![]));
+            });
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
