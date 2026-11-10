@@ -14,6 +14,7 @@
 | e2e テスト | `crates/wys_cli/tests/e2e.rs` | `cargo test -p wys_cli` | CLI の挙動（終了コード、出力形式、ビルドした実行ファイル） |
 | explain のスナップショットとスキーマ検証（M3 T8、ADR-0017） | `tests/conformance/explain/*.wys`、`crates/wys_testharness/tests/snapshots/conformance__explain_*.snap` | `cargo test -p wys_testharness`（`explain_json_snapshots`、`all_explain_reports_match_schema`） | `explain/` のケースは通常の実行ケースとしても動き、`wys explain` の JSON を insta で固定する。エラーのない全ケースの JSON を `docs/spec/explain-schema.json` で検証する |
 | ベンチ計測（M3 T7） | `benches/measure.sh`、`benches/programs/*.wys` | 手動（結果は `benches/results/bench-YYYYMMDD.tsv`、git 管理外）。CI はベンチ用プログラムの `fmt --check` と `check` だけ | コンパイル時間、バイナリサイズ、実行時間、最大常駐メモリ、retain / release の回数（`WYS_RC_STATS=1` でビルドした計測用の実行ファイル）。絶対値と計測環境だけを記録し、倍率は書かない。計数の仕組みは e2e の `rc_stats_count_reference_count_operations`。Python を使う `py_*.wys`（M4 T8）は、Python 3.14 がなければ飛ばす。Python のハンドルの release もランタイムが数える |
+| `wys check` の規模の伸び（#127） | `benches/check_scaling.py` | 手動（結果は `benches/results/check-YYYYMMDD.tsv`、git 管理外） | 1 つの関数の文の数を変えた `wys check` の時間（代入だけの `assign`、`if` で絞り込みと合流を繰り返す `branch`）。文の数に対して線形に伸びるかを見る。絶対値と計測環境だけを記録し、倍率は書かない |
 
 CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は `scripts/ci.sh`（fmt / clippy / test、`examples/` の `wys fmt --check`、PoC5 のケース検証）を実行する。
 
