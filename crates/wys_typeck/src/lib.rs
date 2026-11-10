@@ -1274,10 +1274,9 @@ fn unused_effects(cx: &Ctx, f: &FuncDef, index: usize, funcs: &[FuncInfo]) -> Ve
 /// 一度も読まれないローカル変数（W0201、ADR-0016 論点 20）。代入先、`for` の変数、`case Ok(x)` の束縛が対象で、
 /// `_` で始まる名前と引数は除く。読まれたかどうかは関数の中の名前で判定する（スコープは区別しない）。
 fn unused_locals(f: &FuncDef) -> Vec<Diagnostic> {
+    /// 同じ名前の 2 つ目以降は最後にまとめて落とす（ここで線形に探すと文の数の二乗の時間になる。#127）
     fn bind<'a>(id: &'a Ident, out: &mut Vec<&'a Ident>) {
-        if !out.iter().any(|b| b.name == id.name) {
-            out.push(id);
-        }
+        out.push(id);
     }
     fn stmts<'a>(ss: &'a [Stmt], binds: &mut Vec<&'a Ident>, reads: &mut HashSet<&'a str>) {
         for s in ss {
@@ -1389,6 +1388,8 @@ fn unused_locals(f: &FuncDef) -> Vec<Diagnostic> {
     let mut binds = Vec::new();
     let mut reads = HashSet::new();
     stmts(&f.body, &mut binds, &mut reads);
+    let mut seen = HashSet::new();
+    binds.retain(|b| seen.insert(b.name.as_str()));
     binds
         .into_iter()
         .filter(|b| {
@@ -2509,6 +2510,9 @@ struct FnCk<'a> {
     fn_span: Span,
     /// 次に検査する呼び出しが `await` の直下か `spawn` の引数で、`async def` を呼んでよいこと（E1303）
     allow_async_call: bool,
+    /// フィールドの経路（`x.a`）を作ったことのある根の変数。ほかの変数への代入では、環境を走査して経路の
+    /// 絞り込みを捨てる必要がない（文の数の二乗の時間にならないように。#127）
+    field_roots: std::cell::RefCell<HashSet<String>>,
 }
 
 impl<'a> FnCk<'a> {
@@ -2528,6 +2532,7 @@ impl<'a> FnCk<'a> {
             is_async: f.is_async,
             fn_span: f.name.span,
             allow_async_call: false,
+            field_roots: Default::default(),
         };
         ck.cx.push_type_scope(&f.type_params, &sig.type_params);
         let mut env = Env::new();
@@ -2599,20 +2604,26 @@ impl<'a> FnCk<'a> {
             return Env::new();
         };
         let rest: Vec<Env> = it.collect();
-        let mut out = Env::new();
-        for (name, &t) in &first {
-            let mut tys = vec![t];
-            let mut everywhere = true;
+        // 最初の環境をそのまま使い、ほかの経路にない変数を落とし、型の違う変数だけ和集合にする（大半の変数は
+        // どの経路でも同じ型なので、作り直したり和集合を求めたりしない。#127）
+        let mut out = first;
+        let types = &mut self.cx.types;
+        out.retain(|name, t| {
+            let mut tys: Option<Vec<Ty>> = None;
             for e in &rest {
                 match e.get(name) {
-                    Some(&u) => tys.push(u),
-                    None => everywhere = false,
+                    Some(&u) if u == *t && tys.is_none() => {}
+                    Some(&u) => tys.get_or_insert_with(|| vec![*t]).push(u),
+                    None => return false,
                 }
             }
-            if everywhere {
-                out.insert(name.clone(), self.cx.types.union(tys));
+            if let Some(mut tys) = tys {
+                // 同じ型だった経路の分も入れる（和集合は重複を除くので、順序と重複は結果を変えない）
+                tys.push(*t);
+                *t = types.union(tys);
             }
-        }
+            true
+        });
         out
     }
 
@@ -2742,7 +2753,7 @@ impl<'a> FnCk<'a> {
                     if let (Some(slot), Some(v)) = (env.get_mut(&name), self.vars.get(&name)) {
                         *slot = v.ty;
                     }
-                    Self::forget_paths(env, &name);
+                    self.forget_paths(env, &name);
                 }
                 let mut b = env.clone();
                 b.insert(var.name.clone(), declared);
@@ -2792,7 +2803,7 @@ impl<'a> FnCk<'a> {
                     if let (Some(slot), Some(var)) = (env.get_mut(&name), self.vars.get(&name)) {
                         *slot = var.ty;
                     }
-                    Self::forget_paths(env, &name);
+                    self.forget_paths(env, &name);
                 }
                 let (t, t_env, f_env) = self.cond(cond, env);
                 self.require_condition(t, cond.span);
@@ -3005,13 +3016,13 @@ impl<'a> FnCk<'a> {
                 // エラーのあるパターンの束縛も記録する（LSP の定義ジャンプ。型は `Error`）
                 self.bindings.push((n.clone(), Ty::Error, *span));
                 b.insert(n.clone(), Ty::Error);
-                Self::forget_paths(&mut b, n);
+                self.forget_paths(&mut b, n);
             }
             let returns = self.block(&arm.body, &mut b);
             if let Some((n, _)) = &error_binding {
                 self.vars.remove(n);
                 b.remove(n);
-                Self::forget_paths(&mut b, n);
+                self.forget_paths(&mut b, n);
             }
             if !returns {
                 live.push(b);
@@ -3218,7 +3229,7 @@ impl<'a> FnCk<'a> {
                     self.bindings.push((ident.name.clone(), ty, ident.span));
                     b.insert(ident.name.clone(), ty);
                     // 束縛は新しい値: 同じ名前の以前の経路の絞り込みを引き継がない（ADR-0016 論点 4）
-                    Self::forget_paths(&mut b, &ident.name);
+                    self.forget_paths(&mut b, &ident.name);
                     bound = Some(ident.name.clone());
                 }
             }
@@ -3227,7 +3238,7 @@ impl<'a> FnCk<'a> {
                 self.vars.remove(&n);
                 b.remove(&n);
                 // 束縛のスコープ（case の本体）で付いた経路を、match の後に漏らさない
-                Self::forget_paths(&mut b, &n);
+                self.forget_paths(&mut b, &n);
             }
             if !returns {
                 live.push(b);
@@ -3940,7 +3951,7 @@ impl<'a> FnCk<'a> {
             declared
         };
         env.insert(target.name.clone(), narrowed);
-        Self::forget_paths(env, &target.name);
+        self.forget_paths(env, &target.name);
     }
 
     fn ret_stmt(&mut self, span: Span, value: Option<&Expr>, env: &Env) {
@@ -4828,7 +4839,12 @@ impl<'a> FnCk<'a> {
         match &e.kind {
             ExprKind::Name(n) if self.vars.contains_key(n) => Some(n.clone()),
             ExprKind::Field { base, name } => {
-                self.path_key(base).map(|b| format!("{b}.{}", name.name))
+                let b = self.path_key(base)?;
+                let root = b.split('.').next().unwrap_or(&b);
+                if !self.field_roots.borrow().contains(root) {
+                    self.field_roots.borrow_mut().insert(root.to_string());
+                }
+                Some(format!("{b}.{}", name.name))
             }
             _ => None,
         }
@@ -4845,7 +4861,10 @@ impl<'a> FnCk<'a> {
     }
 
     /// 経路 `root` に代入したので、`root.` で始まる経路の絞り込みを捨てる（ADR-0016 論点 4）。
-    fn forget_paths(env: &mut Env, root: &str) {
+    fn forget_paths(&self, env: &mut Env, root: &str) {
+        if !self.field_roots.borrow().contains(root) {
+            return;
+        }
         let prefix = format!("{root}.");
         env.retain(|k, _| !k.starts_with(&prefix));
     }

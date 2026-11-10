@@ -67,7 +67,7 @@ wys lsp（wys_cli の副コマンド）── wys_lsp::run_stdio ── serve(&C
 | Conformance（T11） | `tests/conformance/lsp/<ケース>/main.wys`。`# expect-hover: 行:列 <コードブロックの 1 行目>`、`# expect-definition: 行:列 -> ファイル:行:列`（ファイルはケースのディレクトリからの相対。行・列は 1 始まり、列は Unicode スカラー値）。実行せず、LSP と同じ入口で解析だけ行う |
 | e2e | `wys lsp` を子プロセスにして JSON-RPC の全手順（`lsp_publishes_diagnostics_over_json_rpc`） |
 
-遅延の計測は `benches/lsp_latency.py`（絶対値だけ）。
+遅延の計測は `benches/lsp_latency.py`（絶対値だけ）。解析は入力のたびに全体をやり直すので、文の数に対する `wys check` の伸びも `benches/check_scaling.py` で見る（#127）。
 
 ## 8. クライアントの設定例
 
