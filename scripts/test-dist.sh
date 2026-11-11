@@ -21,6 +21,18 @@ if [ -z "$out" ] || [ "$out" != "$expected" ]; then
   exit 1
 fi
 
+# 動いているコンパイラがあっても入れ直せる（rename で入れ替える。Linux の `Text file busy` にならない）
+# 標準入力を開いたままの `wys lsp` を動かしておく（sleep の間は入力を待ち続ける）
+{ sleep 30 | "$tmp/prefix/bin/wys" lsp >/dev/null 2>&1; } &
+running=$!
+sleep 1
+scripts/install.sh --from-archive "$archive" --prefix "$tmp/prefix" >/dev/null
+pkill -P "$running" 2>/dev/null || true
+kill "$running" 2>/dev/null || true
+wait "$running" 2>/dev/null || true
+"$tmp/prefix/bin/wys" --version >/dev/null
+ls "$tmp/prefix/bin" | grep -q '\.new\.' && { echo "test-dist: 一時ファイルが残った" >&2; exit 1; }
+
 # 改ざんしたアーカイブ（SHA256SUMS と合わない）は入れない
 cp "$archive" "$tmp/bad.tar.gz"
 printf 'x' >> "$tmp/bad.tar.gz"

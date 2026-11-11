@@ -74,8 +74,16 @@ tar -C "$tmp" -xzf "$archive"
 dir="$tmp/${file%.tar.gz}"
 [ -x "$dir/bin/$name" ] || fail "アーカイブに bin/$name がない"
 mkdir -p "$prefix/bin" "$prefix/lib"
-cp "$dir/bin/$name" "$prefix/bin/$name"
-cp "$dir"/lib/*.a "$prefix/lib/"
+# 同じディレクトリの一時の名前に置いてから rename で入れ替える（動いているコンパイラ、たとえば `wys lsp` を
+# 上書きしようとして Linux の `Text file busy` で止まらないように。Codex のレビュー）
+place() {
+  cp "$1" "$2.new.$$"
+  mv -f "$2.new.$$" "$2"
+}
+place "$dir/bin/$name" "$prefix/bin/$name"
+for lib in "$dir"/lib/*.a; do
+  place "$lib" "$prefix/lib/$(basename "$lib")"
+done
 echo "install.sh: $prefix/bin/$name を入れた（$("$prefix/bin/$name" --version)）"
 case ":$PATH:" in
   *":$prefix/bin:"*) ;;
