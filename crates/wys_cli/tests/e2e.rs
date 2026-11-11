@@ -2497,3 +2497,20 @@ fn malformed_usage_is_a_malformed_reply() {
     );
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "ok x\n0\n");
 }
+
+/// usage の一部が壊れていても、正しいほうの数は数え、トークン数が分からないので `max_tokens` のある agent は以後
+/// 超過として扱う（閉じる方向。Codex のレビュー、#143）
+#[test]
+fn unknown_tokens_close_the_token_budget() {
+    const TWICE: &str = "@agent(tools=[], capabilities=[\"llm\"], max_tokens=1000)\nasync def capped() -> None uses io, llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    for _ in range(2):\n        match await llm_generate[str](req):\n            case Ok(t):\n                print(\"ok \" + t)\n            case Err(e):\n                print(e.kind + \": \" + e.message)\n    u = llm_usage()\n    print(u.output_tokens)\n\nasync def main() -> None uses io, llm:\n    await capped()\n";
+    let half = r#"{"error":"retry","usage":{"input_tokens":"bad","output_tokens":20}}"#;
+    let ok = r#"{"text":"x","usage":{"input_tokens":1,"output_tokens":1}}"#;
+    let (out, reqs) = run_with_provider("tokens_unknown", TWICE, &[half, ok], &[]);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        stdout,
+        "provider: malformed provider response: `usage` must hold non-negative integers\nbudget: max_tokens exceeded (tokens unknown)\n20\n",
+        "{stdout}"
+    );
+    assert_eq!(reqs.len(), 1, "the second call stops before it is sent");
+}
