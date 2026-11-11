@@ -222,4 +222,4 @@ async def main() -> None:
 - [AI SDK](ai-sdk.md): 型付きの LLM 呼び出し、ツールと agent、権限・承認・予算
 - [Python との連携](python.md)
 - [リファレンス](reference.md): コマンド、組み込み、環境変数、エラーコード
-- [安定性と互換性](../stability.md)（作成予定）、[セキュリティ](../security.md)
+- [安定性と互換性](../stability.md)、[セキュリティ](../security.md)

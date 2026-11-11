@@ -11,7 +11,7 @@
 #
 # 使い方: scripts/release.sh [--out <dir>] [--skip-build] [--profile-dir <target/release>]
 #   --skip-build と --profile-dir target/debug は検査用（scripts/test-dist.sh）。
-# 名前は ADR-0027 で決まるまで変数 1 か所（RELEASE_NAME で上書きできる）。
+# 名前は `wys`（ADR-0027）。検査のために RELEASE_NAME で上書きできる。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

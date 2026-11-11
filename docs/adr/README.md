@@ -41,9 +41,9 @@
 | [0025](0025-trace-replay-eval-cost.md) | トレース・記録と再生・評価ケース・費用の上限 | Accepted | 2026-11-07 |
 | [0026](0026-lsp-initial.md) | LSP の初期版（`wys lsp`、診断・型のホバー・定義ジャンプ・quickfix・整形） | Accepted | 2026-11-07 |
 | [0027](0027-name-extension-and-rename-scope.md) | 正式名称・拡張子・パッケージ名（`wys` を正式名称にする） | Accepted | 2026-11-11 |
-| [0028](0028-license-governance-and-security-reporting.md) | ライセンス（MIT OR Apache-2.0）・ガバナンス・貢献（DCO）・脆弱性の報告 | Proposed | 2026-11-11 |
-| [0029](0029-versioning-stability-and-support.md) | 版（SemVer 0.y.z）・安定性の段階・互換性の範囲・サポート期間 | Proposed | 2026-11-11 |
-| [0030](0030-distribution-and-release-process.md) | 配布（GitHub Releases、`bin/` + `lib/`、SHA-256）とリリースの手順 | Proposed | 2026-11-11 |
+| [0028](0028-license-governance-and-security-reporting.md) | ライセンス（MIT OR Apache-2.0）・ガバナンス・貢献（DCO）・脆弱性の報告 | Accepted | 2026-11-11 |
+| [0029](0029-versioning-stability-and-support.md) | 版（SemVer 0.y.z）・安定性の段階・互換性の範囲・サポート期間 | Accepted | 2026-11-11 |
+| [0030](0030-distribution-and-release-process.md) | 配布（GitHub Releases、`bin/` + `lib/`、SHA-256）とリリースの手順 | Accepted | 2026-11-11 |
 
 ## 未決定事項との対応
 
@@ -61,5 +61,5 @@
 | 8 | Python連携方式と対応バージョン、GIL/スレッド境界 | Phase 2 | INTEROP-001〜003 | [0018](0018-cpython-ffi-embedding.md) |
 | 9 | AI SDKを標準添付するか別パッケージとするか | Phase 2 | AI-001〜010 | [0022](0022-ai-sdk-surface.md) |
 | 10 | モデルプロバイダ抽象化、費用上限の算定方式、秘密情報保管、トレースのプライバシー方針 | Phase 2 | AI-006, AI-007, NFR-005 | [0023](0023-ai-runtime.md)、[0025](0025-trace-replay-eval-cost.md)（費用の上限とトレース） |
-| 11 | ライセンス、ガバナンス、パッケージレジストリ運用 | 公開前 | INTEROP-004 | [0028](0028-license-governance-and-security-reporting.md)（ライセンス・ガバナンス。Proposed。レジストリは Phase 3） |
-| 12 | 具体的な性能SLOとサポート期間 | ベンチマーク・利用者検証後 | NFR-002 | [0029](0029-versioning-stability-and-support.md)（サポート期間のみ。Proposed。SLO は未決） |
+| 11 | ライセンス、ガバナンス、パッケージレジストリ運用 | 公開前 | INTEROP-004 | [0028](0028-license-governance-and-security-reporting.md)（ライセンス・ガバナンス。レジストリは Phase 3） |
+| 12 | 具体的な性能SLOとサポート期間 | ベンチマーク・利用者検証後 | NFR-002 | [0029](0029-versioning-stability-and-support.md)（サポート期間のみ。SLO は未決） |

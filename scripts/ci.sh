@@ -38,6 +38,12 @@ if grep -nE '[0-9.]+ ?倍|倍速|x faster|times faster|faster than|slower than|[
   echo "error: performance ratios must not be written (requirements 5.1)" >&2
   exit 1
 fi
+echo "==> license files and dependency licenses (ADR-0028)"
+for f in LICENSE-MIT LICENSE-APACHE CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md CHANGELOG.md docs/third-party-licenses.md; do
+  [ -f "$f" ] || { echo "error: $f is missing (ADR-0028)" >&2; exit 1; }
+done
+grep -qx 'license = "MIT OR Apache-2.0"' Cargo.toml || { echo "error: Cargo.toml license must be MIT OR Apache-2.0" >&2; exit 1; }
+python3 -B scripts/third-party-licenses.py --check
 echo "==> poc5 cases"
 ./scripts/poc5/verify.sh
 echo "==> OK"

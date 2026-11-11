@@ -1258,14 +1258,14 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "wys_ast"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "wys_span",
 ]
 
 [[package]]
 name = "wys_backend"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "serde_json",
  "wys_ir",
@@ -1273,7 +1273,7 @@ dependencies = [
 
 [[package]]
 name = "wys_cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "serde_json",
  "ureq",
@@ -1286,7 +1286,7 @@ dependencies = [
 
 [[package]]
 name = "wys_diagnostics"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "jsonschema",
  "serde",
@@ -1296,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "wys_driver"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "wys_ast",
  "wys_backend",
@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "wys_explain"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "jsonschema",
  "serde",
@@ -1324,7 +1324,7 @@ dependencies = [
 
 [[package]]
 name = "wys_fmt"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "wys_diagnostics",
  "wys_lexer",
@@ -1332,11 +1332,11 @@ dependencies = [
 
 [[package]]
 name = "wys_ir"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "wys_lexer"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "wys_diagnostics",
  "wys_span",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "wys_lower"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "wys_ast",
  "wys_diagnostics",
@@ -1356,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "wys_lsp"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "lsp-server",
  "lsp-types",
@@ -1370,7 +1370,7 @@ dependencies = [
 
 [[package]]
 name = "wys_parser"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "wys_ast",
  "wys_diagnostics",
@@ -1380,7 +1380,7 @@ dependencies = [
 
 [[package]]
 name = "wys_resolve"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "wys_ast",
  "wys_diagnostics",
@@ -1390,7 +1390,7 @@ dependencies = [
 
 [[package]]
 name = "wys_runtime"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "wys_runtime_python"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "wys_driver",
  "wys_runtime",
@@ -1406,11 +1406,11 @@ dependencies = [
 
 [[package]]
 name = "wys_span"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "wys_testharness"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "insta",
  "jsonschema",
@@ -1423,7 +1423,7 @@ dependencies = [
 
 [[package]]
 name = "wys_typeck"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "wys_ast",
  "wys_diagnostics",

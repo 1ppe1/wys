@@ -80,4 +80,6 @@ target/release/wys run examples/agent_demo.wys   # @tool / @agent（既定のプ
 
 ## ライセンス
 
-MIT OR Apache-2.0 の二重ライセンスにする予定（ADR-0028、Proposed。LICENSE ファイルは公開の前に置く）。Copyright (c) 2026 1ppe1。
+[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE) の二重ライセンス（利用者が選べる。ADR-0028）。Copyright (c) 2026 1ppe1。依存クレートのライセンスは [docs/third-party-licenses.md](docs/third-party-licenses.md)。
+
+貢献の手順は [CONTRIBUTING.md](CONTRIBUTING.md)、行動規範は [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)、脆弱性の報告は [SECURITY.md](SECURITY.md)、変更履歴は [CHANGELOG.md](CHANGELOG.md)。
