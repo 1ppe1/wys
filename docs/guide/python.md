@@ -29,6 +29,6 @@ def main() -> None uses io, python:
             print(e.message)
 ```
 
-- `py_import` / `attr` / `call` で Python のオブジェクトを扱い、`to_int` / `to_str` / `to_bool` / `to_float` / `to_list` / `to_dict` で本言語の値に戻す。`py_value` は本言語の値を Python に渡す。
+- `py_import` / `attr` / `call` で Python のオブジェクトを扱い、`to_int` / `to_str` / `to_bool` / `to_float` / `to_list` / `to_dict` で `wys` の値に戻す。`py_value` は `wys` の値を Python に渡す。
 - ビルドには Python 3.14 と `python3.14-config` が要る（`WYS_PYTHON` で Python を指定できる）。
 - **Python のコードはサンドボックスではない**: `python` の Capability を与えた agent は、Python を通して何でもできる（[セキュリティ](../security.md)）。

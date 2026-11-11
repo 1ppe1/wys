@@ -1,10 +1,10 @@
-# AIネイティブ次世代プログラミング言語（仮称）
+# wys — AIネイティブ次世代プログラミング言語
 
 人間とAIの双方が安全に開発できる高性能なプログラミング言語を構築するプロジェクト。
 Pythonの簡潔さ、TypeScriptの型表現力、Nim/Codon/Mojoのネイティブ性能を参考に、
 **型安全・ネイティブ実行・AIエージェントの安全な実行**を一つの言語体験として提供することを目指す。
 
-> **現在のステータス:** M2 完了（型の拡張・モジュール・`test` / `fmt`）。次は M3（メモリ管理と標準ライブラリ）。内部コードネームは `wys`（正式名称ではない）。
+> **現在のステータス:** M2 完了（型の拡張・モジュール・`test` / `fmt`）。次は M3（メモリ管理と標準ライブラリ）。
 
 ## 試し方
 
@@ -57,7 +57,7 @@ target/debug/wys run examples/agent_demo.wys   # @tool / @agent と型付きの 
 ├── .claude/           # Claude Code のプロジェクト設定
 ├── Cargo.toml         # Rust ワークスペース
 ├── rust-toolchain.toml
-├── crates/wys_*/      # コンパイラ・ランタイム・CLI（wys は内部コードネーム）
+├── crates/wys_*/      # コンパイラ・ランタイム・CLI
 ├── examples/          # サンプルプログラム（.wys）
 ├── scripts/ci.sh      # CI と同じチェック
 └── docs/
