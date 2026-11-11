@@ -1,0 +1,11 @@
+# elif の連鎖で return しない分岐があれば、合流の後の m は int | None に戻る（#135 の回帰の防止）
+# expect-error: E0301 8:12
+def f(n: int | None, m: int | None) -> int:
+    if n is None:
+        return 0
+    elif m is None:
+        print(n)
+    return n + m
+
+def main() -> None uses io:
+    print(f(1, 2))

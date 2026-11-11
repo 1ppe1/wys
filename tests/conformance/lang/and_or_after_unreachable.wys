@@ -1,0 +1,15 @@
+# and / or と到達しない経路: 絞り込み済みの変数をもう一度調べても型が崩れない（#135 の回帰の防止）
+# expect-stdout: 3
+# expect-stdout: 0
+def f(n: int | None, c: bool) -> int:
+    if n is None:
+        return 0
+    if n is None and c:
+        return 1
+    if not (n is None) or c:
+        return n + 2
+    return n
+
+def main() -> None uses io:
+    print(f(1, True))
+    print(f(None, True))

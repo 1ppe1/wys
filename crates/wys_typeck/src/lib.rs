@@ -3,7 +3,8 @@
 //! - 関数シグネチャは注釈必須、ローカル変数は最初の代入から推論する（LANG-002）。
 //! - 暗黙の型変換はしない。条件式は `bool` でなければならない（LANG-007）。
 //! - Union 型（`int | str`、`str | None`）は平坦化・正規化して ID で管理する（ADR-0006）。
-//! - 流れ解析: 各地点で「確実に代入済みの変数」と「絞り込み後の型」を環境（`Env`）として流す。
+//! - 流れ解析: 各地点で「確実に代入済みの変数」と「絞り込み後の型」を環境（`Env`）として流す。環境は関数ごとに
+//!   1 つで、分岐は取り消し記録で巻き戻し、合流は分岐で変わったキーの差分だけを見る（#135）。
 //!   `x is None` / `x is not None`（`and` / `or` / `not` の組み合わせを含む）でローカル変数を絞り込む。
 //!   `None` の可能性がある値を、`None` を許さない場所で使うと E0301（AC-002）。
 //! - 値を返す関数は、すべての経路で `return` しなければならない。
@@ -898,6 +899,8 @@ pub struct FuncInfo {
     pub narrowings: Vec<Narrowing>,
     /// 関数の呼び出しと、呼び出し先の Effect（位置の順。`wys explain` 用）。
     pub effect_sites: Vec<EffectSite>,
+    /// 流れ解析の仕事量（分岐の差分と合流で見たキーの数）。文の数に比例することの検査用（#135）
+    pub env_work: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -2481,15 +2484,163 @@ struct Var {
     decl: Span,
 }
 
-/// 流れ解析の環境: 確実に代入済みの変数と、その地点での（絞り込み後の）型。
-type Env = HashMap<String, Ty>;
+/// 流れ解析の環境: 確実に代入済みの変数と、その地点での（絞り込み後の）型。キーは変数名か経路（`p.a`）か
+/// [`UNREACHABLE`]。
+///
+/// 関数ごとに 1 つだけ持ち、分岐ごとに複製しない（#135）。書き込みはすべて取り消し記録（`trail`）に積み、分岐は
+/// `mark` → 検査 → `delta_since`（分岐の終わりと分岐の前の差）→ `rollback` で巻き戻す。合流は差分に出たキー
+/// だけを見る（[`FnCk::join_deltas`]）。分岐の多い関数でも、仕事量は文の数と入れ子の深さに比例する。
+#[derive(Default)]
+struct Env {
+    map: HashMap<String, Ty>,
+    /// （キー, 書き込む前の値）。`None` はなかったこと
+    trail: Vec<(String, Option<Ty>)>,
+    /// 差分と合流で見たキーの数（規模の検査用。`TypeckResult::env_work`）
+    work: u64,
+}
+
+/// 分岐の終わりの環境と、分岐の前の環境の差。`None` は分岐の終わりにない（消された）こと
+type Delta = HashMap<String, Option<Ty>>;
+
+/// 取り消し記録の位置
+#[derive(Clone, Copy)]
+struct Mark(usize);
+
+impl Env {
+    fn get(&self, k: &str) -> Option<&Ty> {
+        self.map.get(k)
+    }
+
+    fn insert(&mut self, k: String, t: Ty) {
+        let prev = self.map.insert(k.clone(), t);
+        self.trail.push((k, prev));
+    }
+
+    fn remove(&mut self, k: &str) {
+        if let Some(prev) = self.map.remove(k) {
+            self.trail.push((k.to_string(), Some(prev)));
+        }
+    }
+
+    fn is_unreachable(&self) -> bool {
+        self.map.contains_key(UNREACHABLE)
+    }
+
+    fn mark(&self) -> Mark {
+        Mark(self.trail.len())
+    }
+
+    /// `m` の後の書き込みを、新しいものから戻す
+    fn rollback(&mut self, m: Mark) {
+        while self.trail.len() > m.0 {
+            let Some((k, prev)) = self.trail.pop() else {
+                break;
+            };
+            match prev {
+                Some(t) => self.map.insert(k, t),
+                None => self.map.remove(&k),
+            };
+        }
+    }
+
+    /// `m` の時点から変わったキーと、いまの値（同じ値に戻ったキーは入れない）
+    fn delta_since(&mut self, m: Mark) -> Delta {
+        let mut before: HashMap<&str, Option<Ty>> = HashMap::new();
+        for (k, prev) in &self.trail[m.0..] {
+            before.entry(k.as_str()).or_insert(*prev);
+        }
+        self.work += (self.trail.len() - m.0) as u64;
+        before
+            .into_iter()
+            .filter_map(|(k, prev)| {
+                let now = self.map.get(k).copied();
+                (now != prev).then(|| (k.to_string(), now))
+            })
+            .collect()
+    }
+
+    fn apply(&mut self, d: &Delta) {
+        for (k, v) in d {
+            match v {
+                Some(t) => self.insert(k.clone(), *t),
+                None => self.remove(k),
+            }
+        }
+    }
+
+    /// 差分 `d` を適用した後の環境は到達しないか
+    fn unreachable_with(&self, d: &Delta) -> bool {
+        match d.get(UNREACHABLE) {
+            Some(v) => v.is_some(),
+            None => self.is_unreachable(),
+        }
+    }
+}
+
+/// 差分 `a` の後に差分 `b` を適用したのと同じ差分
+fn compose(a: &Delta, b: &Delta) -> Delta {
+    let mut out = a.clone();
+    out.extend(b.iter().map(|(k, v)| (k.clone(), *v)));
+    out
+}
+
+fn delta_with(k: &str, t: Ty, unreachable: bool) -> Delta {
+    let mut d = Delta::new();
+    d.insert(k.to_string(), Some(t));
+    if unreachable {
+        d.insert(UNREACHABLE.to_string(), Some(Ty::Error));
+    }
+    d
+}
+
+/// 複数の経路を合流させる: 代入済みの変数は共通部分、型は和集合。各経路は `base` に対する差分で、結果も
+/// `base` に対する差分。差分に出てこないキーはどの経路でも `base` と同じなので見ない（#135）。
+/// 到達しない経路は数えない（すべて到達しないなら、最初の経路を返す）。
+fn join_deltas(types: &mut Types, base: &mut Env, deltas: Vec<Delta>) -> Delta {
+    let reachable: Vec<&Delta> = deltas
+        .iter()
+        .filter(|d| !base.unreachable_with(d))
+        .collect();
+    if reachable.is_empty() {
+        return deltas.into_iter().next().unwrap_or_default();
+    }
+    let mut keys: Vec<&str> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    for d in &reachable {
+        for k in d.keys() {
+            if seen.insert(k.as_str()) {
+                keys.push(k.as_str());
+            }
+        }
+    }
+    base.work += keys.len() as u64;
+    let mut out = Delta::new();
+    for k in keys {
+        let now = base.map.get(k).copied();
+        let mut tys: Vec<Ty> = Vec::with_capacity(reachable.len());
+        let mut everywhere = true;
+        for d in &reachable {
+            match d.get(k).copied().unwrap_or(now) {
+                Some(t) => tys.push(t),
+                None => everywhere = false,
+            }
+        }
+        let joined = if !everywhere {
+            None
+        } else if tys.iter().all(|t| *t == tys[0]) {
+            Some(tys[0])
+        } else {
+            Some(types.union(tys))
+        };
+        if joined != now {
+            out.insert(k.to_string(), joined);
+        }
+    }
+    out
+}
 
 /// 到達しない経路の環境に付ける目印（変数名には使えない文字列）。合流ではこの環境を数えない。
 const UNREACHABLE: &str = "\u{0}unreachable";
-
-fn unreachable_env(env: &Env) -> bool {
-    env.contains_key(UNREACHABLE)
-}
 
 struct FnCk<'a> {
     cx: &'a mut Ctx,
@@ -2535,7 +2686,7 @@ impl<'a> FnCk<'a> {
             field_roots: Default::default(),
         };
         ck.cx.push_type_scope(&f.type_params, &sig.type_params);
-        let mut env = Env::new();
+        let mut env = Env::default();
         for (p, &ty) in f.params.iter().zip(&sig.params) {
             if ck.vars.contains_key(&p.name.name) {
                 ck.cx.diags.push(Diagnostic::error(
@@ -2556,6 +2707,7 @@ impl<'a> FnCk<'a> {
             env.insert(p.name.name.clone(), ty);
         }
         let returns = ck.block(&f.body, &mut env);
+        let env_work = env.work;
         ck.cx.type_scope.pop();
         if !returns && sig.ret != Ty::None && sig.ret != Ty::Error {
             let ret_name = ck.cx.name(sig.ret);
@@ -2582,6 +2734,7 @@ impl<'a> FnCk<'a> {
             bindings: ck.bindings,
             narrowings,
             effect_sites,
+            env_work,
         }
     }
 
@@ -2591,40 +2744,8 @@ impl<'a> FnCk<'a> {
         self.local_spans.push(decl);
     }
 
-    /// 複数の経路の環境を合流させる: 代入済みの変数は共通部分、型は和集合。
-    fn join(&mut self, envs: Vec<Env>) -> Env {
-        // 到達しない経路は合流に数えない（すべて到達しないなら、そのうちの1つを返す）
-        let (reachable, unreachable): (Vec<Env>, Vec<Env>) =
-            envs.into_iter().partition(|e| !unreachable_env(e));
-        if reachable.is_empty() {
-            return unreachable.into_iter().next().unwrap_or_default();
-        }
-        let mut it = reachable.into_iter();
-        let Some(first) = it.next() else {
-            return Env::new();
-        };
-        let rest: Vec<Env> = it.collect();
-        // 最初の環境をそのまま使い、ほかの経路にない変数を落とし、型の違う変数だけ和集合にする（大半の変数は
-        // どの経路でも同じ型なので、作り直したり和集合を求めたりしない。#127）
-        let mut out = first;
-        let types = &mut self.cx.types;
-        out.retain(|name, t| {
-            let mut tys: Option<Vec<Ty>> = None;
-            for e in &rest {
-                match e.get(name) {
-                    Some(&u) if u == *t && tys.is_none() => {}
-                    Some(&u) => tys.get_or_insert_with(|| vec![*t]).push(u),
-                    None => return false,
-                }
-            }
-            if let Some(mut tys) = tys {
-                // 同じ型だった経路の分も入れる（和集合は重複を除くので、順序と重複は結果を変えない）
-                tys.push(*t);
-                *t = types.union(tys);
-            }
-            true
-        });
-        out
+    fn join_deltas(&mut self, base: &mut Env, deltas: Vec<Delta>) -> Delta {
+        join_deltas(&mut self.cx.types, base, deltas)
     }
 
     /// 文の列を検査する。必ず `return` するなら true。
@@ -2659,9 +2780,9 @@ impl<'a> FnCk<'a> {
                 && kwargs.is_empty() =>
             {
                 self.check_effects(callee);
-                let (t, t_env, _) = self.cond(&args[0], env);
+                let (t, t_delta, _) = self.cond(&args[0], env);
                 self.require_condition(t, args[0].span);
-                *env = t_env;
+                env.apply(&t_delta);
                 self.record(e, Ty::None);
                 false
             }
@@ -2691,32 +2812,36 @@ impl<'a> FnCk<'a> {
                 branches,
                 else_body,
             } => {
-                // 各分岐の条件は「それより前の条件がすべて偽」の環境で評価する。
-                let mut cur = env.clone();
+                // 各分岐の条件は「それより前の条件がすべて偽」の環境で評価する。各分岐の終わりは `if` に入る前
+                // （`start`）からの差分にする（それまでの条件が偽だった絞り込みを含む）
+                let start = env.mark();
                 let mut live = Vec::new();
                 for (cond, body) in branches {
-                    let (t, t_env, f_env) = self.cond(cond, &cur);
+                    let (t, t_delta, f_delta) = self.cond(cond, env);
                     self.require_condition(t, cond.span);
-                    let mut b = t_env;
-                    if !self.block(body, &mut b) && !unreachable_env(&b) {
-                        live.push(b);
+                    let before = env.mark();
+                    env.apply(&t_delta);
+                    if !self.block(body, env) && !env.is_unreachable() {
+                        live.push(env.delta_since(start));
                     }
-                    cur = f_env;
+                    env.rollback(before);
+                    env.apply(&f_delta);
                 }
                 match else_body {
                     Some(body) => {
-                        let mut b = cur;
-                        if !self.block(body, &mut b) && !unreachable_env(&b) {
-                            live.push(b);
+                        if !self.block(body, env) && !env.is_unreachable() {
+                            live.push(env.delta_since(start));
                         }
                     }
-                    None if !unreachable_env(&cur) => live.push(cur),
+                    None if !env.is_unreachable() => live.push(env.delta_since(start)),
                     None => {}
                 }
+                env.rollback(start);
                 if live.is_empty() {
                     return true; // すべての分岐が return する
                 }
-                *env = self.join(live);
+                let joined = self.join_deltas(env, live);
+                env.apply(&joined);
                 false
             }
             StmtKind::Match { subject, arms } => self.match_stmt(subject, arms, env),
@@ -2750,14 +2875,18 @@ impl<'a> FnCk<'a> {
                 // ループ変数自身も毎回代入される: 入口とループの後では宣言された型に戻し、経路の絞り込みを捨てる
                 assigned.insert(var.name.clone());
                 for name in assigned {
-                    if let (Some(slot), Some(v)) = (env.get_mut(&name), self.vars.get(&name)) {
-                        *slot = v.ty;
+                    if env.get(&name).is_some()
+                        && let Some(v) = self.vars.get(&name)
+                    {
+                        env.insert(name.clone(), v.ty);
                     }
                     self.forget_paths(env, &name);
                 }
-                let mut b = env.clone();
-                b.insert(var.name.clone(), declared);
-                self.block(body, &mut b);
+                // 本体の環境は捨てる（ループの後は入口の環境）
+                let start = env.mark();
+                env.insert(var.name.clone(), declared);
+                self.block(body, env);
+                env.rollback(start);
                 false
             }
             StmtKind::IndexAssign { target, value } => {
@@ -2800,16 +2929,20 @@ impl<'a> FnCk<'a> {
                 let mut assigned = HashSet::new();
                 assigned_vars(body, &mut assigned);
                 for name in assigned {
-                    if let (Some(slot), Some(var)) = (env.get_mut(&name), self.vars.get(&name)) {
-                        *slot = var.ty;
+                    if env.get(&name).is_some()
+                        && let Some(var) = self.vars.get(&name)
+                    {
+                        env.insert(name.clone(), var.ty);
                     }
                     self.forget_paths(env, &name);
                 }
-                let (t, t_env, f_env) = self.cond(cond, env);
+                let (t, t_delta, f_delta) = self.cond(cond, env);
                 self.require_condition(t, cond.span);
-                let mut b = t_env;
-                self.block(body, &mut b);
-                *env = f_env;
+                let start = env.mark();
+                env.apply(&t_delta);
+                self.block(body, env);
+                env.rollback(start);
+                env.apply(&f_delta);
                 false
             }
         }
@@ -2993,7 +3126,7 @@ impl<'a> FnCk<'a> {
                 );
             }
             remaining.retain(|m| !covered.contains(m));
-            let mut b = env.clone();
+            let start = env.mark();
             if let Some(n) = &subject_var
                 && !covered.is_empty()
             {
@@ -3003,7 +3136,7 @@ impl<'a> FnCk<'a> {
                 } else {
                     self.cx.types.union(covered.iter().copied())
                 };
-                b.insert(n.clone(), narrowed);
+                env.insert(n.clone(), narrowed);
             }
             if let Some((n, span)) = &error_binding {
                 self.vars.insert(
@@ -3015,17 +3148,19 @@ impl<'a> FnCk<'a> {
                 );
                 // エラーのあるパターンの束縛も記録する（LSP の定義ジャンプ。型は `Error`）
                 self.bindings.push((n.clone(), Ty::Error, *span));
-                b.insert(n.clone(), Ty::Error);
-                self.forget_paths(&mut b, n);
+                env.insert(n.clone(), Ty::Error);
+                self.forget_paths(env, n);
             }
-            let returns = self.block(&arm.body, &mut b);
+            let returns = self.block(&arm.body, env);
             if let Some((n, _)) = &error_binding {
                 self.vars.remove(n);
-                b.remove(n);
-                self.forget_paths(&mut b, n);
+                env.remove(n);
+                self.forget_paths(env, n);
             }
+            let arm_delta = env.delta_since(start);
+            env.rollback(start);
             if !returns {
-                live.push(b);
+                live.push(arm_delta);
             }
         }
         if st == Ty::Unknown && !remaining.is_empty() {
@@ -3040,7 +3175,7 @@ impl<'a> FnCk<'a> {
                 )
                 .with_hint("add `case _:` to handle every other value"),
             );
-            live.push(env.clone());
+            live.push(Delta::new());
         } else if members.is_some() && !remaining.is_empty() {
             let missing: Vec<String> = remaining.iter().map(|m| case_text(*m)).collect();
             let msg = format!(
@@ -3058,12 +3193,13 @@ impl<'a> FnCk<'a> {
                     .with_hint(format!("add {}", missing.join(", ")))
                     .with_hint("or add `case _:` to handle every remaining value"),
             );
-            live.push(env.clone());
+            live.push(Delta::new());
         }
         if live.is_empty() {
             return true;
         }
-        *env = self.join(live);
+        let joined = self.join_deltas(env, live);
+        env.apply(&joined);
         false
     }
 
@@ -3193,7 +3329,7 @@ impl<'a> FnCk<'a> {
             for &i in &covered {
                 remaining[i] = false;
             }
-            let mut b = env.clone();
+            let start = env.mark();
             let mut bound = None;
             if let Some((ident, ty)) = binding {
                 if let Some(var) = self.vars.get(&ident.name) {
@@ -3227,21 +3363,23 @@ impl<'a> FnCk<'a> {
                     );
                     // LSP の定義ジャンプとホバー、`wys explain` の `binding` 用に記録する
                     self.bindings.push((ident.name.clone(), ty, ident.span));
-                    b.insert(ident.name.clone(), ty);
+                    env.insert(ident.name.clone(), ty);
                     // 束縛は新しい値: 同じ名前の以前の経路の絞り込みを引き継がない（ADR-0016 論点 4）
-                    self.forget_paths(&mut b, &ident.name);
+                    self.forget_paths(env, &ident.name);
                     bound = Some(ident.name.clone());
                 }
             }
-            let returns = self.block(&arm.body, &mut b);
+            let returns = self.block(&arm.body, env);
             if let Some(n) = bound {
                 self.vars.remove(&n);
-                b.remove(&n);
+                env.remove(&n);
                 // 束縛のスコープ（case の本体）で付いた経路を、match の後に漏らさない
-                self.forget_paths(&mut b, &n);
+                self.forget_paths(env, &n);
             }
+            let arm_delta = env.delta_since(start);
+            env.rollback(start);
             if !returns {
-                live.push(b);
+                live.push(arm_delta);
             }
         }
         if remaining.iter().any(|&m| m) {
@@ -3268,12 +3406,13 @@ impl<'a> FnCk<'a> {
                     .with_hint(format!("add {}", hints.join(", ")))
                     .with_hint("or add `case _:` to handle every remaining value"),
             );
-            live.push(env.clone());
+            live.push(Delta::new());
         }
         if live.is_empty() {
             return true;
         }
-        *env = self.join(live);
+        let joined = self.join_deltas(env, live);
+        env.apply(&joined);
         false
     }
 
@@ -3331,7 +3470,7 @@ impl<'a> FnCk<'a> {
     }
 
     /// 型の手掛かり（`hint`）付きで式を検査する。今はリストのリテラル（特に空の `[]`）だけが手掛かりを使う。
-    fn expr_hint(&mut self, e: &Expr, env: &Env, hint: Option<Ty>) -> Ty {
+    fn expr_hint(&mut self, e: &Expr, env: &mut Env, hint: Option<Ty>) -> Ty {
         match &e.kind {
             ExprKind::List(items) => {
                 let t = self.list_literal(items, env, hint, e.span);
@@ -3356,7 +3495,7 @@ impl<'a> FnCk<'a> {
 
     /// `operand?`（ADR-0013）: 被演算子は `Result`（E1010）、囲む関数は `Result` を返す（E1011）、
     /// 被演算子のエラー型は宣言されたエラー型に収まる（E1012）。式の型は成功時の型。
-    fn try_expr(&mut self, inner: &Expr, span: Span, env: &Env) -> Ty {
+    fn try_expr(&mut self, inner: &Expr, span: Span, env: &mut Env) -> Ty {
         let t = self.expr(inner, env);
         let Ty::Result(r) = t else {
             if t != Ty::Error {
@@ -3430,7 +3569,7 @@ impl<'a> FnCk<'a> {
     fn dict_literal(
         &mut self,
         entries: &[(Expr, Expr)],
-        env: &Env,
+        env: &mut Env,
         hint: Option<Ty>,
         span: Span,
     ) -> Ty {
@@ -3498,7 +3637,7 @@ impl<'a> FnCk<'a> {
     }
 
     /// `k in d` / `k not in d`: 右辺は `dict`、左辺はそのキーの型（ADR-0015）。
-    fn in_expr(&mut self, lhs: &Expr, rhs: &Expr, env: &Env) -> Ty {
+    fn in_expr(&mut self, lhs: &Expr, rhs: &Expr, env: &mut Env) -> Ty {
         let rt = self.expr(rhs, env);
         match rt {
             Ty::Dict(d) => {
@@ -3535,7 +3674,7 @@ impl<'a> FnCk<'a> {
         args: &[Expr],
         hint: Option<Ty>,
         span: Span,
-        env: &Env,
+        env: &mut Env,
     ) -> Ty {
         let target = hint.and_then(|h| {
             let rs: Vec<Ty> = self
@@ -3603,7 +3742,7 @@ impl<'a> FnCk<'a> {
     }
 
     /// `[a, b, c]`: 手掛かりが `list[T]` なら各要素が `T` に収まるかを確かめる。なければ要素の型の Union。
-    fn list_literal(&mut self, items: &[Expr], env: &Env, hint: Option<Ty>, span: Span) -> Ty {
+    fn list_literal(&mut self, items: &[Expr], env: &mut Env, hint: Option<Ty>, span: Span) -> Ty {
         // 手掛かりがリスト型か、リスト型を1つだけ含む Union（`list[int] | None`）なら、その要素の型を使う
         let list_hint = hint.and_then(|h| {
             let lists: Vec<Ty> = self
@@ -3684,7 +3823,7 @@ impl<'a> FnCk<'a> {
     }
 
     /// `for` の反復対象: `range(n)` / `range(a, b)` なら `int`、`list[T]` なら `T`。
-    fn for_iter(&mut self, iter: &Expr, env: &Env) -> Ty {
+    fn for_iter(&mut self, iter: &Expr, env: &mut Env) -> Ty {
         if let ExprKind::Call {
             callee,
             type_args,
@@ -3760,7 +3899,7 @@ impl<'a> FnCk<'a> {
         mspan: Span,
         args: &[Expr],
         span: Span,
-        env: &Env,
+        env: &mut Env,
     ) -> Ty {
         let rt = match env.get(recv) {
             Some(t) => *t,
@@ -3954,7 +4093,7 @@ impl<'a> FnCk<'a> {
         self.forget_paths(env, &target.name);
     }
 
-    fn ret_stmt(&mut self, span: Span, value: Option<&Expr>, env: &Env) {
+    fn ret_stmt(&mut self, span: Span, value: Option<&Expr>, env: &mut Env) {
         match (self.ret, value) {
             (Ty::Error, Some(e)) => {
                 self.expr_hint(e, env, Some(Ty::Error));
@@ -3997,7 +4136,7 @@ impl<'a> FnCk<'a> {
     }
 
     /// 式を検査して型を返す。
-    fn expr(&mut self, e: &Expr, env: &Env) -> Ty {
+    fn expr(&mut self, e: &Expr, env: &mut Env) -> Ty {
         match &e.kind {
             ExprKind::Is { .. }
             | ExprKind::Unary {
@@ -4014,14 +4153,15 @@ impl<'a> FnCk<'a> {
         }
     }
 
-    /// 真偽値になり得る式を検査し、`(型, 真のときの環境, 偽のときの環境)` を返す。
-    fn cond(&mut self, e: &Expr, env: &Env) -> (Ty, Env, Env) {
+    /// 真偽値になり得る式を検査し、`(型, 真のときの差分, 偽のときの差分)` を返す（どちらも `env` に対する差分。
+    /// `env` は呼ぶ前と同じに戻る）。
+    fn cond(&mut self, e: &Expr, env: &mut Env) -> (Ty, Delta, Delta) {
         match &e.kind {
             ExprKind::Is { lhs, negated, rhs } => {
                 let lt = self.expr(lhs, env);
                 self.expr(rhs, env);
-                let mut t_env = env.clone();
-                let mut f_env = env.clone();
+                let mut t_delta = Delta::new();
+                let mut f_delta = Delta::new();
                 if !matches!(rhs.kind, ExprKind::None) {
                     self.cx.diags.push(
                         Diagnostic::error(
@@ -4068,23 +4208,17 @@ impl<'a> FnCk<'a> {
                         } else {
                             (Ty::None, some)
                         };
-                        t_env.insert(n.clone(), on_true);
-                        f_env.insert(n.clone(), on_false);
                         let (true_reachable, false_reachable) = if *negated {
                             (some_reachable, none_reachable)
                         } else {
                             (none_reachable, some_reachable)
                         };
-                        if !true_reachable {
-                            t_env.insert(UNREACHABLE.to_string(), Ty::Error);
-                        }
-                        if !false_reachable {
-                            f_env.insert(UNREACHABLE.to_string(), Ty::Error);
-                        }
+                        t_delta = delta_with(&n, on_true, !true_reachable);
+                        f_delta = delta_with(&n, on_false, !false_reachable);
                     }
                 }
                 self.record(e, Ty::Bool);
-                (Ty::Bool, t_env, f_env)
+                (Ty::Bool, t_delta, f_delta)
             }
             ExprKind::Unary {
                 op: UnaryOp::Not,
@@ -4101,27 +4235,32 @@ impl<'a> FnCk<'a> {
                 rhs,
             } => {
                 let (lt, t1, f1) = self.cond(lhs, env);
-                let (rt, t_env, f_env) = if *op == BinOp::And {
-                    // 右辺は左辺が真のときだけ評価される
-                    let (rt, t2, f2) = self.cond(rhs, &t1);
-                    (rt, t2, self.join(vec![f1, f2]))
+                // 右辺は、`and` なら左辺が真のとき、`or` なら偽のときだけ評価される。右辺の差分はその環境に
+                // 対するものなので、左辺の差分と合成してから合流する
+                let first = if *op == BinOp::And { &t1 } else { &f1 };
+                let start = env.mark();
+                env.apply(first);
+                let (rt, t2, f2) = self.cond(rhs, env);
+                env.rollback(start);
+                let (t_delta, f_delta) = if *op == BinOp::And {
+                    let f = self.join_deltas(env, vec![f1, compose(&t1, &f2)]);
+                    (compose(&t1, &t2), f)
                 } else {
-                    // 右辺は左辺が偽のときだけ評価される
-                    let (rt, t2, f2) = self.cond(rhs, &f1);
-                    (rt, self.join(vec![t1, t2]), f2)
+                    let t = self.join_deltas(env, vec![t1, compose(&f1, &t2)]);
+                    (t, compose(&f1, &f2))
                 };
                 let ty = self.binary(*op, lt, rt, e.span);
                 self.record(e, ty);
-                (ty, t_env, f_env)
+                (ty, t_delta, f_delta)
             }
             _ => {
                 let t = self.expr(e, env);
-                (t, env.clone(), env.clone())
+                (t, Delta::new(), Delta::new())
             }
         }
     }
 
-    fn expr_inner(&mut self, e: &Expr, env: &Env) -> Ty {
+    fn expr_inner(&mut self, e: &Expr, env: &mut Env) -> Ty {
         match &e.kind {
             ExprKind::Int(_) => Ty::Int,
             ExprKind::Float(_) => Ty::Float,
@@ -4567,7 +4706,7 @@ impl<'a> FnCk<'a> {
     }
 
     /// `PyObject` のメソッド（ADR-0018 論点 9）。すべて Effect `python` を持ち、失敗し得るものは `Result[.., PyError]`。
-    fn py_method(&mut self, m: &str, mspan: Span, args: &[Expr], span: Span, env: &Env) -> Ty {
+    fn py_method(&mut self, m: &str, mspan: Span, args: &[Expr], span: Span, env: &mut Env) -> Ty {
         let err = self.cx.types.py_error();
         let list_of_py = self.cx.types.list(Ty::PyObject);
         let dict_of_py = self.cx.types.dict(Ty::Str, Ty::PyObject);
@@ -4687,7 +4826,7 @@ impl<'a> FnCk<'a> {
         args: &[Expr],
         kwargs: &[(Ident, Expr)],
         span: Span,
-        env: &Env,
+        env: &mut Env,
     ) -> Ty {
         for a in args {
             self.expr(a, env);
@@ -4866,10 +5005,18 @@ impl<'a> FnCk<'a> {
             return;
         }
         let prefix = format!("{root}.");
-        env.retain(|k, _| !k.starts_with(&prefix));
+        let gone: Vec<String> = env
+            .map
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for k in gone {
+            env.remove(&k);
+        }
     }
 
-    fn field(&mut self, e: &Expr, base: &Expr, name: &Ident, env: &Env) -> Ty {
+    fn field(&mut self, e: &Expr, base: &Expr, name: &Ident, env: &mut Env) -> Ty {
         let bt = self.expr(base, env);
         match bt {
             Ty::Error => Ty::Error,
@@ -5155,7 +5302,7 @@ impl<'a> FnCk<'a> {
     }
 
     /// `await operand`（ADR-0020 論点 5）: `async def` の呼び出しならその戻り値、`Task[T]` なら `T`。
-    fn await_expr(&mut self, inner: &Expr, span: Span, env: &Env) -> Ty {
+    fn await_expr(&mut self, inner: &Expr, span: Span, env: &mut Env) -> Ty {
         if !self.is_async {
             self.outside_async("await", span);
         }
@@ -5193,7 +5340,7 @@ impl<'a> FnCk<'a> {
     }
 
     /// `spawn(f(args))`（ADR-0020 論点 8）: `Task[T]`（`T` は `f` の戻り値の型）。
-    fn spawn(&mut self, args: &[Expr], span: Span, env: &Env) -> Ty {
+    fn spawn(&mut self, args: &[Expr], span: Span, env: &mut Env) -> Ty {
         if !self.is_async {
             self.outside_async("spawn", span);
         }
@@ -5259,7 +5406,7 @@ impl<'a> FnCk<'a> {
         args: &[Expr],
         span: Span,
         id: ExprId,
-        env: &Env,
+        env: &mut Env,
     ) -> Ty {
         // `await` の直下・`spawn` の引数であることは、この呼び出しだけに効く（引数の呼び出しには引き継がない）
         let allowed = std::mem::take(&mut self.allow_async_call);
@@ -5787,6 +5934,130 @@ mod tests {
         assert_eq!(run(&with_main(never)), vec!["E0305"]);
         let not_all_return = "def f(v: int | None) -> int:\n    match v:\n        case int():\n            return v\n        case None:\n            pass\n";
         assert_eq!(run(&with_main(not_all_return)), vec!["E0206"]);
+    }
+
+    /// 取り消し記録: 巻き戻すと元に戻り、差分には変わったキーだけが入る（#135）
+    #[test]
+    fn env_trail_rolls_back_and_reports_only_changes() {
+        let mut env = Env::default();
+        env.insert("a".into(), Ty::Int);
+        env.insert("p.x".into(), Ty::Int);
+        let m = env.mark();
+        env.insert("a".into(), Ty::Str);
+        env.insert("a".into(), Ty::Int); // 元の値に戻った
+        env.insert("b".into(), Ty::Bool);
+        env.remove("p.x");
+        env.insert(UNREACHABLE.into(), Ty::Error);
+        let d = env.delta_since(m);
+        let mut keys: Vec<&String> = d.keys().collect();
+        keys.sort();
+        assert_eq!(keys, [UNREACHABLE, "b", "p.x"]);
+        assert_eq!(d["b"], Some(Ty::Bool));
+        assert_eq!(d["p.x"], None);
+        assert!(env.is_unreachable());
+        env.rollback(m);
+        assert_eq!(env.map.len(), 2);
+        assert_eq!(env.get("a"), Some(&Ty::Int));
+        assert_eq!(env.get("p.x"), Some(&Ty::Int));
+        assert!(!env.is_unreachable());
+        env.apply(&d);
+        assert_eq!(env.get("b"), Some(&Ty::Bool));
+        assert_eq!(env.get("p.x"), None);
+    }
+
+    /// 差分の合流は、各経路の環境を作って全体を突き合わせる合流（#127 までの実装）と同じ結果になる
+    #[test]
+    fn join_deltas_matches_the_full_join() {
+        fn full_join(types: &mut Types, envs: Vec<HashMap<String, Ty>>) -> HashMap<String, Ty> {
+            let (reachable, unreachable): (Vec<_>, Vec<_>) =
+                envs.into_iter().partition(|e| !e.contains_key(UNREACHABLE));
+            let Some(first) = reachable.first() else {
+                return unreachable.into_iter().next().unwrap_or_default();
+            };
+            let mut out = HashMap::new();
+            for k in first.keys() {
+                let tys: Option<Vec<Ty>> = reachable.iter().map(|e| e.get(k).copied()).collect();
+                if let Some(tys) = tys {
+                    out.insert(k.clone(), types.union(tys));
+                }
+            }
+            out
+        }
+        let mut types = Types::default();
+        let none_or_int = types.union([Ty::None, Ty::Int]);
+        let vals = [
+            None,
+            Some(Ty::Int),
+            Some(Ty::Str),
+            Some(Ty::None),
+            Some(none_or_int),
+        ];
+        let keys = ["a", "b", "p.x", UNREACHABLE];
+        // 決定的な擬似乱数（線形合同法）で、基底と 2〜3 本の差分の組を作る
+        let mut seed: u64 = 12345;
+        let mut next = |n: usize| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) as usize) % n
+        };
+        for _ in 0..2000 {
+            let mut base = Env::default();
+            for k in &keys[..3] {
+                if let Some(t) = vals[next(vals.len())] {
+                    base.insert((*k).into(), t);
+                }
+            }
+            let n = 2 + next(2);
+            let mut deltas = Vec::new();
+            let mut envs = Vec::new();
+            for _ in 0..n {
+                let mut d = Delta::new();
+                for k in keys {
+                    if next(3) == 0 {
+                        let v = if k == UNREACHABLE {
+                            (next(4) == 0).then_some(Ty::Error)
+                        } else {
+                            vals[next(vals.len())]
+                        };
+                        d.insert(k.to_string(), v);
+                    }
+                }
+                let m = base.mark();
+                base.apply(&d);
+                envs.push(base.map.clone());
+                base.rollback(m);
+                deltas.push(d);
+            }
+            let want = full_join(&mut types, envs);
+            let joined = join_deltas(&mut types, &mut base, deltas);
+            let m = base.mark();
+            base.apply(&joined);
+            assert_eq!(base.map, want);
+            base.rollback(m);
+        }
+    }
+
+    /// 分岐の多い関数でも、流れ解析の仕事量は文の数に比例する（#135。`benches/check_scaling.py` の `branch` 形）
+    #[test]
+    fn flow_analysis_work_is_linear_in_branches() {
+        fn work(n: usize) -> u64 {
+            let mut src = String::from("type P = {a: int | None}\n\ndef main() -> None uses io:\n");
+            for i in 0..n {
+                src.push_str(&format!(
+                    "    p{i} = P(a=1)\n    if p{i}.a is not None:\n        print(p{i}.a + 1)\n"
+                ));
+            }
+            let (m, d) = wys_parser::parse_source(&src);
+            assert!(d.is_empty(), "{d:?}");
+            let (tc, d) = check(&m);
+            assert!(d.is_empty(), "{d:?}");
+            tc.funcs.iter().map(|f| f.env_work).sum()
+        }
+        let (w1, w2) = (work(500), work(1000));
+        assert!(w1 > 0, "the counter must count something");
+        assert!(w2 <= 2 * w1 + 100, "work(500) = {w1}, work(1000) = {w2}");
+        assert!(w2 <= 20 * 1000, "work(1000) = {w2}");
     }
 
     fn run(src: &str) -> Vec<&'static str> {

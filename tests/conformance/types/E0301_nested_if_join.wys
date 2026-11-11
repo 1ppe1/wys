@@ -1,0 +1,13 @@
+# 内側の if の片方の経路で None のままなら、外側の合流の後も int | None（#135 の回帰の防止）
+# expect-error: E0301 10:12
+def f(c: bool, d: bool) -> int:
+    x: int | None = None
+    if c:
+        if d:
+            x = 1
+    else:
+        x = 3
+    return x + 1
+
+def main() -> None uses io:
+    print(f(True, True))

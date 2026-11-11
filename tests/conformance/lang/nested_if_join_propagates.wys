@@ -1,0 +1,19 @@
+# 内側の if の合流の結果が、外側の if の合流に伝わる（#135 の回帰の防止）
+# expect-stdout: 2
+# expect-stdout: 3
+# expect-stdout: 4
+def f(c: bool, d: bool) -> int:
+    x: int | None = None
+    if c:
+        if d:
+            x = 1
+        else:
+            x = 2
+    else:
+        x = 3
+    return x + 1
+
+def main() -> None uses io:
+    print(f(True, True))
+    print(f(True, False))
+    print(f(False, True))
