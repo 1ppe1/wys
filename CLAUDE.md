@@ -6,8 +6,7 @@
 
 - AIネイティブ次世代プログラミング言語。**M3 完了 = Phase 1 完了**（ARC・`str` / `list` / `dict`・`Result`・Effect の注釈・`wys explain`）。**M4 完了**（CPython の埋め込み・`float`・`async` / `await`・Move 最適化）。**M5 完了**（AI SDK の核: `parse_json` / `validate[T]`・`llm_generate[T]`・`@tool` / `@agent`・Capability / 承認 / 予算の Runtime・`wys llm-proxy`）。**M6 完了 = Phase 2 完了**（Effect の推論・トレース・記録と再生・`wys eval`・費用の上限・`wys lsp`）。進捗は `docs/roadmap.md`、M6 の詳細は `docs/plans/m6.md`、AI SDK の設計は `docs/design/ai-sdk.md`、LSP は `docs/design/lsp.md`。
 - 正となる文書は `docs/ai_native_language_requirements.md`（要件定義書）。迷ったらここに戻る。
-- 言語名・拡張子は未定。文書中では「本言語」と呼ぶ。勝手に名前を付けない。
-- 内部コードネームは `wys`（ユーザーが決定）。Rust クレートは `crates/wys_*`。これは正式名称ではない。
+- 言語の正式名称は `wys`（ADR-0027、ユーザーが決定）。拡張子は `.wys`、CLI は `wys`、Rust クレートは `crates/wys_*`、環境変数は `WYS_*`。文書の中では小文字の `wys` と書く（要件定義書などの「本言語」はそのままでよい）。名前の由来は公開する文書に書かない。
 
 ## ドキュメントのルール
 

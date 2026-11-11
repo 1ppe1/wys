@@ -1,6 +1,6 @@
 # リファレンス（v0.1）
 
-本言語の利用者向けの要約。正確な規則は、文法 `docs/spec/grammar.ebnf`、各 ADR（`docs/adr/`）、AI SDK の設計 `docs/design/ai-sdk.md` にある。0.y の間、構文と組み込みは変わり得る（ADR-0029）。
+`wys` の利用者向けの要約。正確な規則は、文法 `docs/spec/grammar.ebnf`、各 ADR（`docs/adr/`）、AI SDK の設計 `docs/design/ai-sdk.md` にある。0.y の間、構文と組み込みは変わり得る（ADR-0029）。
 
 ## 1. コマンド
 
