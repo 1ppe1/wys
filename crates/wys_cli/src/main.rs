@@ -230,13 +230,13 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
             let Some(p) = buildable(&fe, format)? else {
                 return Ok(ExitCode::from(1));
             };
-            let exe = std::env::temp_dir().join(format!("wys-test-{}", std::process::id()));
+            // 一意の一時ディレクトリの中に作る（共有の一時ディレクトリに予測できる名前で置かない。#145）
+            let dir = wys_driver::TempDir::new().map_err(|e| format!("{e:?}"))?;
+            let exe = dir.path().join("tests");
             if let Err(e) = wys_driver::link_program(p, &exe, &opts) {
                 return build_error(e, format);
             }
-            let result = run_tests(&exe, &tests);
-            let _ = std::fs::remove_file(&exe);
-            result
+            run_tests(&exe, &tests)
         }
         "dump-ir" | "dump-llvm" => {
             let fe = load(file.as_deref())?;
@@ -274,7 +274,8 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
             let Some(p) = buildable(&fe, format)? else {
                 return Ok(ExitCode::from(1));
             };
-            let exe = std::env::temp_dir().join(format!("wys-run-{}", std::process::id()));
+            let dir = wys_driver::TempDir::new().map_err(|e| format!("{e:?}"))?;
+            let exe = dir.path().join("program");
             if let Err(e) = wys_driver::link_program(p, &exe, &opts) {
                 return build_error(e, format);
             }
@@ -282,7 +283,7 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
                 .args(&program_args)
                 .status()
                 .map_err(|e| format!("cannot run the program: {e}"));
-            let _ = std::fs::remove_file(&exe);
+            drop(dir);
             let code = status?.code().unwrap_or(1);
             Ok(ExitCode::from(code.clamp(0, 255) as u8))
         }

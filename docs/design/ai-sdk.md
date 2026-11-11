@@ -199,7 +199,7 @@ M6 から、注釈のない関数の Effect は推論する（ADR-0024）。`use
 
 ### 7.4 承認（AI-005）
 
-`approval="required"` のツールは、実行の前に `WYS_APPROVAL` の方針に従う。`deny`（既定、未設定）: 常に拒否。`allow`: 常に許可。`prompt`: stderr に `approve tool <name> (agent <agent>) with args <JSON>? [y/N] ` を出し、stdin から 1 行読む。`y` / `yes` なら許可、それ以外は拒否、EOF なら `Err(kind="approval")`。監査 `approval_requested` → `approval_granted` / `approval_denied`。
+`approval="required"` のツールは、実行の前に `WYS_APPROVAL` の方針に従う。`deny`（既定、未設定）: 常に拒否。`allow`: 常に許可。`prompt`: stderr に `approve tool <name> (agent <agent>) with args <JSON>? [y/N] ` を出し（名前と引数は LLM が決めるので、制御文字・双方向制御・ゼロ幅の文字は `\u{..}` にする。長くても切らない: 切った後ろに承認する内容を隠せないように。#144）、stdin から 1 行読む。`y` / `yes` なら許可、それ以外は拒否、EOF なら `Err(kind="approval")`。監査 `approval_requested` → `approval_granted` / `approval_denied`。
 
 ### 7.5 予算（AI-006）
 
@@ -416,7 +416,7 @@ ADR-0023 論点 1〜6 のとおりに実装した。仕様の解釈として決�
 {"kind":"exchange","seq":1,"request":{"v":1,"model":"...","system":"...","messages":[...],"tools":[...],"schema":{...},"max_tokens":0,"timeout_ms":0},"reply":{"text":"","tool_calls":[...],"usage":{...},"stop":"tool_use","assistant":...},"latency_ms":812}
 ```
 
-- 記録は**プロセスの最初**に作り直し（LLM を呼ぶ前に落ちても古い記録を残さない）、権限は 0600（既にあったファイルも）。ヘッダの `model` は記録したときの `WYS_LLM_MODEL`（`wys eval` が再生で使う）。
+- 記録は**プロセスの最初**に作り直し（LLM を呼ぶ前に落ちても古い記録を残さない）、権限は 0600。既にあるファイルやシンボリックリンクは外してから新しいファイルを排他的に作る（リンクの先は書き換えない。#145）。監査（`WYS_AUDIT`）とトレース（`WYS_TRACE`）のファイルは追記で、最後の要素がシンボリックリンクなら開かない（`O_NOFOLLOW`。書かずに続ける）。ヘッダの `model` は記録したときの `WYS_LLM_MODEL`（`wys eval` が再生で使う）。
 - `exchange` の応答は項目で区別する: 届いた JSON は `reply`、JSON でない行は `malformed`（行そのもの）、届かなかった応答は `transport`（文言）。届いた応答（`reply` と `malformed`）は回数とトークンを数え、`transport` は数えない。
 - 待ち時間: モックは `latency_ms`、実プロバイダは実際に待った時間を記録する。仮想時計のモードでは、実プロバイダの待ち時間も agent の経過時間に足す（記録と再生を対称にする）。再生は、成功でも失敗でも（応答が届かなかったときも）、記録した `latency_ms` を足す。
 - 失敗の文言: `request N: <項目> differs`、`recording exhausted after N exchanges`、`cannot read the recording <path>: ...`（以上 `kind="replay"`、回数は数えない）、`cannot write the recording <path>: ...`、`the recording path is also the replay source`（以上 `kind="provider"`）。再生中の `llm_mock_push` は実行時エラー（101）。
