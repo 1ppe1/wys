@@ -30,7 +30,29 @@ usage:
   wys lsp                                 run the language server on stdin/stdout (diagnostics)
   wys llm-proxy                           serve LLM requests as JSON lines on stdin/stdout
                                           using the Anthropic API (ANTHROPIC_API_KEY)
+  wys version [--format text|json]        print the version, commit, target and rustc (also --version)
 ";
+
+/// `wys --version` の中身（公開準備 T6。値は build.rs が埋める）
+fn version_json() -> serde_json::Value {
+    serde_json::json!({
+        "name": "wys",
+        "version": env!("CARGO_PKG_VERSION"),
+        "commit": env!("WYS_BUILD_COMMIT"),
+        "target": env!("WYS_BUILD_TARGET"),
+        "rustc": env!("WYS_BUILD_RUSTC"),
+    })
+}
+
+fn version_text() -> String {
+    format!(
+        "wys {} ({} {}, {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("WYS_BUILD_COMMIT"),
+        env!("WYS_BUILD_TARGET"),
+        env!("WYS_BUILD_RUSTC"),
+    )
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -54,6 +76,10 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
         eprint!("{USAGE}");
         return Ok(ExitCode::from(2));
     };
+    if cmd == "--version" || cmd == "-V" {
+        println!("{}", version_text());
+        return Ok(ExitCode::SUCCESS);
+    }
     if cmd == "llm-proxy" {
         llm_proxy::run()?;
         return Ok(ExitCode::SUCCESS);
@@ -113,6 +139,16 @@ fn run_cli(args: &[String]) -> Result<ExitCode, String> {
     match cmd.as_str() {
         "-h" | "--help" | "help" => {
             print!("{USAGE}");
+            Ok(ExitCode::SUCCESS)
+        }
+        "version" => {
+            if file.is_some() {
+                return Err("`wys version` takes no file".into());
+            }
+            match format {
+                Format::Json => println!("{}", version_json()),
+                Format::Text => println!("{}", version_text()),
+            }
             Ok(ExitCode::SUCCESS)
         }
         "explain" => {
