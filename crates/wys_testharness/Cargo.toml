@@ -15,6 +15,7 @@ wys_driver = { path = "../wys_driver" }
 wys_lsp = { path = "../wys_lsp" }
 
 [dev-dependencies]
+wys_fmt = { path = "../wys_fmt" }
 wys_explain = { path = "../wys_explain" }
 insta = "1"
 jsonschema = { version = "0.30", default-features = false }

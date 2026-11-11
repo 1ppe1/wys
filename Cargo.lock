@@ -1417,6 +1417,7 @@ dependencies = [
  "serde_json",
  "wys_driver",
  "wys_explain",
+ "wys_fmt",
  "wys_lsp",
 ]
 

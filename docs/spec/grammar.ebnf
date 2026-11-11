@@ -1,4 +1,5 @@
-(* wys 文法 v0.3-draft — M3 作業中（v0.2 = M2 完了時点（v0.1 = M1 サブセット。実装: crates/wys_lexer, crates/wys_parser, crates/wys_resolve）
+(* 本言語の文法 v0.4（M6 完了時点の実装に合わせた版。利用者向けの要約は docs/guide/reference.md。0.y の間は変わり得る: ADR-0029）
+ * 版の経緯: v0.1 = M1 サブセット、v0.2 = M2 完了時点、v0.3 = M3、v0.4 = M4〜M6（async / await、デコレータ）。実装: crates/wys_lexer, crates/wys_parser, crates/wys_resolve
  * M4 の変更: async def と await（T10b、ADR-0020）
  * v0.3 の変更: for / in、リストのリテラル、添字、添字への代入（M3 T4a）、束縛パターン Ok(x) / Err(e)（M3 T5a）、後置の ?（M3 T5b、ADR-0013）、辞書のリテラルと in / not in（M3 T6a、ADR-0015）、関数の uses 節（M3 T9a、ADR-0014）
  * v0.2 の変更: Union 型（A | B）、is / is not（T1a）、match / case（T2）、type 定義・レコード・キーワード引数・フィールド参照（T3）、Generics（T4）、モジュール（T6）

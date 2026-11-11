@@ -225,3 +225,119 @@ fn all_diagnostics_match_schema() {
     }
     assert!(checked > 40, "too few cases checked: {checked}");
 }
+
+/// 利用者向けの文書（`docs/guide/*.md`）のコードブロックを、Conformance のケースと同じ方法で検査する（公開準備 T8）。
+///
+/// - 情報文字列が `wys` のブロック: 書かれた `# expect-stdout:` / `# expect-error:` などの期待どおりに動き、
+///   `wys fmt` の結果と一致する（文書の例が実装とずれない）
+/// - `wys python`: Python 3.14 があるときだけ同じ検査をする
+/// - `wys fragment`: 完全なプログラムではない断片（検査しない）
+#[test]
+fn guide_code_blocks_run() {
+    let root = repo_root();
+    let dir = root.join("docs/guide");
+    let mut pages: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
+        .unwrap_or_default();
+    pages.retain(|p| p.extension().is_some_and(|e| e == "md"));
+    pages.sort();
+    assert!(!pages.is_empty(), "no pages under docs/guide");
+    let (rt, py) = runtime_libs();
+    let opts = BuildOptions {
+        runtime_lib: Some(rt),
+        python_runtime_lib: Some(py),
+        ..BuildOptions::default()
+    };
+    let scratch = std::env::temp_dir().join(format!("wys-guide-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let python = python_available();
+    let mut failures = Vec::new();
+    let mut checked = 0;
+    for page in &pages {
+        let text = std::fs::read_to_string(page).unwrap();
+        let page_name = rel(&root, page);
+        let mut block: Option<(String, usize, String)> = None;
+        for (i, line) in text.lines().enumerate() {
+            match &mut block {
+                None => {
+                    if let Some(info) = line.strip_prefix("```") {
+                        block = Some((info.trim().to_string(), i + 1, String::new()));
+                    }
+                }
+                Some((info, start, body)) => {
+                    if line == "```" {
+                        let (info, start, body) = (info.clone(), *start, body.clone());
+                        block = None;
+                        let run = match info.as_str() {
+                            "wys" => true,
+                            "wys python" => python,
+                            _ => false,
+                        };
+                        if !run {
+                            continue;
+                        }
+                        checked += 1;
+                        let name = format!("{page_name}:{start}");
+                        if wys_fmt::format_source(&body).ok().as_deref() != Some(body.as_str()) {
+                            failures.push(format!(
+                                "--- {name}\nthe block is not formatted (`wys fmt`)"
+                            ));
+                            continue;
+                        }
+                        let file = scratch.join(format!("block{checked}.wys"));
+                        std::fs::write(&file, &body).unwrap();
+                        if let Err(e) = run_case(&file, &name, &opts, &scratch) {
+                            failures.push(format!("--- {name}\n{e}"));
+                        } else if parse_expectations(&body).is_ok_and(|e| e.test_mode)
+                            && let Err(e) = run_guide_tests(&body, &name, &opts, &scratch, checked)
+                        {
+                            // `wys test` と同じく、test_* を 1 つずつ実行する（Codex のレビュー）
+                            failures.push(format!("--- {name}\n{e}"));
+                        }
+                    } else {
+                        body.push_str(line);
+                        body.push('\n');
+                    }
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(checked > 0, "no `wys` code blocks under docs/guide");
+    assert!(
+        failures.is_empty(),
+        "{} of {checked} guide code blocks failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// テストのモードのブロックの `test_*` を、`wys test` と同じく 1 つずつ別のプロセスで実行する
+fn run_guide_tests(
+    src: &str,
+    name: &str,
+    opts: &BuildOptions,
+    scratch: &Path,
+    n: usize,
+) -> Result<(), String> {
+    let (fe, tests) = wys_driver::frontend_tests(name, src);
+    let program = fe.program.as_ref().ok_or("the block does not build")?;
+    if tests.is_empty() {
+        return Err("the block has no test_* functions".into());
+    }
+    let exe = scratch.join(format!("tests{n}"));
+    wys_driver::link_program(program, &exe, opts).map_err(|e| format!("build failed: {e:?}"))?;
+    for (i, test) in tests.iter().enumerate() {
+        let out = Command::new(&exe)
+            .env("WYS_TEST_INDEX", i.to_string())
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(format!(
+                "{test} failed\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+    }
+    Ok(())
+}
