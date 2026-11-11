@@ -187,6 +187,9 @@ impl Usage {
     }
 }
 
+/// プロバイダの応答の 1 行の上限（バイト）
+const MAX_REPLY_LINE: u64 = 16 << 20;
+
 /// 記録とモックの `latency_ms` の上限（1 日）。仮想時計の足し算が回り込まないように（#143）
 const MAX_LATENCY_MS: i64 = 86_400_000;
 
@@ -1348,7 +1351,7 @@ fn exchange(
     s: &mut State,
     line: &str,
 ) -> Result<Result<serde_json::Value, (String, String)>, String> {
-    use std::io::{BufRead, Write as _};
+    use std::io::Write as _;
     if matches!(s.provider, Provider::Idle) {
         let setting = std::env::var("WYS_LLM_PROVIDER").unwrap_or_default();
         let (program, args): (String, &[&str]) = if setting == "anthropic" {
@@ -1397,11 +1400,25 @@ fn exchange(
     // 子が stdin を閉じていたら、書き込みは SIGPIPE でプログラムごと落とす（生成した実行ファイルは C の main で、
     // Rust の main のように SIGPIPE を無視していない）。書く間だけ無視して、EPIPE として扱う
     let written = without_sigpipe(|| writeln!(stdin, "{line}").and_then(|()| stdin.flush()));
-    let ok = written.is_ok() && stdout.read_line(&mut reply).is_ok_and(|n| n > 0);
+    // 1 行の長さに上限を付けて読む（`cmd:` のプロバイダが改行を出さずに書き続けても、メモリを使い切らない。
+    // proxy 経由の応答は ureq の上限で抑えられる。#146 P3-8）
+    let ok = written.is_ok()
+        && std::io::BufRead::read_line(
+            &mut std::io::Read::take(&mut *stdout, MAX_REPLY_LINE + 1),
+            &mut reply,
+        )
+        .is_ok_and(|n| n > 0);
     if !ok {
         stop_provider(s);
         s.provider = Provider::Broken("the provider exited".into());
         return Err("the provider exited".into());
+    }
+    if reply.len() as u64 > MAX_REPLY_LINE {
+        // 行の途中で止めたので、続きを読むと応答の境目がずれる。プロバイダは止めて使えなくする
+        stop_provider(s);
+        let m = "the provider's reply is longer than 16 MiB".to_string();
+        s.provider = Provider::Broken(m.clone());
+        return Err(m);
     }
     let raw = reply.trim_end_matches(['\n', '\r']).to_string();
     Ok(serde_json::from_str(&raw).map_err(|e| (raw.clone(), malformed_message(&e))))
