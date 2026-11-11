@@ -40,7 +40,7 @@
 | [0024](0024-effect-inference.md) | Effect の推論（注釈のない関数だけ。E1103 の廃止、W0203。ADR-0014 論点 4・5・7・10・12 を置き換える） | Accepted | 2026-11-07 |
 | [0025](0025-trace-replay-eval-cost.md) | トレース・記録と再生・評価ケース・費用の上限 | Accepted | 2026-11-07 |
 | [0026](0026-lsp-initial.md) | LSP の初期版（`wys lsp`、診断・型のホバー・定義ジャンプ・quickfix・整形） | Accepted | 2026-11-07 |
-| [0027](0027-name-extension-and-rename-scope.md) | 正式名称・拡張子・パッケージ名と改名の範囲（段階改名） | Proposed | 2026-11-11 |
+| [0027](0027-name-extension-and-rename-scope.md) | 正式名称・拡張子・パッケージ名（`wys` を正式名称にする） | Proposed | 2026-11-11 |
 | [0028](0028-license-governance-and-security-reporting.md) | ライセンス（MIT OR Apache-2.0）・ガバナンス・貢献（DCO）・脆弱性の報告 | Proposed | 2026-11-11 |
 | [0029](0029-versioning-stability-and-support.md) | 版（SemVer 0.y.z）・安定性の段階・互換性の範囲・サポート期間 | Proposed | 2026-11-11 |
 | [0030](0030-distribution-and-release-process.md) | 配布（GitHub Releases、`bin/` + `lib/`、SHA-256）とリリースの手順 | Proposed | 2026-11-11 |
