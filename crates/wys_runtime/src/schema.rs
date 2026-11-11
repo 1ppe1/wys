@@ -122,10 +122,16 @@ pub(crate) fn last_failure_message() -> String {
     LAST.with(|l| {
         let f = l.borrow();
         let path = render(&f.segs);
-        if path.is_empty() {
-            format!("expected {}, found {}", f.expected, f.found)
+        // ツールの引数のレコードには名前がない（#146 P3-6。以前は `expected , found str`）
+        let expected = if f.expected.is_empty() {
+            "an object of arguments"
         } else {
-            format!("{path}: expected {}, found {}", f.expected, f.found)
+            f.expected.as_str()
+        };
+        if path.is_empty() {
+            format!("expected {expected}, found {}", f.found)
+        } else {
+            format!("{path}: expected {expected}, found {}", f.found)
         }
     })
 }

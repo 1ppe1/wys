@@ -2596,3 +2596,44 @@ fn installed_layout_finds_the_runtime_in_lib() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// ツールの引数がオブジェクトでないときの理由の文面（#146 P3-6。以前は `expected , found str`）
+#[test]
+fn non_object_tool_arguments_say_what_was_expected() {
+    let reply = r#"{"text":"","tool_calls":[{"id":"t1","name":"add","args":"notanobject"}],"usage":{"input_tokens":1,"output_tokens":1},"cost_usd":0.0,"stop":"tool_use"}"#;
+    let (out, _) = run_with_provider("tool_args_not_object", COSTLY, &[reply], &[]);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with("schema: tool `add`: expected an object of arguments, found str\n"),
+        "{stdout}"
+    );
+}
+
+/// プロバイダの 1 行の応答には上限がある（16 MiB。#146 P3-8）。超えたら読むのをやめて `Err(kind="provider")`
+#[cfg(unix)]
+#[test]
+fn oversized_provider_replies_are_refused() {
+    let dir = std::env::temp_dir().join(format!("wys-e2e-bigline-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("big.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nread line\nhead -c 20000000 /dev/zero | tr '\\0' 'x'\necho\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = scratch("bigline", COSTLY);
+    let provider = format!("cmd:{}", script.display());
+    let out = cli_env(
+        &["run", path.to_str().unwrap()],
+        &[("WYS_LLM_PROVIDER", provider.as_str())],
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with("provider: the provider's reply is longer than 16 MiB\n"),
+        "{}",
+        &stdout[..stdout.len().min(200)]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

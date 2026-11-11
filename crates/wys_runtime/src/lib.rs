@@ -431,15 +431,13 @@ const DELETED: i64 = -2;
 
 fn hash_key(kind: i64, key: i64) -> u64 {
     if kind == KEY_STR {
-        // FNV-1a（乱数化しない: 反復は挿入順なので、ハッシュは順序に影響しない）
+        // プロセスごとに乱数の種を持つ SipHash（LLM の応答など外から来たキーで、衝突を狙って遅くさせない。
+        // #146 P3-3）。反復は挿入順なので、種はプログラムから見える順序に影響しない
+        static SEED: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+            std::sync::OnceLock::new();
         // SAFETY: str のキーは生存している文字列オブジェクト（生成コードが +1 で保持させる）。
         let b = unsafe { bytes(key as *const Header) };
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &x in b {
-            h ^= x as u64;
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        h
+        std::hash::BuildHasher::hash_one(SEED.get_or_init(Default::default), b)
     } else {
         // 整数は乗算で混ぜる（`i * 8` のような並びが同じ位置に固まらないように）
         let h = (key as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
