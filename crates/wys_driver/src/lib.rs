@@ -305,11 +305,17 @@ pub fn find_runtime_lib(opts: &BuildOptions, python: bool) -> Result<PathBuf, Bu
     }
     let exe = std::env::current_exe().map_err(|e| BuildError::Io(e.to_string()))?;
     let mut candidates = Vec::new();
-    if let Some(dir) = exe.parent() {
-        candidates.push(dir.join(name));
-        if let Some(parent) = dir.parent() {
-            // `target/debug/deps/` から実行されるテストバイナリ用
-            candidates.push(parent.join(name));
+    // シンボリックリンクから起動したときは、リンクの先の配置でも探す（ADR-0030）
+    let real = std::fs::canonicalize(&exe).ok().filter(|r| *r != exe);
+    for exe in std::iter::once(exe).chain(real) {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join(name));
+            if let Some(parent) = dir.parent() {
+                // `target/debug/deps/` から実行されるテストバイナリ用
+                candidates.push(parent.join(name));
+                // 配布物の配置 `<prefix>/bin/wys` と `<prefix>/lib/`（ADR-0030）
+                candidates.push(parent.join("lib").join(name));
+            }
         }
     }
     candidates.into_iter().find(|p| p.exists()).ok_or_else(|| {

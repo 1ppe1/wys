@@ -2505,3 +2505,43 @@ fn output_files_do_not_follow_symlinks() {
     assert_eq!(recording_lines(&links[0])[0]["kind"], "header");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 配布物の配置（`bin/` と `lib/`、ADR-0030）: 環境変数がなくても `<exe>/../lib/` のランタイムを使う。
+/// シンボリックリンク（`/usr/local/bin/wys` → `<prefix>/bin/wys` など）から起動しても見つける（公開準備 T7）
+#[cfg(unix)]
+#[test]
+fn installed_layout_finds_the_runtime_in_lib() {
+    let root = std::env::temp_dir().join(format!("wys-e2e-layout-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for d in ["bin", "lib", "links"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    std::fs::copy(CLI, root.join("bin/wys")).unwrap();
+    std::fs::copy(runtime_lib(), root.join("lib/libwys_runtime.a")).unwrap();
+    std::os::unix::fs::symlink(root.join("bin/wys"), root.join("links/wys")).unwrap();
+    let src = scratch(
+        "layout_hello",
+        "def main() -> None uses io:\n    print(\"hi\")\n",
+    );
+    for (i, exe) in [root.join("bin/wys"), root.join("links/wys")]
+        .iter()
+        .enumerate()
+    {
+        let out_exe = root.join(format!("hello{i}"));
+        let out = Command::new(exe)
+            .env_remove("WYS_RUNTIME_LIB")
+            .env_remove("WYS_RUNTIME_PYTHON_LIB")
+            .args([
+                "build",
+                src.to_str().unwrap(),
+                "-o",
+                out_exe.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}: {out:?}", exe.display());
+        let run = Command::new(&out_exe).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "hi\n");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

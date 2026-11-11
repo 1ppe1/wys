@@ -54,6 +54,7 @@ target/debug/wys explain E0201              # エラーコードの説明
 target/debug/wys lsp                        # LSP のサーバー（stdio。診断・ホバー・定義ジャンプ・quickfix・整形。ADR-0026）
 target/debug/wys eval tests/evals/*/        # 評価ケースを記録の再生で実行し、成功率を出す（ADR-0025。--format json、--record で記録し直す）
 benches/measure.sh                                          # ベンチ計測（倍率は書かない）
+scripts/release.sh                                          # 配布物（dist/ に tar.gz と SHA256SUMS。ADR-0030）。scripts/install.sh --from-archive で入れる
 ```
 
 - ARC（retain / release）に関わる変更では、`scripts/ci.sh` の AddressSanitizer モードと生存オブジェクト数の検査（終了コード 102）が通ることを必ず確かめる。
