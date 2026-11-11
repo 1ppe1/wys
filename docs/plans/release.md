@@ -17,7 +17,7 @@ Fable（計画）が作成し、ユーザーが承認した。承認時の決定
 - **名前に依存しない作業を先に進める。** #135、`--version`、配布の仕組み（名前は変数 1 か所）、文書の骨格（名称は「本言語」のまま）、ベンチの文書、セキュリティの見直しは名称を待たない。
 - **版は SemVer 0.y.z と安定性の段階表**（D4）。最初のタグは `v0.1.0`。サポートは最新の 0.y だけ。対象環境は Tier 1 macOS arm64、Tier 2 Linux x86_64、Windows は非対応。Python は 3.14 のみ。性能 SLO は未決のまま明記する。
 - **配布は GitHub Releases のみ**（D5）。アーカイブは `bin/` + `lib/` + LICENSE + README、`SHA256SUMS`、署名付きタグ、macOS は ad-hoc 署名まで、`install.sh` は SHA-256 を検証してから展開する。ランタイムの探索順に `<exe>/../lib/` を足す。Homebrew とランタイムの埋め込みは公開後。
-- **ガバナンスは単独メンテナ + 既存の ADR 手続き、DCO、Contributor Covenant 2.1、脆弱性の窓口は GitHub の private vulnerability reporting を主・メールを従**（D3）。
+- **ガバナンスは単独メンテナ + 既存の ADR 手続き、DCO、Contributor Covenant 2.1、脆弱性の窓口は GitHub の private vulnerability reporting**（D3。メールの窓口は置かない、2026-11-11 にユーザーが決めた）。
 - **新しい言語機能・エラーコードは入れない。**
 - 性能は絶対値と機種情報だけを書き、倍率は書かない（要件定義書 5.1）。CI に倍率の表現の検査を足す。
 
