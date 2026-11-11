@@ -8,6 +8,7 @@
 | [plans/m3.md](plans/m3.md) | 完了 | M3 のタスク分解（T0〜T11）、ヒープと ARC の方針、新しい ADR と診断コードの帯、Phase 1 の出口判定 |
 | [plans/m4.md](plans/m4.md) | 完了 | M4 のタスク分解（T0〜T12）、CPython FFI（埋め込み）と `async`、PoC3 の判定基準、M4a / M4b の分割基準、M4 の出口判定 |
 | [plans/m5.md](plans/m5.md) | 承認済み計画 | M5 のタスク分解（T0〜T12）、AI SDK の核（型付き LLM API・スキーマ検証・`@tool` / `@agent`・Capability / 承認 / 予算の Runtime）、PoC4 の判定基準、M5a / M5b の分割基準 |
+| [security.md](security.md) | 公開準備 | セキュリティの保証範囲・範囲外・脅威モデル（NFR-001 / NFR-005、AC-007）。T11 の見直しの記録 |
 | [plans/release.md](plans/release.md) | 承認済み計画 | 公開準備（Phase 2 リリース）のタスク分解（T0〜T19）、ユーザーが決める事項（名称・ライセンス・版・配布・公開）、ADR-0027〜0030、出口条件 |
 | [plans/m6.md](plans/m6.md) | 承認済み計画 | M6 のタスク分解（T0〜T12）、Effect の推論・トレース・記録と再生・評価ケース・費用の上限・LSP の初期版、PoC6 の判定基準、M6a / M6b の分割基準 |
 | [plans/m2.md](plans/m2.md) | 完了 | M2 のタスク分解（T0〜T10）、暫定値表現、新しい ADR と診断コードの帯 |
