@@ -14,6 +14,7 @@
 | e2e テスト | `crates/wys_cli/tests/e2e.rs` | `cargo test -p wys_cli` | CLI の挙動（終了コード、出力形式、ビルドした実行ファイル） |
 | explain のスナップショットとスキーマ検証（M3 T8、ADR-0017） | `tests/conformance/explain/*.wys`、`crates/wys_testharness/tests/snapshots/conformance__explain_*.snap` | `cargo test -p wys_testharness`（`explain_json_snapshots`、`all_explain_reports_match_schema`） | `explain/` のケースは通常の実行ケースとしても動き、`wys explain` の JSON を insta で固定する。エラーのない全ケースの JSON を `docs/spec/explain-schema.json` で検証する |
 | ベンチ計測（M3 T7） | `benches/measure.sh`、`benches/programs/*.wys` | 手動（結果は `benches/results/bench-YYYYMMDD.tsv`、git 管理外）。CI はベンチ用プログラムの `fmt --check` と `check` だけ | コンパイル時間、バイナリサイズ、実行時間、最大常駐メモリ、retain / release の回数（`WYS_RC_STATS=1` でビルドした計測用の実行ファイル）。絶対値と計測環境だけを記録し、倍率は書かない。計数の仕組みは e2e の `rc_stats_count_reference_count_operations`。Python を使う `py_*.wys`（M4 T8）は、Python 3.14 がなければ飛ばす。Python のハンドルの release もランタイムが数える |
+| ベンチマークの公開（NFR-002、公開準備 T10） | `docs/benchmarks.md`（`benches/report.py` で表を作る）。`scripts/ci.sh` が `benches/test_report.py` と、`docs/benchmarks.md` / README の倍率の文言を検査する | 絶対値と計測環境だけ。Web / API、Linux、実プロバイダは未計測と明記 |
 | `wys check` の規模の伸び（#127、#135） | `benches/check_scaling.py`。仕事量の決定的な検査は単体テスト `flow_analysis_work_is_linear_in_branches` | 手動（結果は `benches/results/check-YYYYMMDD.tsv`、git 管理外） | 1 つの関数の文の数を変えた `wys check` の時間（代入だけの `assign`、`if` で絞り込みと合流を繰り返す `branch`）。文の数に対して線形に伸びるかを見る。絶対値と計測環境だけを記録し、倍率は書かない |
 
 CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は `scripts/ci.sh`（fmt / clippy / test、`examples/` の `wys fmt --check`、PoC5 のケース検証）を実行する。
@@ -84,6 +85,7 @@ CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は 
 | AC-003（`Unknown` の検証） | **合格（M2 T5）**。拒否: `types/E0601_*`・`E0602_*`。検証後の利用: `lang/unknown_from_args.wys`（コマンドライン引数を `# expect-args:` で渡す） |
 | Linux x86_64 での CI | **M2 T0 で追加済み** |
 | メモリ安全性の境界テスト（NFR-001）、AddressSanitizer での実行 | M3（ADR-0005） |
+| セキュリティの保証範囲（NFR-001 / NFR-005、AC-007）: Capability・承認・予算・秘密情報・一時ファイル・LSP | 公開準備 T11。保証範囲と範囲外は `docs/security.md`。修正ごとのケース: `output_files_do_not_follow_symlinks`、`malformed_usage_is_a_malformed_reply`、`unknown_tokens_close_the_token_budget`、`ai/mock_latency_is_capped`、`approval_prompt_text_cannot_carry_terminal_controls` |
 | コンパイル時間・バイナリサイズの継続計測 | M3 |
 | AC-010（Python 境界の例外と型の不一致は、定義済みの失敗として伝搬する） | **検査済み（M4 T6〜T8）**。`python/exceptions.wys`（例外の種類ごとの `Err(PyError)`、トレースバック、NUL を含む名前）・`python/conversions.wys`（変換の型の不一致は `Err(TypeError)`）・`python/conversion_edge_cases.wys`（変換の途中の例外、同じ文字列になるキー、UTF-8 にできないキー）、e2e の `python_libraries_can_be_called_and_exceptions_are_values`。M4 の出口で合格（`docs/plans/m4.md`） |
 | INTEROP-001（CPython の埋め込みで既存のライブラリを使える） | **検査済み（M4 T5〜T8）**。`json` / `math` / `operator` / `builtins` を使う `python/` のケース、`wys_driver/tests/python_link.rs`、macOS arm64 と Linux x86_64 の CI（Python 3.14 必須）。往復の時間は `benches/programs/py_roundtrip.wys`（絶対値だけ） |
