@@ -18,18 +18,24 @@ echo "== 1. 履歴の秘密情報らしい文字列"
 pattern='sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9]{32,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|ANTHROPIC_API_KEY=[A-Za-z0-9_-]{8,}'
 # `-m`: マージのコミットも各親との差分を出す（既定ではマージの差分を出さないので、マージの解決で入った文字列を
 # 見落とす。Codex のレビュー）
-hits=$(git log --all -p -m --no-color --format='commit %H' \
-  | awk -v pat="$pattern" '
-      /^commit [0-9a-f]+$/ { c = $2; next }
-      /^\+\+\+ / { f = substr($0, 7); next }
-      /^\+/ && $0 ~ pat { print c " " f }' \
-  | sort -u || true)
-if [ -n "$hits" ]; then
-  note "秘密情報らしい文字列がある（コミットとファイル。値は出さない）:"
-  echo "$hits" | sed 's/^/  /'
+log=$(mktemp)
+trap 'rm -f "$log"' EXIT
+# 走査そのものが失敗したら（オブジェクトが欠けているなど）、「見つからなかった」と区別して要確認にする（Codex のレビュー）
+if ! git log --all -p -m --no-color --format='commit %H' > "$log"; then
+  note "履歴を走査できなかった（git log が失敗した）。要確認"
   fail=1
 else
-  note "見つからなかった"
+  hits=$(awk -v pat="$pattern" '
+      /^commit [0-9a-f]+$/ { c = $2; next }
+      /^\+\+\+ / { f = substr($0, 7); next }
+      /^\+/ && $0 ~ pat { print c " " f }' "$log" | sort -u)
+  if [ -n "$hits" ]; then
+    note "秘密情報らしい文字列がある（コミットとファイル。値は出さない）:"
+    echo "$hits" | sed 's/^/  /'
+    fail=1
+  else
+    note "見つからなかった"
+  fi
 fi
 
 echo "== 2. 追跡しているファイル"
