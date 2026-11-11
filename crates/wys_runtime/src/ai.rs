@@ -85,6 +85,8 @@ struct Ctx {
     max_cost_usd: f64,
     cost_usd: f64,
     cost_unknown: bool,
+    /// トークン数の分からない応答（`usage` の壊れた応答）が来たか。`max_tokens` のある agent は以後も超過（#143）
+    tokens_unknown: bool,
     started: Instant,
     /// 入ったときのスケジューラの仮想時計（`WYS_VIRTUAL_TIME=1` のとき、ツールの中の `sleep_ms` も経過に数える）
     started_virtual_ms: i64,
@@ -116,6 +118,7 @@ impl Ctx {
             max_cost_usd: 0.0,
             cost_usd: 0.0,
             cost_unknown: false,
+            tokens_unknown: false,
             started: Instant::now(),
             started_virtual_ms: crate::task::virtual_now_ms(),
             virtual_ms: 0,
@@ -155,13 +158,37 @@ impl Usage {
         self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
     }
 
-    fn from_json(v: &serde_json::Value) -> Usage {
-        Usage {
-            input_tokens: v["input_tokens"].as_i64().unwrap_or(0),
-            output_tokens: v["output_tokens"].as_i64().unwrap_or(0),
+    /// `usage` の JSON と、すべての数が正しかったか。欠けた数は 0。0 以上の整数でない数は 0 として数え、偽を返す
+    /// （壊れた応答。負や小数で予算を迂回させない。正しいほうの数は数える。#143）
+    fn parse(v: &serde_json::Value) -> (Usage, bool) {
+        if !(v.is_null() || v.is_object()) {
+            return (Usage::default(), false);
         }
+        let mut ok = true;
+        let mut field = |k: &str| match v.get(k) {
+            None | Some(serde_json::Value::Null) => 0,
+            Some(x) => x
+                .as_u64()
+                .and_then(|n| i64::try_from(n).ok())
+                .unwrap_or_else(|| {
+                    ok = false;
+                    0
+                }),
+        };
+        let usage = Usage {
+            input_tokens: field("input_tokens"),
+            output_tokens: field("output_tokens"),
+        };
+        (usage, ok)
+    }
+
+    fn from_json(v: &serde_json::Value) -> Usage {
+        Self::parse(v).0
     }
 }
+
+/// 記録とモックの `latency_ms` の上限（1 日）。仮想時計の足し算が回り込まないように（#143）
+const MAX_LATENCY_MS: i64 = 86_400_000;
 
 /// プロバイダの 1 回の応答。
 struct Reply {
@@ -559,11 +586,15 @@ fn fail(s: &mut State, kind: &'static str, message: String) -> *mut Header {
 /// 予算を超えた agent（スタック上のすべてを見る。外側の残りを超えて使えない）があれば、その理由（ADR-0023 論点 13・14）。
 /// 費用が分からないための超過（`over_budget` の理由。文言と監査の `detail` は `budget_message` / `budget_detail`）
 const COST_UNKNOWN: &str = "max_cost_usd (cost unknown)";
+/// トークン数の分からない応答の後の `max_tokens` の超過（#143）
+const TOKENS_UNKNOWN: &str = "max_tokens (tokens unknown)";
 
 /// 予算の超過の `message`（ADR-0025 論点 13: 費用が分からないときは `max_cost_usd exceeded (cost unknown)`）
 fn budget_message(what: &str) -> String {
     if what == COST_UNKNOWN {
         "max_cost_usd exceeded (cost unknown)".into()
+    } else if what == TOKENS_UNKNOWN {
+        "max_tokens exceeded (tokens unknown)".into()
     } else {
         format!("{what} exceeded")
     }
@@ -573,6 +604,8 @@ fn budget_message(what: &str) -> String {
 fn budget_detail(what: &str) -> String {
     if what == COST_UNKNOWN {
         "max_cost_usd".into()
+    } else if what == TOKENS_UNKNOWN {
+        "max_tokens".into()
     } else {
         what.into()
     }
@@ -585,6 +618,9 @@ fn over_budget(s: &State, tools_next: bool) -> Option<(&'static str, &'static st
             Some(("timeout", "timeout_ms"))
         } else if a.max_tokens > 0 && a.usage.total() > a.max_tokens {
             Some(("budget", "max_tokens"))
+        } else if a.max_tokens > 0 && a.tokens_unknown {
+            // トークン数の分からない応答が一度でも来たら、以後も超過として扱う（閉じる方向。#143）
+            Some(("budget", TOKENS_UNKNOWN))
         } else if a.max_cost_usd > 0.0 && a.cost_unknown {
             // 費用が分からない応答が一度でも来たら、以後も超過として扱う（閉じる方向。ADR-0025 論点 13）
             Some(("budget", COST_UNKNOWN))
@@ -717,11 +753,11 @@ fn provider_step(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
 fn accept(s: &mut State, outcome: Outcome, latency_ms: i64) -> Result<Reply, *mut Header> {
     let parsed = match outcome {
         Outcome::Line(v) => parse_reply(&v),
-        Outcome::Malformed(_, m) => Err((m, Usage::default(), None)),
+        Outcome::Malformed(_, m) => Err(Rejected::new(m, Usage::default(), None)),
         Outcome::Transport(m) => {
             // 応答は届いていないので回数は数えないが、待った時間は数える（記録と再生を対称にする）
             for i in s.chain() {
-                s.arena[i].virtual_ms += latency_ms;
+                s.arena[i].virtual_ms = s.arena[i].virtual_ms.saturating_add(latency_ms);
             }
             s.trace.latency_ms = s.trace.latency_ms.saturating_add(latency_ms);
             return Err(fail(s, "provider", m));
@@ -732,14 +768,21 @@ fn accept(s: &mut State, outcome: Outcome, latency_ms: i64) -> Result<Reply, *mu
             r.latency_ms = latency_ms;
             Ok(r)
         }
-        Err((m, usage, cost)) => {
+        Err(Rejected {
+            message: m,
+            usage,
+            cost,
+            billed,
+            tokens_unknown,
+        }) => {
             for i in s.chain() {
+                s.arena[i].tokens_unknown |= tokens_unknown;
                 s.arena[i].llm_calls += 1;
                 s.arena[i].usage.add(usage);
-                s.arena[i].virtual_ms += latency_ms;
+                s.arena[i].virtual_ms = s.arena[i].virtual_ms.saturating_add(latency_ms);
             }
             // `usage` がなければ課金はなかったとみなす。あれば費用が要る（ADR-0025 論点 13）
-            charge(s, cost, usage.total() > 0);
+            charge(s, cost, billed);
             s.trace.latency_ms = s.trace.latency_ms.saturating_add(latency_ms);
             audit(s, "llm_called", None, format!("tokens={}", usage.total()));
             Err(fail(s, "provider", m))
@@ -825,7 +868,10 @@ fn replay_load(s: &mut State) -> Result<(), String> {
             exchanges.push(Exchange {
                 request: v["request"].clone(),
                 outcome,
-                latency_ms: v["latency_ms"].as_i64().unwrap_or(0).max(0),
+                latency_ms: v["latency_ms"]
+                    .as_i64()
+                    .unwrap_or(0)
+                    .clamp(0, MAX_LATENCY_MS),
             });
         }
         Ok(Replay {
@@ -1110,7 +1156,7 @@ fn provider_step_inner(s: &mut State, call: &Call) -> Result<Reply, *mut Header>
         let a = &mut s.arena[i];
         a.llm_calls += 1;
         a.usage.add(reply.usage);
-        a.virtual_ms += reply.latency_ms;
+        a.virtual_ms = a.virtual_ms.saturating_add(reply.latency_ms);
     }
     charge(s, reply.cost_usd, true);
     s.trace.latency_ms = s.trace.latency_ms.saturating_add(reply.latency_ms);
@@ -1395,10 +1441,33 @@ fn check_executable(program: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 拒んだ応答: 理由、数えるトークン数と費用、課金があったとみなすか（`billed` なのに費用が分からなければ、
+/// 上限のある agent は以後も超過として扱う。ADR-0025 論点 13）
+struct Rejected {
+    message: String,
+    usage: Usage,
+    cost: Option<f64>,
+    billed: bool,
+    tokens_unknown: bool,
+}
+
+impl Rejected {
+    /// `usage` があれば課金があったとみなす
+    fn new(message: String, usage: Usage, cost: Option<f64>) -> Self {
+        let billed = usage.total() > 0;
+        Rejected {
+            message,
+            usage,
+            cost,
+            billed,
+            tokens_unknown: false,
+        }
+    }
+}
+
 /// プロバイダの応答の 1 行を読む（`text` / `tool_calls` / `usage` / `stop` だけを解釈する）。`error` 行は `Err`。
 /// 失敗なら理由と、`error` 行に `usage` があればそのトークン数（拒否でも入力は課金されるので予算に数える）。
-fn parse_reply(v: &serde_json::Value) -> Result<Reply, (String, Usage, Option<f64>)> {
-    let usage = Usage::from_json(&v["usage"]);
+fn parse_reply(v: &serde_json::Value) -> Result<Reply, Rejected> {
     // 費用は任意。あれば 0 以上の有限の数（ADR-0025 論点 12・13）
     let cost = match v.get("cost_usd") {
         None | Some(serde_json::Value::Null) => Ok(None),
@@ -1407,21 +1476,38 @@ fn parse_reply(v: &serde_json::Value) -> Result<Reply, (String, Usage, Option<f6
             _ => Err(()),
         },
     };
+    let (usage, usage_ok) = Usage::parse(&v["usage"]);
+    if !usage_ok {
+        // トークン数が分からない: 正しいほうの数と正しい `cost_usd` は数え、課金はあったとみなし（費用がなければ
+        // 「分からない」）、トークン数も「分からない」として `max_tokens` を閉じる（Codex のレビュー）
+        return Err(Rejected {
+            message: "malformed provider response: `usage` must hold non-negative integers".into(),
+            usage,
+            cost: cost.unwrap_or(None),
+            billed: true,
+            tokens_unknown: true,
+        });
+    }
     // `error` は文字列のときだけ失敗（`"error": null` は成功の応答に付く慣習なので無視する。Fable のレビュー）
     if let Some(e) = v["error"].as_str() {
         let Ok(cost) = cost else {
-            return Err((
+            return Err(Rejected::new(
                 "malformed provider response: `cost_usd` must be a non-negative number".into(),
                 usage,
                 None,
             ));
         };
-        return Err((e.to_string(), usage, cost));
+        return Err(Rejected::new(e.to_string(), usage, cost));
     }
     // 壊れた応答でも、正しい `cost_usd` があれば費用は数える（Fable のレビュー）
     let known = cost.unwrap_or(None);
-    let malformed =
-        |what: &str| Err((format!("malformed provider response: {what}"), usage, known));
+    let malformed = |what: &str| {
+        Err(Rejected::new(
+            format!("malformed provider response: {what}"),
+            usage,
+            known,
+        ))
+    };
     if !v.is_object() || !v["text"].is_string() {
         return malformed("`text` is missing");
     }
@@ -1790,7 +1876,10 @@ pub unsafe extern "C" fn wys_llm_mock_push(resp: *const Header) {
         tool_calls,
         usage: Usage::from_json(&v),
         cost_usd: None,
-        latency_ms: v["latency_ms"].as_i64().unwrap_or(0),
+        latency_ms: v["latency_ms"]
+            .as_i64()
+            .unwrap_or(0)
+            .clamp(0, MAX_LATENCY_MS),
         stop: String::new(),
         assistant: serde_json::Value::String(v["text"].as_str().unwrap_or_default().to_string()),
     };
@@ -2002,7 +2091,7 @@ mod tests {
         );
         assert_eq!(r.usage.total(), 10);
         let e = serde_json::json!({"error": "refused", "usage": {"input_tokens": 5}});
-        let (_, u, _) = parse_reply(&e).err().unwrap();
+        let u = parse_reply(&e).err().unwrap().usage;
         assert_eq!(
             u,
             Usage {

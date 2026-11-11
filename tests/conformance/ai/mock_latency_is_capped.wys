@@ -1,0 +1,28 @@
+# モックと記録の latency_ms は 0〜1 日に丸める（仮想時計の足し算が回り込まない。#143）。巨大な待ちは期限切れ、負は 0
+# expect-stdout: timeout
+# expect-stdout: timeout
+# expect-stdout: ok
+@agent(tools=[], capabilities=["llm"], timeout_ms=100)
+async def slow() -> Result[str, LlmError] uses llm:
+    req = LlmRequest(
+        model="",
+        system="",
+        messages=[Message(role="user", content="go")],
+        max_tokens=0
+    )
+    return await llm_generate[str](req)
+
+async def call(latency: int) -> None uses io, llm:
+    llm_mock_push(
+        MockResponse(text="ok", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=latency)
+    )
+    match await slow():
+        case Ok(t):
+            print(t)
+        case Err(e):
+            print(e.kind)
+
+async def main() -> None uses io, llm:
+    await call(9223372036854775807)
+    await call(9223372036854775807)
+    await call(-9223372036854775807)
