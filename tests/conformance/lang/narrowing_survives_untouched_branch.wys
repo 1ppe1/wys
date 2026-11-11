@@ -1,0 +1,16 @@
+# 後の if の分岐が触れない変数の絞り込みは、合流の後も残る（#135 の回帰の防止）
+# expect-stdout: 2
+# expect-stdout: 1
+# expect-stdout: 0
+def f(n: int | None, c: bool) -> int:
+    if n is None:
+        return 0
+    x = 0
+    if c:
+        x = 1
+    return n + x
+
+def main() -> None uses io:
+    print(f(1, True))
+    print(f(1, False))
+    print(f(None, True))

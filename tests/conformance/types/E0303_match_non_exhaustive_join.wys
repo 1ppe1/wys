@@ -1,0 +1,11 @@
+# 網羅していない match の後は、腕の絞り込みと元の型の合流になる（#135 の回帰の防止）
+# expect-error: E0303 5:11
+# expect-error: E0301 8:12
+def f(x: int | None) -> int:
+    match x:
+        case int():
+            print(x)
+    return x + 1
+
+def main() -> None uses io:
+    print(f(1))

@@ -1,0 +1,16 @@
+# elif の連鎖: 各分岐は、それまでの条件が偽だった絞り込みを引き継ぐ（#135 の回帰の防止）
+# expect-stdout: 3
+# expect-stdout: 0
+# expect-stdout: 5
+def f(n: int | None, m: int | None) -> int:
+    if n is None:
+        return 0
+    elif m is None:
+        return n
+    else:
+        return n + m
+
+def main() -> None uses io:
+    print(f(1, 2))
+    print(f(None, 2))
+    print(f(5, None))

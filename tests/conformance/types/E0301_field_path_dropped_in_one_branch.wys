@@ -1,0 +1,14 @@
+# 片方の分岐だけで根を再代入すると、合流の後はフィールドの絞り込みが消える（#135 の回帰の防止）
+# expect-error: E0301 11:12
+type P = {a: int | None}
+
+def f(p0: P, c: bool) -> int:
+    p = p0
+    if p.a is None:
+        return 0
+    if c:
+        p = P(a=None)
+    return p.a + 1
+
+def main() -> None uses io:
+    print(f(P(a=1), True))
