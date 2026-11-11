@@ -2463,3 +2463,31 @@ fn version_prints_version_commit_and_target() {
             .contains(std::env::consts::ARCH)
     );
 }
+
+/// プロバイダの `usage` は 0 以上の整数だけを受け取る（負や小数で `max_tokens` の予算を迂回させない。#143）
+#[test]
+fn malformed_usage_is_a_malformed_reply() {
+    const TOKENS: &str = "@agent(tools=[], capabilities=[\"llm\"], max_tokens=10)\nasync def capped() -> Result[str, LlmError] uses llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\nasync def main() -> None uses io, llm:\n    match await capped():\n        case Ok(t):\n            print(\"ok \" + t)\n        case Err(e):\n            print(e.kind + \": \" + e.message)\n    u = llm_usage()\n    print(u.input_tokens)\n";
+    for usage in [
+        r#"{"input_tokens":-1000,"output_tokens":5}"#,
+        r#"{"input_tokens":1.5,"output_tokens":5}"#,
+        r#"{"input_tokens":"3","output_tokens":5}"#,
+    ] {
+        let reply = format!(r#"{{"text":"x","usage":{usage},"stop":"end_turn"}}"#);
+        let (out, _) = run_with_provider("usage_negative", TOKENS, &[&reply], &[]);
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        assert_eq!(
+            stdout,
+            "provider: malformed provider response: `usage` must hold non-negative integers\n0\n",
+            "{usage}"
+        );
+    }
+    // 欠けているトークン数は 0（従来どおり）
+    let (out, _) = run_with_provider(
+        "usage_missing",
+        TOKENS,
+        &[r#"{"text":"x","stop":"end_turn"}"#],
+        &[],
+    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "ok x\n0\n");
+}

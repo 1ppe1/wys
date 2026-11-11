@@ -155,13 +155,29 @@ impl Usage {
         self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
     }
 
-    fn from_json(v: &serde_json::Value) -> Usage {
-        Usage {
-            input_tokens: v["input_tokens"].as_i64().unwrap_or(0),
-            output_tokens: v["output_tokens"].as_i64().unwrap_or(0),
+    /// `usage` の JSON。欠けた数は 0。あれば 0 以上の整数でなければ `None`（壊れた応答。負や小数で予算を迂回
+    /// させない。#143）
+    fn parse(v: &serde_json::Value) -> Option<Usage> {
+        if !(v.is_null() || v.is_object()) {
+            return None;
         }
+        let field = |k: &str| match v.get(k) {
+            None | Some(serde_json::Value::Null) => Some(0),
+            Some(x) => x.as_u64().and_then(|n| i64::try_from(n).ok()),
+        };
+        Some(Usage {
+            input_tokens: field("input_tokens")?,
+            output_tokens: field("output_tokens")?,
+        })
+    }
+
+    fn from_json(v: &serde_json::Value) -> Usage {
+        Self::parse(v).unwrap_or_default()
     }
 }
+
+/// 記録とモックの `latency_ms` の上限（1 日）。仮想時計の足し算が回り込まないように（#143）
+const MAX_LATENCY_MS: i64 = 86_400_000;
 
 /// プロバイダの 1 回の応答。
 struct Reply {
@@ -729,7 +745,7 @@ fn accept(s: &mut State, outcome: Outcome, latency_ms: i64) -> Result<Reply, *mu
         Outcome::Transport(m) => {
             // 応答は届いていないので回数は数えないが、待った時間は数える（記録と再生を対称にする）
             for i in s.chain() {
-                s.arena[i].virtual_ms += latency_ms;
+                s.arena[i].virtual_ms = s.arena[i].virtual_ms.saturating_add(latency_ms);
             }
             s.trace.latency_ms = s.trace.latency_ms.saturating_add(latency_ms);
             return Err(fail(s, "provider", m));
@@ -744,7 +760,7 @@ fn accept(s: &mut State, outcome: Outcome, latency_ms: i64) -> Result<Reply, *mu
             for i in s.chain() {
                 s.arena[i].llm_calls += 1;
                 s.arena[i].usage.add(usage);
-                s.arena[i].virtual_ms += latency_ms;
+                s.arena[i].virtual_ms = s.arena[i].virtual_ms.saturating_add(latency_ms);
             }
             // `usage` がなければ課金はなかったとみなす。あれば費用が要る（ADR-0025 論点 13）
             charge(s, cost, usage.total() > 0);
@@ -833,7 +849,10 @@ fn replay_load(s: &mut State) -> Result<(), String> {
             exchanges.push(Exchange {
                 request: v["request"].clone(),
                 outcome,
-                latency_ms: v["latency_ms"].as_i64().unwrap_or(0).max(0),
+                latency_ms: v["latency_ms"]
+                    .as_i64()
+                    .unwrap_or(0)
+                    .clamp(0, MAX_LATENCY_MS),
             });
         }
         Ok(Replay {
@@ -1084,7 +1103,7 @@ fn provider_step_inner(s: &mut State, call: &Call) -> Result<Reply, *mut Header>
         let a = &mut s.arena[i];
         a.llm_calls += 1;
         a.usage.add(reply.usage);
-        a.virtual_ms += reply.latency_ms;
+        a.virtual_ms = a.virtual_ms.saturating_add(reply.latency_ms);
     }
     charge(s, reply.cost_usd, true);
     s.trace.latency_ms = s.trace.latency_ms.saturating_add(reply.latency_ms);
@@ -1351,7 +1370,13 @@ fn check_executable(program: &str) -> Result<(), String> {
 /// プロバイダの応答の 1 行を読む（`text` / `tool_calls` / `usage` / `stop` だけを解釈する）。`error` 行は `Err`。
 /// 失敗なら理由と、`error` 行に `usage` があればそのトークン数（拒否でも入力は課金されるので予算に数える）。
 fn parse_reply(v: &serde_json::Value) -> Result<Reply, (String, Usage, Option<f64>)> {
-    let usage = Usage::from_json(&v["usage"]);
+    let Some(usage) = Usage::parse(&v["usage"]) else {
+        return Err((
+            "malformed provider response: `usage` must hold non-negative integers".into(),
+            Usage::default(),
+            None,
+        ));
+    };
     // 費用は任意。あれば 0 以上の有限の数（ADR-0025 論点 12・13）
     let cost = match v.get("cost_usd") {
         None | Some(serde_json::Value::Null) => Ok(None),
@@ -1743,7 +1768,10 @@ pub unsafe extern "C" fn wys_llm_mock_push(resp: *const Header) {
         tool_calls,
         usage: Usage::from_json(&v),
         cost_usd: None,
-        latency_ms: v["latency_ms"].as_i64().unwrap_or(0),
+        latency_ms: v["latency_ms"]
+            .as_i64()
+            .unwrap_or(0)
+            .clamp(0, MAX_LATENCY_MS),
         stop: String::new(),
         assistant: serde_json::Value::String(v["text"].as_str().unwrap_or_default().to_string()),
     };
