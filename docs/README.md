@@ -9,6 +9,10 @@
 | [plans/m4.md](plans/m4.md) | 完了 | M4 のタスク分解（T0〜T12）、CPython FFI（埋め込み）と `async`、PoC3 の判定基準、M4a / M4b の分割基準、M4 の出口判定 |
 | [plans/m5.md](plans/m5.md) | 承認済み計画 | M5 のタスク分解（T0〜T12）、AI SDK の核（型付き LLM API・スキーマ検証・`@tool` / `@agent`・Capability / 承認 / 予算の Runtime）、PoC4 の判定基準、M5a / M5b の分割基準 |
 | [benchmarks.md](benchmarks.md) | 公開準備 | ベンチマークの絶対値と計測環境（NFR-002）。コンパイル・実行・`wys check` の規模・LSP の遅延・AI の評価ケース |
+| [guide/getting-started.md](guide/getting-started.md) | 公開準備 | 利用者向けの入門（インストール、型、`None`、`Result`、`Unknown`、テスト、非同期）。コード例は `guide_code_blocks_run` が実行する |
+| [guide/ai-sdk.md](guide/ai-sdk.md) | 公開準備 | 利用者向けの AI SDK（型付きの出力、ツールと agent、権限と予算、実プロバイダ、記録と再生） |
+| [guide/python.md](guide/python.md) | 公開準備 | 利用者向けの Python との連携 |
+| [guide/reference.md](guide/reference.md) | 公開準備 | リファレンス v0.1（コマンド、型、組み込み、環境変数、診断） |
 | [security.md](security.md) | 公開準備 | セキュリティの保証範囲・範囲外・脅威モデル（NFR-001 / NFR-005、AC-007）。T11 の見直しの記録 |
 | [plans/release.md](plans/release.md) | 承認済み計画 | 公開準備（Phase 2 リリース）のタスク分解（T0〜T19）、ユーザーが決める事項（名称・ライセンス・版・配布・公開）、ADR-0027〜0030、出口条件 |
 | [plans/m6.md](plans/m6.md) | 承認済み計画 | M6 のタスク分解（T0〜T12）、Effect の推論・トレース・記録と再生・評価ケース・費用の上限・LSP の初期版、PoC6 の判定基準、M6a / M6b の分割基準 |
@@ -35,7 +39,7 @@
 
 | # | 成果物 | 予定パス | 主な関連要件 | 前提 | 状態 |
 |---|---|---|---|---|---|
-| 1 | 言語仕様 v0.1（EBNF、型規則、エラー処理、モジュール） | `docs/spec/` | LANG-001〜009 | 未決定事項 2, 3 のADR | 未着手 |
+| 1 | 言語仕様 v0.1（EBNF、型規則、エラー処理、モジュール） | `docs/spec/`、[`docs/guide/reference.md`](guide/reference.md) | LANG-001〜009 | 未決定事項 2, 3 のADR | 利用者向けのリファレンス v0.1 と文法 v0.4（公開準備 T8）。型規則の完全な仕様は公開後 |
 | 2 | メモリ/Effect ADR | `docs/adr/` | MEM-001〜006, AI-009 | 型/所有権PoC | メモリは ADR-0005・ADR-0012、Effect は ADR-0014（Phase 1 は注釈）と ADR-0024（M6 の推論）で Accepted |
 | 3 | コンパイラ設計（AST/IR、診断JSONスキーマ、バックエンド境界） | `docs/design/compiler.md` | COMP-001〜008, DX-002 | コンパイラPoC | 未着手 |
 | 4 | AI SDK/API仕様（型付き入出力、Capability、承認、監査イベント） | [`docs/design/ai-sdk.md`](design/ai-sdk.md) | AI-001〜010 | 未決定事項 9, 10 のADR | 確定（M5。ADR-0022 / ADR-0023。AI-007〜010 は M6 以降） |
