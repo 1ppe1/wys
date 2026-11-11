@@ -8,6 +8,7 @@
 | [plans/m3.md](plans/m3.md) | 完了 | M3 のタスク分解（T0〜T11）、ヒープと ARC の方針、新しい ADR と診断コードの帯、Phase 1 の出口判定 |
 | [plans/m4.md](plans/m4.md) | 完了 | M4 のタスク分解（T0〜T12）、CPython FFI（埋め込み）と `async`、PoC3 の判定基準、M4a / M4b の分割基準、M4 の出口判定 |
 | [plans/m5.md](plans/m5.md) | 承認済み計画 | M5 のタスク分解（T0〜T12）、AI SDK の核（型付き LLM API・スキーマ検証・`@tool` / `@agent`・Capability / 承認 / 予算の Runtime）、PoC4 の判定基準、M5a / M5b の分割基準 |
+| [publishing.md](publishing.md) | 公開準備 | 公開の手順: 点検（`scripts/preflight-public.sh`）、著者メールの書き換え、GitHub の設定 |
 | [benchmarks.md](benchmarks.md) | 公開準備 | ベンチマークの絶対値と計測環境（NFR-002）。コンパイル・実行・`wys check` の規模・LSP の遅延・AI の評価ケース |
 | [guide/getting-started.md](guide/getting-started.md) | 公開準備 | 利用者向けの入門（インストール、型、`None`、`Result`、`Unknown`、テスト、非同期）。コード例は `guide_code_blocks_run` が実行する |
 | [guide/ai-sdk.md](guide/ai-sdk.md) | 公開準備 | 利用者向けの AI SDK（型付きの出力、ツールと agent、権限と予算、実プロバイダ、記録と再生） |
