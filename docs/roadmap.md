@@ -14,6 +14,7 @@
 | M4（CPython FFI・`async`） | **完了**（[docs/plans/m4.md](plans/m4.md)）。AC-010、INTEROP-001 / INTEROP-002、LANG-008 合格。ADR-0018〜0020 Accepted。PoC3 成功（[docs/poc/poc3-results.md](poc/poc3-results.md)）。M3 から持ち越した Move 最適化も完了。`fmt` の折り返し（#87）と `weak`・再帰レコード・`Unknown` のコンテナは M5 へ。DX-005 の計測はユーザー待ち |
 | M5（AI SDK の核） | **完了**（[docs/plans/m5.md](plans/m5.md)）。AC-006〜AC-008、AI-001〜AI-006 を満たした（費用の上限は M6）。ADR-0021〜0023 Accepted、未決定事項 9 / 10 を決定。PoC4 成功（[docs/poc/poc4-results.md](poc/poc4-results.md)）。`fmt` の折り返し（#87）は M6 へ |
 | M6（Effect・トレース・LSP） | **完了**（[docs/plans/m6.md](plans/m6.md)）。AC-009、AI-007〜AI-009、DX-003 の初期版を満たした（費用の上限も入れた）。ADR-0024〜0026 Accepted。PoC6 は基準 2（エディタでの確認）がユーザー待ち。**Phase 2 完了**（ユーザーが 2026-11-08 に判定、#70） |
+| 公開準備（Phase 2 リリース） | **計画承認済み**（[docs/plans/release.md](plans/release.md)、2026-11-11）。名称（新名称で段階改名）・ライセンス（MIT OR Apache-2.0）・版と安定性・配布 0.1.0・利用者向け文書・ベンチの公開・セキュリティ・公開前の点検。ADR-0027〜0030 を起草予定 |
 
 ## Context
 
