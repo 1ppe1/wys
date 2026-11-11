@@ -31,6 +31,13 @@ for f in tests/evals/*/case.wys; do
 done
 echo "==> release archive and install (ADR-0030)"
 ./scripts/test-dist.sh
+echo "==> benchmark report and wording (NFR-002, 5.1)"
+python3 -B benches/test_report.py
+# 性能は絶対値だけを書く: 倍率・比較の文言があれば失敗（要件定義書 5.1）
+if grep -nE '[0-9.]+ ?倍|倍速|x faster|times faster|faster than|slower than|[0-9.]+x (faster|slower)' docs/benchmarks.md README.md; then
+  echo "error: performance ratios must not be written (requirements 5.1)" >&2
+  exit 1
+fi
 echo "==> poc5 cases"
 ./scripts/poc5/verify.sh
 echo "==> OK"
