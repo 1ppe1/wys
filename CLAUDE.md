@@ -33,6 +33,7 @@ cargo test --workspace
 ```sh
 cargo build
 target/debug/wys run examples/hello.wys
+target/debug/wys --version                  # 版・コミット・target・rustc（`wys version --format json` も）
 target/debug/wys check --format json examples/type_error.wys
 target/debug/wys dump-ir examples/fib.wys
 target/debug/wys test examples/math_test.wys

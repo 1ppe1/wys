@@ -2433,3 +2433,33 @@ fn lsp_publishes_diagnostics_over_json_rpc() {
     drop(w);
     assert!(child.wait().unwrap().success());
 }
+
+/// `wys --version` / `wys version`: 版・コミット・target・rustc（公開準備 T6、ADR-0029 / ADR-0030）
+#[test]
+fn version_prints_version_commit_and_target() {
+    for args in [&["--version"][..], &["version"][..]] {
+        let out = cli(args);
+        assert!(out.status.success(), "{out:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        let line = text.trim_end();
+        assert!(
+            line.starts_with(&format!("wys {} (", env!("CARGO_PKG_VERSION"))),
+            "{line}"
+        );
+        assert!(line.contains(std::env::consts::ARCH), "{line}");
+        assert!(line.contains("rustc "), "{line}");
+    }
+    let out = cli(&["version", "--format", "json"]);
+    assert!(out.status.success(), "{out:?}");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+    for key in ["name", "commit", "target", "rustc"] {
+        assert!(v[key].as_str().is_some_and(|s| !s.is_empty()), "{key}: {v}");
+    }
+    assert!(
+        v["target"]
+            .as_str()
+            .unwrap()
+            .contains(std::env::consts::ARCH)
+    );
+}
