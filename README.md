@@ -1,69 +1,83 @@
 # wys — AIネイティブ次世代プログラミング言語
 
-人間とAIの双方が安全に開発できる高性能なプログラミング言語を構築するプロジェクト。
-Pythonの簡潔さ、TypeScriptの型表現力、Nim/Codon/Mojoのネイティブ性能を参考に、
-**型安全・ネイティブ実行・AIエージェントの安全な実行**を一つの言語体験として提供することを目指す。
+`wys` は、人間と AI の双方が安全に開発できることを目指す、静的型付きのコンパイル言語。Python に近い書き方で、型を検査してから単独の Native 実行ファイルを作る。LLM の呼び出しとツールを使うエージェントを標準の関数とデコレータで書け、権限・承認・予算は**ランタイムが強制する**（プロンプトでの指示に頼らない）。
 
-> **現在のステータス:** M2 完了（型の拡張・モジュール・`test` / `fmt`）。次は M3（メモリ管理と標準ライブラリ）。
+> **現在のステータス:** Phase 2（AI ネイティブ MVP）まで完了。最初の公開版 0.1.0 を準備中（`docs/plans/release.md`）。0.y の間は構文・組み込み・CLI が予告なく変わり得る。
 
-## 試し方
+## 特徴
 
-macOS arm64 または Linux x86_64 で、Rust（`rust-toolchain.toml` で固定）と clang が必要（CI は両方で実行）。
+- **型安全:** 型注釈と推論、`T | None` の絞り込み、レコード（構造的）、Generics、`match` の網羅性検査、`Result[T, E]` と `?`。外から来る値は `Unknown` で、`validate[T]` で検証するまで使えない。
+- **Native 実行:** LLVM IR を生成し clang でリンクする。ランタイムを静的リンクした単独の実行ファイルになる。メモリは参照カウント（ARC）と Move 最適化。
+- **AI SDK:** 型付きの `llm_generate[T]`、`@tool` / `@agent`、Capability・承認・予算のランタイム強制、監査ログ、トレース、記録と再生、評価ケース（`wys eval`）。
+- **連携と道具:** CPython の埋め込み、`async` / `await`、`wys fmt` / `wys test` / `wys explain`、機械向けの JSON 診断、LSP（`wys lsp`）。
 
-```sh
-cargo build
-target/debug/wys run examples/fib.wys
-target/debug/wys check --format json examples/type_error.wys
-target/debug/wys test examples/math_test.wys   # test_* 関数を実行（main 不要）
-target/debug/wys fmt examples/fib.wys          # 整形（--check で確認だけ）
-target/debug/wys run examples/agent_demo.wys   # @tool / @agent と型付きの LLM 出力（既定のプロバイダはモック）
+## 例
+
+```wys
+type Point = {x: int, y: int}
+
+def describe(n: int | None) -> str:
+    if n is None:
+        return "nothing"
+    return "value"
+
+def main() -> None:
+    p = Point(x=1, y=3)
+    print(p.x + p.y)
+    print(describe(None))
 ```
 
-現在の言語機能（M2 時点）:
+型の誤りはコンパイル時に見つかる（`wys check --format json` で機械向けの診断）。
 
-- 型: `int` / `bool` / `str`（定数と引数）、`None`、Union（`int | None`）、レコード（`type P = {x: int}`、構造的・不変）、Generics（`def f[T]`、`type Pair[A, B]`）、`Unknown`（外部入力）
-- 文: 関数、`if` / `elif` / `else`、`while`、`match` / `case`（網羅性検査）、`assert`
-- モジュール: `import` / `from ... import`、`pub`
-- ツール: `check`（JSON 診断）、`build`（`--release` で -O2）、`run`、`test`、`fmt`、`dump-ir` / `dump-llvm`
-- 文字列: 連結（`+`）、比較（`==` / `!=`）、`len`（M3 T2b、ヒープ上のオブジェクトを ARC で管理）
-- リスト: `list[T]`、`[1, 2]`、添字、`append`、`len`、`for x in xs:` / `for i in range(n):`（M3 T4a）
-- まだないもの: `dict`、`Result`、クラス（M3 以降）
+## インストール
+
+対象環境は macOS arm64 と Linux x86_64（ADR-0029）。Windows は対象外。前提は `clang`（リンクに使う）。
+
+配布物から入れる（SHA-256 を確かめてから展開する。ADR-0030）:
+
+```sh
+scripts/install.sh --prefix "$HOME/.local"
+```
+
+ソースから作る（Rust のツールチェーンは `rust-toolchain.toml` で固定）:
+
+```sh
+cargo build --release
+target/release/wys --version
+target/release/wys run examples/hello.wys
+target/release/wys run examples/agent_demo.wys   # @tool / @agent（既定のプロバイダはモック。ネットワークに出ない）
+```
 
 ## ドキュメント
 
 | ドキュメント | 内容 |
 |---|---|
-| [docs/README.md](docs/README.md) | ドキュメント全体の索引と作成予定の成果物 |
-| [docs/ai_native_language_requirements.md](docs/ai_native_language_requirements.md) | 要件定義書（目的・機能要件・非機能要件・フェーズ・受け入れ基準） |
-| [docs/glossary.md](docs/glossary.md) | 用語集 |
-| [docs/adr/README.md](docs/adr/README.md) | 設計判断記録（ADR）の一覧と未決定事項 |
+| [入門](docs/guide/getting-started.md) | インストールから、型・`None`・`Result`・テスト・非同期まで |
+| [AI SDK](docs/guide/ai-sdk.md) | 型付きの LLM 呼び出し、ツールと agent、権限・承認・予算 |
+| [Python との連携](docs/guide/python.md) | CPython の埋め込み |
+| [リファレンス](docs/guide/reference.md) | コマンド、組み込み、環境変数、エラーコード |
+| [セキュリティ](docs/security.md) | 保証すること・しないこと |
+| [ベンチマーク](docs/benchmarks.md) | 計測の方法と結果（絶対値と計測環境だけ） |
+| [文書の索引](docs/README.md) | 要件定義書、設計、ADR、計画などすべての文書 |
 
-## ロードマップ（概要）
+## ロードマップ
 
-| フェーズ | 内容 | 完了条件 |
+| フェーズ | 内容 | 状態 |
 |---|---|---|
-| Phase 1 | 言語・ネイティブMVP | 型エラーを事前検出でき、単独のNative実行ファイルを生成・テストできる |
-| Phase 2 | AIネイティブMVP | 外部ツールを使うエージェントで、出力型エラー・権限拒否・予算超過を検証できる |
-| Phase 3 | 高性能・広域展開 | 数値処理をCPU/GPU等に明示的に配置し、実アプリで性能・互換性を比較できる |
+| Phase 1 | 言語・Native の MVP（型検査、単独の実行ファイル、テスト） | 完了 |
+| Phase 2 | AI ネイティブ MVP（型付きの LLM 出力、権限拒否、予算超過の検証） | 完了 |
+| Phase 3 | 高性能・広域展開（SIMD・並列、Wasm、GPU、パッケージ管理） | 未着手 |
 
-詳細は要件定義書の「7. 優先順位とフェーズ」を参照。
+詳細は [docs/roadmap.md](docs/roadmap.md) と要件定義書の「7. 優先順位とフェーズ」。
 
-## ディレクトリ構成
+## 開発
 
-```text
-.
-├── README.md          # このファイル
-├── CLAUDE.md          # AIエージェント（Claude Code）向けのプロジェクト指示
-├── .claude/           # Claude Code のプロジェクト設定
-├── Cargo.toml         # Rust ワークスペース
-├── rust-toolchain.toml
-├── crates/wys_*/      # コンパイラ・ランタイム・CLI
-├── examples/          # サンプルプログラム（.wys）
-├── scripts/ci.sh      # CI と同じチェック
-└── docs/
-    ├── README.md      # ドキュメント索引
-    ├── ai_native_language_requirements.md
-    ├── glossary.md
-    ├── roadmap.md     # 実行計画
-    └── adr/           # Architecture Decision Records
+```sh
+./scripts/ci.sh   # fmt・clippy・テスト・Conformance（Debug / Release / AddressSanitizer）など、CI と同じ検査
 ```
+
+設計判断は [ADR](docs/adr/README.md) に記録する。AI エージェント（Claude Code）向けの指示は [CLAUDE.md](CLAUDE.md)。
+
+## ライセンス
+
+MIT OR Apache-2.0 の二重ライセンスにする予定（ADR-0028、Proposed。LICENSE ファイルは公開の前に置く）。Copyright (c) 2026 1ppe1。
