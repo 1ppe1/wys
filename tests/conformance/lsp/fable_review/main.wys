@@ -1,0 +1,28 @@
+# LSP の見直し（Fable、M6 の後）の指摘: 型パラメータと同名の型、束縛の再代入、呼び出しの中の名前と句読点
+# expect-definition: 12:22 -> -
+# expect-definition: 14:21 -> -
+# expect-definition: 14:28 -> -
+# expect-definition: 14:17 -> main.wys:12:6
+# expect-hover: 20:13 v: int
+# expect-hover: 26:13 -
+# expect-hover: 26:12 -
+# expect-hover: 26:17 -
+type T = {n: int}
+
+type Box[T] = {item: T}
+
+def first[T](b: Box[T]) -> T:
+    return b.item
+
+def bump(r: Result[int, str]) -> int:
+    match r:
+        case Ok(v):
+            v = v + 1
+            return v
+        case _:
+            return 0
+
+def main() -> None uses io:
+    b = Box(item=1)
+    print(first(b))
+    print(bump(Ok(1)))

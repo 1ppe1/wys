@@ -234,12 +234,20 @@ fn local_hover(tc: &TypeckResult, info: &FuncInfo, id: &Ident) -> Option<Hover> 
                 .find(|(_, _, s)| *s == id.span)
                 .map(|(_, t, _)| *t)
         })
-        // 再代入の左辺（宣言ではない）は、最初の宣言の型
+        // 再代入の左辺（宣言ではない）は、その前の宣言（`case` の束縛を含む。Fable の見直し）の型
         .or_else(|| {
+            let decl = local_def(info, &id.name, id.span.start)?;
             info.locals
                 .iter()
-                .find(|(n, _)| *n == id.name)
-                .map(|(_, t)| *t)
+                .zip(&info.local_spans)
+                .find(|(_, s)| **s == decl)
+                .map(|((_, t), _)| *t)
+                .or_else(|| {
+                    info.bindings
+                        .iter()
+                        .find(|(_, _, s)| *s == decl)
+                        .map(|(_, t, _)| *t)
+                })
         })?;
     Some(Hover {
         code: format!("{}: {}", id.name, ty(tc, declared)?),
@@ -306,6 +314,8 @@ fn expr_hover(a: &Analysis, info: &FuncInfo, e: &Expr, pos: u32) -> Option<Hover
         }
         // 文字列の中は出さない
         ExprKind::Str(_) => None,
+        // 呼び出しの括弧・カンマ・キーワード引数の名前（どの部分式にも入らない位置）は出さない（Fable の見直し）
+        ExprKind::Call { .. } | ExprKind::MethodCall { .. } => None,
         _ => Some(Hover {
             code: expr_ty(tc, e)?,
             note: None,
@@ -391,7 +401,7 @@ pub fn definition_at(fe: &Frontend, pos: u32) -> Option<Span> {
         return module_start(fe, &module);
     }
     for t in &a.module.types {
-        if let Some(s) = type_ref(a, &t.value, pos) {
+        if let Some(s) = type_ref(a, &t.value, &t.params, pos) {
             return s;
         }
     }
@@ -421,16 +431,16 @@ pub fn definition_at(fe: &Frontend, pos: u32) -> Option<Span> {
         if contains(p.name.span, pos) {
             return Some(p.name.span);
         }
-        if let Some(s) = type_expr_ref(a, &p.ty, pos) {
+        if let Some(s) = type_expr_ref(a, &p.ty, &f.type_params, pos) {
             return s;
         }
     }
-    if let Some(s) = type_expr_ref(a, &f.ret, pos) {
+    if let Some(s) = type_expr_ref(a, &f.ret, &f.type_params, pos) {
         return s;
     }
     let mut found = Found::None;
     stmts(&f.body, pos, &mut found);
-    if let Some(s) = body_type_ref(a, &f.body, pos) {
+    if let Some(s) = body_type_ref(a, &f.body, &f.type_params, pos) {
         return s;
     }
     match found {
@@ -444,7 +454,7 @@ pub fn definition_at(fe: &Frontend, pos: u32) -> Option<Span> {
             // 呼び出しの型引数（`validate[Plan](u)`、`f[Plan](x)`。Codex のレビュー）
             ExprKind::Call { type_args, .. } | ExprKind::MethodCall { type_args, .. } => type_args
                 .iter()
-                .find_map(|t| type_expr_ref(a, t, pos))
+                .find_map(|t| type_expr_ref(a, t, &f.type_params, pos))
                 .flatten(),
             _ => None,
         },
@@ -492,49 +502,57 @@ fn module_start(fe: &Frontend, module: &str) -> Option<Span> {
     Some(Span::new(base, base))
 }
 
-fn type_ref(a: &Analysis, v: &TypeDefValue, pos: u32) -> Option<Option<Span>> {
+fn type_ref(a: &Analysis, v: &TypeDefValue, scope: &[Ident], pos: u32) -> Option<Option<Span>> {
     match v {
-        TypeDefValue::Alias(t) => type_expr_ref(a, t, pos),
-        TypeDefValue::Record(fields) => fields.iter().find_map(|(_, t)| type_expr_ref(a, t, pos)),
+        TypeDefValue::Alias(t) => type_expr_ref(a, t, scope, pos),
+        TypeDefValue::Record(fields) => fields
+            .iter()
+            .find_map(|(_, t)| type_expr_ref(a, t, scope, pos)),
     }
 }
 
-/// 型の注釈の中の名前 → `type` の定義（組み込みの型と型パラメータは `Some(None)`: 定義がない）
-fn type_expr_ref(a: &Analysis, t: &TypeExpr, pos: u32) -> Option<Option<Span>> {
+/// 型の注釈の中の名前 → `type` の定義（組み込みの型と型パラメータは `Some(None)`: 定義がない）。`scope` は
+/// 囲む関数・`type` の型パラメータ（同じ名前の `type` があっても型パラメータが優先。Fable の見直し）
+fn type_expr_ref(a: &Analysis, t: &TypeExpr, scope: &[Ident], pos: u32) -> Option<Option<Span>> {
     if !contains(t.span, pos) {
         return None;
     }
     match &t.kind {
+        TypeExprKind::Name(n) if scope.iter().any(|p| p.name == *n) => Some(None),
         TypeExprKind::Name(n) => Some(named_def(a, n)),
         TypeExprKind::Apply(n, args) => args
             .iter()
-            .find_map(|x| type_expr_ref(a, x, pos))
+            .find_map(|x| type_expr_ref(a, x, scope, pos))
             .or_else(|| Some(named_def(a, n))),
-        TypeExprKind::Union(items) => items.iter().find_map(|x| type_expr_ref(a, x, pos)),
+        TypeExprKind::Union(items) => items.iter().find_map(|x| type_expr_ref(a, x, scope, pos)),
     }
 }
 
 /// 本体の中の型の注釈（`x: Plan = ...`、`f[Plan](...)`）
-fn body_type_ref(a: &Analysis, body: &[Stmt], pos: u32) -> Option<Option<Span>> {
+fn body_type_ref(a: &Analysis, body: &[Stmt], scope: &[Ident], pos: u32) -> Option<Option<Span>> {
     for s in body {
         if !contains(s.span, pos) {
             continue;
         }
         return match &s.kind {
-            StmtKind::Assign { ann: Some(t), .. } => type_expr_ref(a, t, pos),
+            StmtKind::Assign { ann: Some(t), .. } => type_expr_ref(a, t, scope, pos),
             StmtKind::If {
                 branches,
                 else_body,
             } => branches
                 .iter()
-                .find_map(|(_, b)| body_type_ref(a, b, pos))
-                .or_else(|| else_body.as_ref().and_then(|b| body_type_ref(a, b, pos))),
+                .find_map(|(_, b)| body_type_ref(a, b, scope, pos))
+                .or_else(|| {
+                    else_body
+                        .as_ref()
+                        .and_then(|b| body_type_ref(a, b, scope, pos))
+                }),
             StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
-                body_type_ref(a, body, pos)
+                body_type_ref(a, body, scope, pos)
             }
-            StmtKind::Match { arms, .. } => {
-                arms.iter().find_map(|arm| body_type_ref(a, &arm.body, pos))
-            }
+            StmtKind::Match { arms, .. } => arms
+                .iter()
+                .find_map(|arm| body_type_ref(a, &arm.body, scope, pos)),
             _ => None,
         };
     }
