@@ -87,6 +87,8 @@ CI（`.github/workflows/ci.yml`、macOS arm64 と Linux x86_64 の matrix）は 
 | Linux x86_64 での CI | **M2 T0 で追加済み** |
 | メモリ安全性の境界テスト（NFR-001）、AddressSanitizer での実行 | M3（ADR-0005） |
 | セキュリティの保証範囲（NFR-001 / NFR-005、AC-007）: Capability・承認・予算・秘密情報・一時ファイル・LSP | 公開準備 T11。保証範囲と範囲外は `docs/security.md`。修正ごとのケース: `output_files_do_not_follow_symlinks`、`malformed_usage_is_a_malformed_reply`、`unknown_tokens_close_the_token_budget`、`ai/mock_latency_is_capped`、`approval_prompt_text_cannot_carry_terminal_controls` |
+| NFR-006（対象環境）、NFR-008（版と互換性） | 公開準備 T15、ADR-0029。約束は `docs/stability.md`（Tier 1 = macOS arm64、Tier 2 = Linux x86_64、Python 3.14 だけ）。版は e2e の `version_prints_version_commit_and_target`、エラーコードの不変は `every_error_code_has_a_case`、診断の JSON の形は `diagnostics/` のスナップショット |
+| NFR-007（パニック・`Result`・FFI の失敗・タイムアウト） | 公開準備 T15。挙動は `docs/stability.md` §5 に集約（新しい挙動は決めていない）。パニック: 上の M3 T5c の行。FFI の失敗: AC-010 の行。タイムアウトと予算: AC-008 の行（`ai/` のケース） |
 | コンパイル時間・バイナリサイズの継続計測 | M3 |
 | AC-010（Python 境界の例外と型の不一致は、定義済みの失敗として伝搬する） | **検査済み（M4 T6〜T8）**。`python/exceptions.wys`（例外の種類ごとの `Err(PyError)`、トレースバック、NUL を含む名前）・`python/conversions.wys`（変換の型の不一致は `Err(TypeError)`）・`python/conversion_edge_cases.wys`（変換の途中の例外、同じ文字列になるキー、UTF-8 にできないキー）、e2e の `python_libraries_can_be_called_and_exceptions_are_values`。M4 の出口で合格（`docs/plans/m4.md`） |
 | INTEROP-001（CPython の埋め込みで既存のライブラリを使える） | **検査済み（M4 T5〜T8）**。`json` / `math` / `operator` / `builtins` を使う `python/` のケース、`wys_driver/tests/python_link.rs`、macOS arm64 と Linux x86_64 の CI（Python 3.14 必須）。往復の時間は `benches/programs/py_roundtrip.wys`（絶対値だけ） |

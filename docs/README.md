@@ -14,6 +14,8 @@
 | [guide/ai-sdk.md](guide/ai-sdk.md) | 公開準備 | 利用者向けの AI SDK（型付きの出力、ツールと agent、権限と予算、実プロバイダ、記録と再生） |
 | [guide/python.md](guide/python.md) | 公開準備 | 利用者向けの Python との連携 |
 | [guide/reference.md](guide/reference.md) | 公開準備 | リファレンス v0.1（コマンド、型、組み込み、環境変数、診断） |
+| [stability.md](stability.md) | 公開準備 | 版（SemVer 0.y.z）・安定性の段階・対象環境・サポート期間・失敗したときの挙動（NFR-006〜008、ADR-0029） |
+| [third-party-licenses.md](third-party-licenses.md) | 公開準備 | 依存クレートのライセンスの一覧（`scripts/third-party-licenses.py` が作る。ADR-0028） |
 | [security.md](security.md) | 公開準備 | セキュリティの保証範囲・範囲外・脅威モデル（NFR-001 / NFR-005、AC-007）。T11 の見直しの記録 |
 | [plans/release.md](plans/release.md) | 承認済み計画 | 公開準備（Phase 2 リリース）のタスク分解（T0〜T19）、ユーザーが決める事項（名称・ライセンス・版・配布・公開）、ADR-0027〜0030、出口条件 |
 | [plans/m6.md](plans/m6.md) | 承認済み計画 | M6 のタスク分解（T0〜T12）、Effect の推論・トレース・記録と再生・評価ケース・費用の上限・LSP の初期版、PoC6 の判定基準、M6a / M6b の分割基準 |
