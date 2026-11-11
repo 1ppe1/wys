@@ -221,20 +221,26 @@ pub fn frontend_for_case(path: &Path, display_name: &str, src: &str) -> wys_driv
     }
 }
 
-/// 行・列（1 始まり、列は Unicode スカラー値）をバイト位置にする
-fn byte_of(src: &str, line: u32, col: u32) -> u32 {
-    let start: usize = src
-        .split_inclusive('\n')
-        .take(line.saturating_sub(1) as usize)
-        .map(str::len)
-        .sum();
-    let rest = &src[start..];
-    let off: usize = rest
-        .chars()
-        .take(col.saturating_sub(1) as usize)
-        .map(char::len_utf8)
-        .sum();
-    (start + off) as u32
+/// 行・列（1 始まり、列は Unicode スカラー値）をバイト位置にする。その行にない位置（行末の次より後、ない行）は
+/// `None`（打ち間違えた列が次の行のトークンに当たらないように。Fable の見直し）
+fn byte_of(src: &str, line: u32, col: u32) -> Option<u32> {
+    let mut start = 0usize;
+    for (i, text) in src.split_inclusive('\n').enumerate() {
+        if i + 1 == line as usize {
+            let body = text.trim_end_matches(['\n', '\r']);
+            let want = col.checked_sub(1)? as usize;
+            let mut off = 0usize;
+            for (n, ch) in body.chars().enumerate() {
+                if n == want {
+                    return Some((start + off) as u32);
+                }
+                off += ch.len_utf8();
+            }
+            return (body.chars().count() == want).then_some((start + off) as u32);
+        }
+        start += text.len();
+    }
+    None
 }
 
 /// LSP のホバーと定義ジャンプの期待を確かめる（ADR-0026 論点 15）
@@ -246,14 +252,22 @@ fn check_lsp(
 ) -> Result<(), String> {
     let mut problems = Vec::new();
     for (l, c, want) in &exp.hovers {
-        let got = wys_lsp::query::hover_at(fe, byte_of(src, *l, *c)).map(|h| h.code);
+        let Some(pos) = byte_of(src, *l, *c) else {
+            problems.push(format!("hover {l}:{c}: no such position in the file"));
+            continue;
+        };
+        let got = wys_lsp::query::hover_at(fe, pos).map(|h| h.code);
         if &got != want {
             problems.push(format!("hover {l}:{c}: expected {want:?}, got {got:?}"));
         }
     }
     let case_dir = Path::new(display_name).parent().unwrap_or(Path::new(""));
     for (l, c, want) in &exp.definitions {
-        let got = wys_lsp::query::definition_at(fe, byte_of(src, *l, *c)).map(|span| {
+        let Some(pos) = byte_of(src, *l, *c) else {
+            problems.push(format!("definition {l}:{c}: no such position in the file"));
+            continue;
+        };
+        let got = wys_lsp::query::definition_at(fe, pos).map(|span| {
             let file = fe.file.file_name(span.start);
             let rel = Path::new(file)
                 .strip_prefix(case_dir)
@@ -367,6 +381,16 @@ pub fn run_case(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 行末を超える列は次の行へ数え進めず、誤りにする（Fable の見直し）。行末そのもの（列 = 長さ + 1）は許す
+    #[test]
+    fn positions_stay_on_their_line() {
+        assert_eq!(byte_of("ab\ncd\n", 2, 2), Some(4));
+        assert_eq!(byte_of("ab\ncd\n", 1, 3), Some(2));
+        assert_eq!(byte_of("ab\ncd\n", 1, 5), None);
+        assert_eq!(byte_of("ab\ncd\n", 9, 1), None);
+        assert_eq!(byte_of("aé\n", 1, 3), Some(3));
+    }
 
     #[test]
     fn case_dir_expands_to_the_directory_of_the_case() {
