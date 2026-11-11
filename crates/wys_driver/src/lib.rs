@@ -384,11 +384,16 @@ fn cc(opts: &BuildOptions) -> String {
         .unwrap_or_else(|| "clang".to_string())
 }
 
-/// 一時ディレクトリ（終了時に削除）。
-struct TempDir(PathBuf);
+/// 一時ディレクトリ（終了時に削除）。名前は一意で、既にあれば作らない（`create_dir`）。Unix では 0700。
+/// 生成した実行ファイルなどを、共有の一時ディレクトリに予測できる名前で置かないために使う（#145）
+pub struct TempDir(PathBuf);
 
 impl TempDir {
-    fn new() -> Result<Self, BuildError> {
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+
+    pub fn new() -> Result<Self, BuildError> {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -398,7 +403,15 @@ impl TempDir {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("wys-{}-{nanos}-{n}", std::process::id()));
-        std::fs::create_dir(&dir).map_err(|e| BuildError::Io(e.to_string()))?;
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&dir)
+            .map_err(|e| BuildError::Io(e.to_string()))?;
         Ok(Self(dir))
     }
 }

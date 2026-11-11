@@ -2464,6 +2464,48 @@ fn version_prints_version_commit_and_target() {
     );
 }
 
+/// 記録・監査・トレースの出力先がシンボリックリンクなら、リンクの先を書き換えない（#145）。
+/// 記録は作り直す（リンクを外して新しいファイルを 0600 で作る）。監査とトレースは書かずに続ける
+#[cfg(unix)]
+#[test]
+fn output_files_do_not_follow_symlinks() {
+    let dir = std::env::temp_dir().join(format!("wys-e2e-nofollow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let victim = dir.join("victim.txt");
+    std::fs::write(&victim, "keep me\n").unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let links: Vec<PathBuf> = ["rec.jsonl", "audit.jsonl", "trace.jsonl"]
+        .iter()
+        .map(|n| {
+            let l = dir.join(n);
+            std::os::unix::fs::symlink(&victim, &l).unwrap();
+            l
+        })
+        .collect();
+    let (out, _) = run_with_provider(
+        "nofollow_planner",
+        PLANNER,
+        &[TOOL_USE_REPLY, PLAN_REPLY],
+        &[
+            ("WYS_LLM_RECORD", links[0].to_str().unwrap()),
+            ("WYS_AUDIT", links[1].to_str().unwrap()),
+            ("WYS_TRACE", links[2].to_str().unwrap()),
+        ],
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me\n");
+    let mode = std::fs::metadata(&victim).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o644, "the target's mode must not change");
+    // 記録はリンクの代わりに新しいファイルになる
+    let rec = std::fs::symlink_metadata(&links[0]).unwrap();
+    assert!(rec.file_type().is_file(), "the recording replaces the link");
+    assert_eq!(rec.permissions().mode() & 0o777, 0o600);
+    assert_eq!(recording_lines(&links[0])[0]["kind"], "header");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 配布物の配置（`bin/` と `lib/`、ADR-0030）: 環境変数がなくても `<exe>/../lib/` のランタイムを使う。
 /// シンボリックリンク（`/usr/local/bin/wys` → `<prefix>/bin/wys` など）から起動しても見つける（公開準備 T7）
 #[cfg(unix)]
