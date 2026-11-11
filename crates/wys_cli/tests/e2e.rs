@@ -2482,6 +2482,12 @@ fn malformed_usage_is_a_malformed_reply() {
             "{usage}"
         );
     }
+    // 壊れた usage でも、正しい cost_usd は数える（Codex のレビュー）。費用がなければ「分からない」として閉じる
+    let priced = r#"{"text":"x","usage":{"input_tokens":-1,"output_tokens":5},"cost_usd":0.5}"#;
+    let (out, _) = run_with_provider("usage_priced", COSTLY, &[priced, priced], &[]);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let bad = "provider: malformed provider response: `usage` must hold non-negative integers\n";
+    assert_eq!(stdout, format!("{bad}{bad}1.0\n"), "{stdout}");
     // 欠けているトークン数は 0（従来どおり）
     let (out, _) = run_with_provider(
         "usage_missing",

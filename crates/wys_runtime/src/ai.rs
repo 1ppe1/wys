@@ -741,7 +741,7 @@ fn provider_step(s: &mut State, call: &Call) -> Result<Reply, *mut Header> {
 fn accept(s: &mut State, outcome: Outcome, latency_ms: i64) -> Result<Reply, *mut Header> {
     let parsed = match outcome {
         Outcome::Line(v) => parse_reply(&v),
-        Outcome::Malformed(_, m) => Err((m, Usage::default(), None)),
+        Outcome::Malformed(_, m) => Err(Rejected::new(m, Usage::default(), None)),
         Outcome::Transport(m) => {
             // 応答は届いていないので回数は数えないが、待った時間は数える（記録と再生を対称にする）
             for i in s.chain() {
@@ -756,14 +756,19 @@ fn accept(s: &mut State, outcome: Outcome, latency_ms: i64) -> Result<Reply, *mu
             r.latency_ms = latency_ms;
             Ok(r)
         }
-        Err((m, usage, cost)) => {
+        Err(Rejected {
+            message: m,
+            usage,
+            cost,
+            billed,
+        }) => {
             for i in s.chain() {
                 s.arena[i].llm_calls += 1;
                 s.arena[i].usage.add(usage);
                 s.arena[i].virtual_ms = s.arena[i].virtual_ms.saturating_add(latency_ms);
             }
             // `usage` がなければ課金はなかったとみなす。あれば費用が要る（ADR-0025 論点 13）
-            charge(s, cost, usage.total() > 0);
+            charge(s, cost, billed);
             s.trace.latency_ms = s.trace.latency_ms.saturating_add(latency_ms);
             audit(s, "llm_called", None, format!("tokens={}", usage.total()));
             Err(fail(s, "provider", m))
@@ -1367,16 +1372,31 @@ fn check_executable(program: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 拒んだ応答: 理由、数えるトークン数と費用、課金があったとみなすか（`billed` なのに費用が分からなければ、
+/// 上限のある agent は以後も超過として扱う。ADR-0025 論点 13）
+struct Rejected {
+    message: String,
+    usage: Usage,
+    cost: Option<f64>,
+    billed: bool,
+}
+
+impl Rejected {
+    /// `usage` があれば課金があったとみなす
+    fn new(message: String, usage: Usage, cost: Option<f64>) -> Self {
+        let billed = usage.total() > 0;
+        Rejected {
+            message,
+            usage,
+            cost,
+            billed,
+        }
+    }
+}
+
 /// プロバイダの応答の 1 行を読む（`text` / `tool_calls` / `usage` / `stop` だけを解釈する）。`error` 行は `Err`。
 /// 失敗なら理由と、`error` 行に `usage` があればそのトークン数（拒否でも入力は課金されるので予算に数える）。
-fn parse_reply(v: &serde_json::Value) -> Result<Reply, (String, Usage, Option<f64>)> {
-    let Some(usage) = Usage::parse(&v["usage"]) else {
-        return Err((
-            "malformed provider response: `usage` must hold non-negative integers".into(),
-            Usage::default(),
-            None,
-        ));
-    };
+fn parse_reply(v: &serde_json::Value) -> Result<Reply, Rejected> {
     // 費用は任意。あれば 0 以上の有限の数（ADR-0025 論点 12・13）
     let cost = match v.get("cost_usd") {
         None | Some(serde_json::Value::Null) => Ok(None),
@@ -1385,21 +1405,36 @@ fn parse_reply(v: &serde_json::Value) -> Result<Reply, (String, Usage, Option<f6
             _ => Err(()),
         },
     };
+    let Some(usage) = Usage::parse(&v["usage"]) else {
+        // トークン数が分からない: 課金はあったとみなし（費用がなければ「分からない」として閉じる）、正しい
+        // `cost_usd` は数える（Codex のレビュー）
+        return Err(Rejected {
+            message: "malformed provider response: `usage` must hold non-negative integers".into(),
+            usage: Usage::default(),
+            cost: cost.unwrap_or(None),
+            billed: true,
+        });
+    };
     // `error` は文字列のときだけ失敗（`"error": null` は成功の応答に付く慣習なので無視する。Fable のレビュー）
     if let Some(e) = v["error"].as_str() {
         let Ok(cost) = cost else {
-            return Err((
+            return Err(Rejected::new(
                 "malformed provider response: `cost_usd` must be a non-negative number".into(),
                 usage,
                 None,
             ));
         };
-        return Err((e.to_string(), usage, cost));
+        return Err(Rejected::new(e.to_string(), usage, cost));
     }
     // 壊れた応答でも、正しい `cost_usd` があれば費用は数える（Fable のレビュー）
     let known = cost.unwrap_or(None);
-    let malformed =
-        |what: &str| Err((format!("malformed provider response: {what}"), usage, known));
+    let malformed = |what: &str| {
+        Err(Rejected::new(
+            format!("malformed provider response: {what}"),
+            usage,
+            known,
+        ))
+    };
     if !v.is_object() || !v["text"].is_string() {
         return malformed("`text` is missing");
     }
@@ -1966,7 +2001,7 @@ mod tests {
         );
         assert_eq!(r.usage.total(), 10);
         let e = serde_json::json!({"error": "refused", "usage": {"input_tokens": 5}});
-        let (_, u, _) = parse_reply(&e).err().unwrap();
+        let u = parse_reply(&e).err().unwrap().usage;
         assert_eq!(
             u,
             Usage {
