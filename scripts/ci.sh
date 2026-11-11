@@ -29,6 +29,8 @@ echo "==> evaluation cases (replay, ADR-0025)"
 for f in tests/evals/*/case.wys; do
   ./target/debug/wys fmt --check "$f"
 done
+echo "==> release archive and install (ADR-0030)"
+./scripts/test-dist.sh
 echo "==> poc5 cases"
 ./scripts/poc5/verify.sh
 echo "==> OK"

@@ -431,11 +431,7 @@ fn audit(s: &mut State, kind: &'static str, tool: Option<&str>, detail: String) 
         let line = event_json(s.audit.len(), &ev).to_string();
         if dest == "stderr" {
             eprintln!("{line}");
-        } else if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&dest)
-        {
+        } else if let Ok(mut f) = open_append_nofollow(&dest) {
             let _ = writeln!(f, "{line}");
         }
     }
@@ -516,11 +512,7 @@ fn trace_write(s: &mut State, line: &serde_json::Value) {
         return;
     }
     if t.file.is_none() && !t.file_failed {
-        match std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dest)
-        {
+        match open_append_nofollow(dest) {
             Ok(f) => t.file = Some(f),
             Err(_) => t.file_failed = true,
         }
@@ -926,6 +918,34 @@ fn record_path() -> Option<String> {
         .filter(|p| !p.is_empty())
 }
 
+#[cfg(target_os = "linux")]
+const O_NOFOLLOW: i32 = 0o400000;
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+const O_NOFOLLOW: i32 = 0x100;
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd"
+    ))
+))]
+const O_NOFOLLOW: i32 = 0;
+
+/// 監査とトレースのファイルを追記で開く。最後の要素がシンボリックリンクなら開かない（`O_NOFOLLOW`。#145）。
+/// 開けなければ、呼び出し側は書かずに続ける（従来どおり）
+fn open_append_nofollow(path: &str) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.custom_flags(O_NOFOLLOW);
+    }
+    opts.open(path)
+}
+
 /// 記録のファイルを作り直してヘッダを書く（最初の呼び出しで 1 回）。再生と同じファイルなら失敗
 fn record_prepare(s: &mut State) -> Result<(), String> {
     let Some(path) = record_path() else {
@@ -947,8 +967,14 @@ fn record_prepare(s: &mut State) -> Result<(), String> {
                 return Err("the recording path is also the replay source".into());
             }
         }
+        // 記録は作り直す: 既にあるファイルやシンボリックリンクは外し（リンクの先は消さない）、新しいファイルを
+        // 排他的に作る（`create_new` はリンクを辿らない）。リンクの先を切り詰めて書き換えないように（#145）
+        if std::fs::symlink_metadata(&path).is_ok() {
+            std::fs::remove_file(&path)
+                .map_err(|e| format!("cannot write the recording {path}: {e}"))?;
+        }
         let mut opts = std::fs::OpenOptions::new();
-        opts.create(true).write(true).truncate(true);
+        opts.create_new(true).write(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt as _;
@@ -957,11 +983,11 @@ fn record_prepare(s: &mut State) -> Result<(), String> {
         let mut f = opts
             .open(&path)
             .map_err(|e| format!("cannot write the recording {path}: {e}"))?;
-        // `mode` は作るときにしか効かないので、既にあったファイルも 0600 にする（Fable のレビュー）
+        // umask で狭まることはあっても広がらないが、念のため開いたファイルに対して 0600 にする
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))
                 .map_err(|e| format!("cannot write the recording {path}: {e}"))?;
         }
         let header = serde_json::json!({
