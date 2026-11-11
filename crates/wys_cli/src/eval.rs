@@ -36,17 +36,12 @@ struct TestResult {
 }
 
 /// 一時ファイルの接頭辞。落ちる経路を含めて、作ったファイルを消す
-struct Temp(PathBuf);
+/// ケースの実行ファイルとトレースを置く一意の一時ディレクトリ（終了時に消す。#145）
+struct Temp(wys_driver::TempDir);
 
 impl Temp {
-    fn path(&self, suffix: &str) -> PathBuf {
-        PathBuf::from(format!("{}.{suffix}", self.0.display()))
-    }
-}
-
-impl Drop for Temp {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(self.path("bin"));
+    fn path(&self, name: &str) -> PathBuf {
+        self.0.path().join(name)
     }
 }
 
@@ -215,11 +210,10 @@ fn run_case(dir: &Path, record: bool) -> Result<CaseResult, String> {
             );
         }
     }
-    let tmp = Temp(std::env::temp_dir().join(format!(
-        "wys-eval-{}-{}",
-        std::process::id(),
-        name.replace(['/', '.'], "_")
-    )));
+    let tmp = Temp(
+        wys_driver::TempDir::new()
+            .map_err(|e| format!("cannot make a temporary directory: {e:?}"))?,
+    );
     let exe = tmp.path("bin");
     wys_driver::link_program(program, &exe, &wys_driver::BuildOptions::default())
         .map_err(|e| format!("cannot build the case {}: {e:?}", src.display()))?;
