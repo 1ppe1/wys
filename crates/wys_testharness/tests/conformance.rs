@@ -288,6 +288,11 @@ fn guide_code_blocks_run() {
                         std::fs::write(&file, &body).unwrap();
                         if let Err(e) = run_case(&file, &name, &opts, &scratch) {
                             failures.push(format!("--- {name}\n{e}"));
+                        } else if parse_expectations(&body).is_ok_and(|e| e.test_mode)
+                            && let Err(e) = run_guide_tests(&body, &name, &opts, &scratch, checked)
+                        {
+                            // `wys test` と同じく、test_* を 1 つずつ実行する（Codex のレビュー）
+                            failures.push(format!("--- {name}\n{e}"));
                         }
                     } else {
                         body.push_str(line);
@@ -305,4 +310,34 @@ fn guide_code_blocks_run() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// テストのモードのブロックの `test_*` を、`wys test` と同じく 1 つずつ別のプロセスで実行する
+fn run_guide_tests(
+    src: &str,
+    name: &str,
+    opts: &BuildOptions,
+    scratch: &Path,
+    n: usize,
+) -> Result<(), String> {
+    let (fe, tests) = wys_driver::frontend_tests(name, src);
+    let program = fe.program.as_ref().ok_or("the block does not build")?;
+    if tests.is_empty() {
+        return Err("the block has no test_* functions".into());
+    }
+    let exe = scratch.join(format!("tests{n}"));
+    wys_driver::link_program(program, &exe, opts).map_err(|e| format!("build failed: {e:?}"))?;
+    for (i, test) in tests.iter().enumerate() {
+        let out = Command::new(&exe)
+            .env("WYS_TEST_INDEX", i.to_string())
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(format!(
+                "{test} failed\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+    }
+    Ok(())
 }
