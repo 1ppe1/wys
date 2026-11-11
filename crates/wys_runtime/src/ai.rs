@@ -1150,6 +1150,26 @@ fn read_answer() -> Option<String> {
     (!line.is_empty()).then(|| String::from_utf8_lossy(&line).into_owned())
 }
 
+/// 承認のプロンプトに出す文字列（#144）。ツールの名前と引数は LLM が決めるので、端末を操作する文字
+/// （C0 / DEL / C1 の制御文字）、表示の順序を変える双方向制御、見えない文字（ゼロ幅、BOM、行と段落の区切り）を
+/// `\u{..}` にする。承認者が見る表示を LLM が細工できないように（AI-005）。長くても切らない: 切ると、承認する
+/// 内容（宛先のパスなど）を切った後ろに隠せる（Codex のレビュー）
+fn display_safe(text: &str) -> String {
+    let hidden = |c: char| {
+        c.is_control()
+            || matches!(c, '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+    };
+    let mut out = String::new();
+    for c in text.chars() {
+        if hidden(c) {
+            out.push_str(&format!("\\u{{{:x}}}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// 承認の方針（ADR-0023 論点 12）。許可なら真、拒否なら偽、答えられない（未知の値・EOF）なら `Err`。
 /// 監査は `approval_requested` → `approval_granted` / `approval_denied`。引数の本文は監査に残さない。
 fn approve(s: &mut State, name: &str, args: &str) -> Result<bool, *mut Header> {
@@ -1165,11 +1185,12 @@ fn approve(s: &mut State, name: &str, args: &str) -> Result<bool, *mut Header> {
         "deny" => false,
         "allow" => true,
         "prompt" => {
-            let agent = s.top().name.clone();
+            let agent = display_safe(&s.top().name);
+            let (tool, shown_args) = (display_safe(name), display_safe(args));
             let mut err = std::io::stderr();
             let _ = write!(
                 err,
-                "approve tool {name} (agent {agent}) with args {args}? [y/N] "
+                "approve tool {tool} (agent {agent}) with args {shown_args}? [y/N] "
             );
             let _ = err.flush();
             let answer = read_answer();
@@ -1910,6 +1931,23 @@ pub extern "C" fn wys_agent_exit() {
 
 #[cfg(test)]
 mod tests {
+
+    /// 承認のプロンプトに出す文字列: 制御文字・双方向制御・ゼロ幅の文字はエスケープし、長さは切らない（#144）
+    #[test]
+    fn approval_prompt_text_cannot_carry_terminal_controls() {
+        assert_eq!(display_safe("{\"a\":1}"), "{\"a\":1}");
+        let evil = "ok\u{9b}2J\u{1b}[1;1H\u{202e}gnp.exe\u{200b}\u{7f}";
+        let shown = display_safe(evil);
+        assert_eq!(
+            shown,
+            "ok\\u{9b}2J\\u{1b}[1;1H\\u{202e}gnp.exe\\u{200b}\\u{7f}"
+        );
+        assert!(!shown.chars().any(|c| c.is_control()));
+        assert_eq!(display_safe("日本語"), "日本語");
+        // 長くても全部を見せる（切った後ろに承認する内容を隠させない。Codex のレビュー）
+        let long = format!("{}\"dest\":\"/etc/passwd\"", "x".repeat(5000));
+        assert_eq!(display_safe(&long), long);
+    }
     use super::*;
 
     #[test]

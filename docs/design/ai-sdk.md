@@ -199,7 +199,7 @@ M6 から、注釈のない関数の Effect は推論する（ADR-0024）。`use
 
 ### 7.4 承認（AI-005）
 
-`approval="required"` のツールは、実行の前に `WYS_APPROVAL` の方針に従う。`deny`（既定、未設定）: 常に拒否。`allow`: 常に許可。`prompt`: stderr に `approve tool <name> (agent <agent>) with args <JSON>? [y/N] ` を出し、stdin から 1 行読む。`y` / `yes` なら許可、それ以外は拒否、EOF なら `Err(kind="approval")`。監査 `approval_requested` → `approval_granted` / `approval_denied`。
+`approval="required"` のツールは、実行の前に `WYS_APPROVAL` の方針に従う。`deny`（既定、未設定）: 常に拒否。`allow`: 常に許可。`prompt`: stderr に `approve tool <name> (agent <agent>) with args <JSON>? [y/N] ` を出し（名前と引数は LLM が決めるので、制御文字・双方向制御・ゼロ幅の文字は `\u{..}` にする。長くても切らない: 切った後ろに承認する内容を隠せないように。#144）、stdin から 1 行読む。`y` / `yes` なら許可、それ以外は拒否、EOF なら `Err(kind="approval")`。監査 `approval_requested` → `approval_granted` / `approval_denied`。
 
 ### 7.5 予算（AI-006）
 
