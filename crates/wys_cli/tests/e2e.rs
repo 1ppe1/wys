@@ -1079,6 +1079,16 @@ fn agent_timeout_uses_the_real_clock_without_virtual_time() {
     assert_eq!(stdout, "timeout: timeout_ms exceeded\n", "{stderr}");
 }
 
+#[test]
+fn real_time_sleep_waits_after_busy_work() {
+    // 実時間のモードの sleep_ms は「いまから n ミリ秒」待つ。スケジューラの時計が実時間より遅れていても
+    // （計算で時間を使った後）、早く起きない。早く起きると、期限 30 ms の agent が 60 ms 待つツールの後も続いてしまう
+    let src = "@tool(description=\"Waits.\")\nasync def wait() -> None uses pure:\n    await sleep_ms(60)\n\n@agent(tools=[wait], capabilities=[\"llm\"], timeout_ms=30)\nasync def slow() -> Result[str, LlmError] uses llm:\n    req = LlmRequest(model=\"\", system=\"\", messages=[Message(role=\"user\", content=\"go\")], max_tokens=0)\n    return await llm_generate[str](req)\n\ndef busy(n: int) -> int:\n    i = 0\n    acc = 0\n    while i < n:\n        acc = (acc + i) % 1000003\n        i = i + 1\n    return acc\n\nasync def main() -> None uses io, llm:\n    print(busy(30000000) > 0)\n    llm_mock_push(MockResponse(text=\"\", tool_calls=[MockToolCall(name=\"wait\", args_json=\"{}\")], input_tokens=1, output_tokens=1, latency_ms=0))\n    llm_mock_push(MockResponse(text=\"done\", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=0))\n    match await slow():\n        case Ok(t):\n            print(\"ok \" + t)\n        case Err(e):\n            print(e.kind + \": \" + e.message)\n";
+    let (code, stdout, stderr) = run("real_time_sleep_after_busy.wys", src);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "True\ntimeout: timeout_ms exceeded\n", "{stderr}");
+}
+
 /// stdin に `input` をつなぐが、stderr に承認の問いが出てから `delay` 待って書く（承認の後の再検査）。
 fn cli_answer_late(
     args: &[&str],
