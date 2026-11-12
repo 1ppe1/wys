@@ -36,7 +36,7 @@ ADR-0027 の衝突の調査の残り。米国の出願「WYS?」（番号 793345
 新しい `1ppe1/wys` に対して行う（名前は ADR-0027 で `wys` に決まった）。
 
 - 説明文、topics。
-- **Private vulnerability reporting を有効にする**（Settings → Security。ADR-0028 の窓口）。
+- **Private vulnerability reporting を有効にする**（Settings → Security。ADR-0028 の窓口）。private のリポジトリでは有効にできないので、public にした直後に行う。
 - Codex のレビュー（chatgpt-codex-connector）を新しいリポジトリでも有効にする。
 - GitHub Actions を使うなら、課金の設定を直してから CI（`.github/workflows/`）が動くことを確かめる。動かないあいだは、メンテナが手元で `./scripts/ci.sh` と Linux の Docker の CI を回す。
 - `main` のブランチ保護（強制 push の禁止、PR を必須に）。CI が動くまでは、必須のステータスチェックは設定しない。

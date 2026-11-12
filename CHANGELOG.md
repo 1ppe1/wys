@@ -2,7 +2,7 @@
 
 この文書の形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、版は [SemVer](https://semver.org/lang/ja/) の `0.y.z` に従う（ADR-0029）。`0.y` の間は、`y` を上げるときに言語の構文・組み込み・CLI が変わり得る。安定性の段階は [docs/stability.md](docs/stability.md)。
 
-## [0.1.0] - 未リリース
+## [0.1.0] - 2026-11-12
 
 最初の公開版。Phase 1（言語・Native の MVP）と Phase 2（AI ネイティブ MVP）の範囲。
 
