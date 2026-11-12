@@ -19,28 +19,29 @@ scripts/preflight-public.sh
 
 ADR-0027 の衝突の調査の残り。米国の出願「WYS?」（番号 79334522）の状態と権利者を USPTO の TSDR で、日本で使うなら J-PlatPat で「WYS」の第 9 類・第 42 類を確かめる。ソフトウェアの区分に有効な登録があれば、公開の前に ADR-0027 の見直し条件に従う。
 
-## 2. 著者メールの書き換え（承認時の決定: 公開の直前に 1 回だけ）
+## 2. 著者メールの書き換え（2026-11-12 に実施）
 
-コミットの著者・コミッターのメールを、GitHub の noreply アドレスに揃える。**履歴を書き換えるので、すべてのコミットのハッシュが変わり、全ブランチとタグの強制 push が要り、既存の PR のコミットへのリンクが切れる**（PR そのものと会話は残る）。
+コミットの著者・コミッターのメールを、GitHub の noreply アドレスに揃えた。同じリポジトリで書き換えて強制 push しても、GitHub は PR ごとの元のコミット（`refs/pull/N/head`）を持ち続け、PR の画面から古いメールが見える。そのため、**書き換えた履歴を新しいリポジトリに置いて公開する**ことにした（ユーザーが決めた）。
 
-1. AI が `scripts/preflight-public.sh` の 4 の一覧と、書き換えの対象（メールごとのコミット数）を提示し、ユーザーが確認する。
-2. ほかの作業中のブランチをすべてマージか破棄してから、リポジトリの完全なバックアップ（`git clone --mirror`）を取る。
-3. `git filter-repo`（別に入れる）で書き換える。対応表（`.mailmap` の形式。`新しい名前 <新しいメール> <古いメール>`）はリポジトリの外に置く:
+1. AI が `scripts/preflight-public.sh` の 4 の一覧と、書き換えの対象（メールごとのコミット数）を提示し、ユーザーが確認した。
+2. 手元の別のクローン（main だけ）で、`git filter-repo --mailmap <リポジトリの外の対応表>` で書き換えた。対応表は `.mailmap` の形式（`新しい名前 <新しいメール> <古いメール>`）。
+3. 古いアドレスが残っていないこと、ファイルの中身（main のツリーのハッシュ）とコミット数が書き換えの前と同じことを確かめた。
+4. ユーザーの指示で、開発に使っていたリポジトリを `1ppe1/wys-dev`（private のまま。issue・PR・レビューの記録を残す）に改名し、新しい `1ppe1/wys` を private で作って、書き換えた main だけを push した。
+5. 手元のクローンは、`origin` を新しいリポジトリに、`dev` を `wys-dev` に向けた。
 
-   ```sh
-   git filter-repo --mailmap /path/outside/mailmap.txt
-   ```
-
-4. `scripts/preflight-public.sh` の 4 で、古いアドレスが残っていないことを確かめる。
-5. ユーザーの指示で強制 push する（`git push --force --all && git push --force --tags`）。手元のほかのクローンは作り直す。
+文書とコードのコメントにある `#N`（issue と PR の番号）は、`wys-dev` の番号で、新しいリポジトリの issue とは対応しない。
 
 ## 3. GitHub の設定（ユーザーが行う）
 
-- リポジトリ名の変更（ADR-0027 の名前が決まったら。旧名からのリダイレクトが残る）、説明文、topics。
-- **Private vulnerability reporting を有効にする**（Settings → Security。ADR-0028 の主の窓口）。
-- `main` のブランチ保護（強制 push の禁止、PR を必須に）。Actions は使えないので、必須のステータスチェックは設定しない。
+新しい `1ppe1/wys` に対して行う（名前は ADR-0027 で `wys` に決まった）。
+
+- 説明文、topics。
+- **Private vulnerability reporting を有効にする**（Settings → Security。ADR-0028 の窓口）。
+- Codex のレビュー（chatgpt-codex-connector）を新しいリポジトリでも有効にする。
+- GitHub Actions を使うなら、課金の設定を直してから CI（`.github/workflows/`）が動くことを確かめる。動かないあいだは、メンテナが手元で `./scripts/ci.sh` と Linux の Docker の CI を回す。
+- `main` のブランチ保護（強制 push の禁止、PR を必須に）。CI が動くまでは、必須のステータスチェックは設定しない。
 - Discussions は使わない（issue に集める）。
-- visibility を public にする（#78 の判定の後）。
+- visibility を public にする（公開の判断の後）。
 
 ## 4. 公開の後
 
