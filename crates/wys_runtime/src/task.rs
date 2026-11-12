@@ -702,10 +702,16 @@ pub unsafe extern "C" fn wys_task_free(t: *mut Header) {
     unsafe { super::wys_free_object(t) };
 }
 
-/// `sleep_ms(n)`: 仮想時計で `n` ミリ秒後まで現在のタスクを止める。負の `n` は 0。
+/// `sleep_ms(n)`: いまから `n` ミリ秒後まで現在のタスクを止める（仮想時間のモードでは仮想時計で数える）。負の `n` は 0。
 #[unsafe(no_mangle)]
 pub extern "C" fn wys_sleep_ms(n: i64) {
     let s = sched();
+    // 実時間のモードでは、スケジューラの時計をいまの実時間まで進めてから期限を決める。時計はタイマーで起きたときに
+    // しか進まないので、計算で実時間を使った後は遅れていて、そのままだと期限が過去になり早く起きてしまう
+    if !s.virtual_time {
+        let real = u64::try_from(s.start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        s.now_ms = s.now_ms.max(real);
+    }
     let deadline = s.now_ms.saturating_add(n.max(0) as u64);
     let seq = s.seq;
     s.seq += 1;
