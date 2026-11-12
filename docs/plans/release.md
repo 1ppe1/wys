@@ -121,8 +121,8 @@ Fable（計画）が作成し、ユーザーが承認した。承認時の決定
 | ADR-0027〜0030 が Accepted、未決定 1 / 11 / 12 の欄 | 済 | `docs/adr/README.md`。SLO は未決 |
 | 公開に要るファイル、`license` と `version` | 済 | LICENSE-MIT / LICENSE-APACHE、CONTRIBUTING、CODE_OF_CONDUCT、SECURITY、CHANGELOG、issue / PR のテンプレート、`version = "0.1.0"`。`scripts/ci.sh` が検査する |
 | 名前の表記が ADR-0027 どおり | 済 | T13 |
-| 商標の確認 | **ユーザー待ち** | USPTO の TSDR（「WYS?」79334522）、必要なら J-PlatPat |
-| 配布物と `SHA256SUMS`、クリーンな環境での受け入れ | macOS arm64 は済。Linux x86_64 は作り直し中 | 書き換えた後のコミットで作る。受け入れは PATH から Rust を外し、`install.sh --from-archive` → `hello` / `fib` / `agent_demo` / Python 連携 |
+| 商標の確認 | 済（ユーザーが判断） | USPTO の TSDR で「WYS?」（79334522、登録 7601757）を確かめ、ユーザーが `wys` のまま公開すると決めた（ADR-0027 の追記）。J-PlatPat は未確認 |
+| 配布物と `SHA256SUMS`、クリーンな環境での受け入れ | 済 | 署名付きタグ `v0.1.0`（`ec60492`）と Release の 3 ファイル。両方の環境で CI と受け入れが合格。受け入れは PATH から Rust を外し、`install.sh --from-archive` → `hello` / `fib` / `agent_demo` / Python 連携 |
 | `wys --version` | 済 | 配布物で `wys 0.1.0 (<コミット> <target>, rustc …)` |
 | 利用者向け文書と doctest、README | 済 | `docs/guide/`、`guide_code_blocks_run` |
 | ベンチの公開と倍率の検査 | 済 | `docs/benchmarks.md`、`scripts/ci.sh` |
@@ -130,7 +130,7 @@ Fable（計画）が作成し、ユーザーが承認した。承認時の決定
 | `docs/stability.md` | 済 | T15 |
 | #135 の線形性 | 済 | `flow_analysis_work_is_linear_in_branches` |
 | 公開前の点検と著者メールの書き換え | 済 | `scripts/preflight-public.sh` の 1〜3 が空。書き換えた履歴を新しい `1ppe1/wys` に置いた（`docs/publishing.md` §2）。新しいリポジトリの履歴に勤務先のメールはない |
-| GitHub の設定 | **ユーザー待ち** | private vulnerability reporting の有効化（`docs/publishing.md` §3） |
-| visibility を public に | **ユーザーの判定** | — |
+| GitHub の設定 | public にした直後に行う | private vulnerability reporting は private のリポジトリでは有効にできない（`docs/publishing.md` §3） |
+| visibility を public に | ユーザーが判定した（2026-11-12、公開する） | — |
 | 参考: PoC5、PoC6 基準 2、補完、`llm-smoke` | 未実施 | 出口に含めない |
 
