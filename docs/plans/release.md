@@ -53,9 +53,9 @@ Fable（計画）が作成し、ユーザーが承認した。承認時の決定
 | 番号 | 論点 | 時期 |
 |---|---|---|
 | ADR-0027 | 名称・拡張子・パッケージ名（`wys` を正式名称にする。案A） | 2026-11-11 に Accepted |
-| ADR-0028 | ライセンス（MIT OR Apache-2.0）、著作権者（ユーザー個人）、ガバナンス、DCO、行動規範、脆弱性報告の窓口と範囲 | T3 で起草、第 1 週に承認 |
-| ADR-0029 | SemVer 0.y.z、安定性の段階表、対象環境の Tier、Python 3.14、サポート期間、SLO は未決 | T4 で起草、T14 / T15 の前 |
-| ADR-0030 | 配布: Releases のみ、`bin/` + `lib/`、`../lib` の探索、SHA-256 と署名付きタグ、ad-hoc 署名、`install.sh`、Actions なしの手順 | T5 で起草、T17 の前 |
+| ADR-0028 | ライセンス（MIT OR Apache-2.0）、著作権者（ユーザー個人）、ガバナンス、DCO、行動規範、脆弱性報告の窓口と範囲 | 2026-11-11 に Accepted |
+| ADR-0029 | SemVer 0.y.z、安定性の段階表、対象環境の Tier、Python 3.14、サポート期間、SLO は未決 | 2026-11-11 に Accepted |
+| ADR-0030 | 配布: Releases のみ、`bin/` + `lib/`、`../lib` の探索、SHA-256 と署名付きタグ、ad-hoc 署名、`install.sh`、Actions なしの手順 | 2026-11-11 に Accepted |
 
 ## 診断コードの帯
 
@@ -111,3 +111,26 @@ Fable（計画）が作成し、ユーザーが承認した。承認時の決定
 | セキュリティの見直しで Capability の迂回が見つかる | T11 を第 1 週に始める。大きければ公開準備 a / b に分ける |
 | 文書が日本語だけ | README に英語の要約。全訳は公開後 |
 | `llm_generate` のプログラムに埋め込むコンパイラの絶対パス | `WYS_LLM_PROXY` と `PATH` の探索順を文書に。内部扱いと明記 |
+
+## 出口判定の下書き（2026-11-12、T19 の準備）
+
+最終の判定はユーザーが行う。「済」は AI が確かめたもの。
+
+| 条件 | 状態 | 根拠 |
+|---|---|---|
+| ADR-0027〜0030 が Accepted、未決定 1 / 11 / 12 の欄 | 済 | `docs/adr/README.md`。SLO は未決 |
+| 公開に要るファイル、`license` と `version` | 済 | LICENSE-MIT / LICENSE-APACHE、CONTRIBUTING、CODE_OF_CONDUCT、SECURITY、CHANGELOG、issue / PR のテンプレート、`version = "0.1.0"`。`scripts/ci.sh` が検査する |
+| 名前の表記が ADR-0027 どおり | 済 | T13 |
+| 商標の確認 | **ユーザー待ち** | USPTO の TSDR（「WYS?」79334522）、必要なら J-PlatPat |
+| 配布物と `SHA256SUMS`、クリーンな環境での受け入れ | macOS arm64 は済。Linux x86_64 は作り直し中 | 書き換えた後のコミットで作る。受け入れは PATH から Rust を外し、`install.sh --from-archive` → `hello` / `fib` / `agent_demo` / Python 連携 |
+| `wys --version` | 済 | 配布物で `wys 0.1.0 (<コミット> <target>, rustc …)` |
+| 利用者向け文書と doctest、README | 済 | `docs/guide/`、`guide_code_blocks_run` |
+| ベンチの公開と倍率の検査 | 済 | `docs/benchmarks.md`、`scripts/ci.sh` |
+| `docs/security.md` と `SECURITY.md` | 済（P3-4 の ASan / Miri の拡充は issue） | T11 |
+| `docs/stability.md` | 済 | T15 |
+| #135 の線形性 | 済 | `flow_analysis_work_is_linear_in_branches` |
+| 公開前の点検と著者メールの書き換え | 済 | `scripts/preflight-public.sh` の 1〜3 が空。書き換えた履歴を新しい `1ppe1/wys` に置いた（`docs/publishing.md` §2）。新しいリポジトリの履歴に勤務先のメールはない |
+| GitHub の設定 | **ユーザー待ち** | private vulnerability reporting の有効化（`docs/publishing.md` §3） |
+| visibility を public に | **ユーザーの判定** | — |
+| 参考: PoC5、PoC6 基準 2、補完、`llm-smoke` | 未実施 | 出口に含めない |
+

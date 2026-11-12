@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 脆弱性の報告 / Security vulnerability
+    url: https://github.com/1ppe1/wys/security/advisories/new
+    about: 脆弱性は公開の issue にせず、private vulnerability reporting で報告してください（SECURITY.md）。
