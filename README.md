@@ -2,7 +2,7 @@
 
 `wys` は、人間と AI の双方が安全に開発できることを目指す、静的型付きのコンパイル言語。Python に近い書き方で、型を検査してから単独の Native 実行ファイルを作る。LLM の呼び出しとツールを使うエージェントを標準の関数とデコレータで書け、権限・承認・予算は**ランタイムが強制する**（プロンプトでの指示に頼らない）。
 
-> **現在のステータス:** Phase 2（AI ネイティブ MVP）まで完了。最初の公開版 0.1.0 を準備中（`docs/plans/release.md`）。0.y の間は構文・組み込み・CLI が予告なく変わり得る。
+> **現在のステータス:** 最初の公開版 [0.1.0](https://github.com/1ppe1/wys/releases/tag/v0.1.0) を公開（Phase 2 の AI ネイティブ MVP まで）。0.y の間は構文・組み込み・CLI が予告なく変わり得る（[安定性と互換性](docs/stability.md)）。
 
 ## 特徴
 
@@ -33,11 +33,14 @@ def main() -> None:
 
 対象環境は macOS arm64 と Linux x86_64（ADR-0029）。Windows は対象外。前提は `clang`（リンクに使う）。
 
-配布物から入れる（SHA-256 を確かめてから展開する。ADR-0030）:
+配布物から入れる（[Release](https://github.com/1ppe1/wys/releases/latest) の最新版を取ってきて、SHA-256 を確かめてから展開する。ADR-0030）:
 
 ```sh
+git clone https://github.com/1ppe1/wys.git && cd wys
 scripts/install.sh --prefix "$HOME/.local"
 ```
+
+macOS のバイナリは公証していないので、Gatekeeper に止められたら `xattr -d com.apple.quarantine "$HOME/.local/bin/wys"`。
 
 ソースから作る（Rust のツールチェーンは `rust-toolchain.toml` で固定）:
 
