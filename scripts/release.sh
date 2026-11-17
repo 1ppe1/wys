@@ -7,9 +7,10 @@
 #     lib/libwys_runtime_python.a    Python を使うプログラム用（あれば）
 #     LICENSE-* README.md CHANGELOG.md third-party-licenses.md（あれば）
 #   dist/<名前>-<版>-<target>.tar.gz
+#   dist/wys-<版>.vsix              VS Code の拡張（--vsix のとき。ADR-0032）
 #   dist/SHA256SUMS
 #
-# 使い方: scripts/release.sh [--out <dir>] [--skip-build] [--profile-dir <target/release>]
+# 使い方: scripts/release.sh [--out <dir>] [--skip-build] [--profile-dir <target/release>] [--vsix]
 #   --skip-build と --profile-dir target/debug は検査用（scripts/test-dist.sh）。
 # 名前は `wys`（ADR-0027）。検査のために RELEASE_NAME で上書きできる。
 set -euo pipefail
@@ -19,11 +20,13 @@ name="${RELEASE_NAME:-wys}"
 out=dist
 skip_build=0
 profile_dir=target/release
+vsix=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
     --skip-build) skip_build=1; shift ;;
     --profile-dir) profile_dir="$2"; shift 2 ;;
+    --vsix) vsix=1; shift ;;
     *) echo "release.sh: unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -58,9 +61,16 @@ if [ "$(uname -s)" = Darwin ]; then
 fi
 
 tar -C "$out" -czf "$out/$base.tar.gz" "$base"
+if [ "$vsix" = 1 ]; then
+  # 拡張の版はコンパイラの版と揃える（ADR-0032）
+  ext_version=$(python3 -c 'import json; print(json.load(open("editors/vscode/package.json"))["version"])')
+  [ "$ext_version" = "$version" ] || { echo "release.sh: editors/vscode/package.json の版 $ext_version がコンパイラの版 $version と違う" >&2; exit 1; }
+  (cd editors/vscode && npm ci --no-audit --no-fund --silent && npm test && npm run package --silent)
+  mv "editors/vscode/wys-$version.vsix" "$out/"
+fi
 sha256() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi
 }
-(cd "$out" && sha256 ./*.tar.gz | sed 's# \./# #' > SHA256SUMS)
+(cd "$out" && shopt -s nullglob && sha256 ./*.tar.gz ./*.vsix | sed 's# \./# #' > SHA256SUMS)
 echo "release.sh: $out/$base.tar.gz（${commit}）"
 cat "$out/SHA256SUMS"
