@@ -1,0 +1,85 @@
+{
+  "name": "wys",
+  "displayName": "wys",
+  "description": "Syntax highlighting and language server support for the wys language",
+  "version": "0.1.1",
+  "publisher": "1ppe1",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/1ppe1/wys.git",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "wys",
+        "aliases": [
+          "wys"
+        ],
+        "extensions": [
+          ".wys"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "wys",
+        "scopeName": "source.wys",
+        "path": "./syntaxes/wys.tmLanguage.json"
+      },
+      {
+        "scopeName": "markdown.wys.codeblock",
+        "path": "./syntaxes/markdown-wys.tmLanguage.json",
+        "injectTo": [
+          "text.html.markdown"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.wys": "wys"
+        }
+      }
+    ],
+    "configuration": {
+      "title": "wys",
+      "properties": {
+        "wys.path": {
+          "type": "string",
+          "default": "wys",
+          "description": "Path to the wys executable. The extension runs `wys lsp`."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "wys.restartServer",
+        "title": "wys: Restart Language Server"
+      }
+    ]
+  },
+  "scripts": {
+    "check": "tsc -p . --noEmit",
+    "compile": "npm run check && esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node20 --minify",
+    "package": "npm run compile && cp ../../LICENSE-MIT ../../LICENSE-APACHE . && vsce package --no-dependencies --skip-license",
+    "test": "node test/grammar.mjs"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.4.0",
+    "esbuild": "^0.25.0",
+    "vscode-textmate": "^9.2.0",
+    "vscode-oniguruma": "^2.0.1"
+  }
+}

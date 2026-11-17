@@ -1,0 +1,232 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "wys",
+  "scopeName": "source.wys",
+  "patterns": [
+    {
+      "include": "#comment"
+    },
+    {
+      "include": "#string"
+    },
+    {
+      "include": "#decorator"
+    },
+    {
+      "include": "#type-declaration"
+    },
+    {
+      "include": "#function-declaration"
+    },
+    {
+      "include": "#keyword"
+    },
+    {
+      "include": "#constant"
+    },
+    {
+      "include": "#number"
+    },
+    {
+      "include": "#builtin-type"
+    },
+    {
+      "include": "#call"
+    },
+    {
+      "include": "#operator"
+    }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.number-sign.wys",
+      "match": "#.*$"
+    },
+    "string": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.wys",
+          "begin": "\"",
+          "end": "\"|$",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.wys"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.wys"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.wys",
+              "match": "\\\\[ntr0\\\\\"']"
+            },
+            {
+              "name": "invalid.illegal.escape.wys",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.wys",
+          "begin": "'",
+          "end": "'|$",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.wys"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.wys"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.wys",
+              "match": "\\\\[ntr0\\\\\"']"
+            },
+            {
+              "name": "invalid.illegal.escape.wys",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "decorator": {
+      "match": "^\\s*(@)([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.decorator.wys"
+        },
+        "2": {
+          "name": "entity.name.function.decorator.wys"
+        }
+      }
+    },
+    "type-declaration": {
+      "match": "^\\s*(?:(pub)\\s+)?(type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "storage.modifier.wys"
+        },
+        "2": {
+          "name": "storage.type.type.wys"
+        },
+        "3": {
+          "name": "entity.name.type.wys"
+        }
+      }
+    },
+    "function-declaration": {
+      "match": "\\b(def)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "storage.type.function.wys"
+        },
+        "2": {
+          "name": "entity.name.function.wys"
+        }
+      }
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "name": "keyword.control.flow.wys",
+          "match": "\\b(if|elif|else|for|while|match|case|return|pass|await)\\b"
+        },
+        {
+          "name": "keyword.control.import.wys",
+          "match": "\\b(import|from|as)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.wys",
+          "match": "\\b(and|or|not|in|is)\\b"
+        },
+        {
+          "name": "storage.modifier.wys",
+          "match": "\\b(pub|async)\\b"
+        },
+        {
+          "name": "keyword.other.uses.wys",
+          "match": "\\buses\\b(?=\\s+[a-z])"
+        },
+        {
+          "name": "keyword.other.spawn.wys",
+          "match": "\\bspawn\\b(?=\\s*\\()"
+        }
+      ]
+    },
+    "constant": {
+      "name": "constant.language.wys",
+      "match": "\\b(True|False|None)\\b"
+    },
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.wys",
+          "match": "\\b[0-9]+(\\.[0-9]+([eE][+-]?[0-9]+)?|[eE][+-]?[0-9]+)\\b"
+        },
+        {
+          "name": "constant.numeric.integer.wys",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "builtin-type": {
+      "patterns": [
+        {
+          "name": "support.type.wys",
+          "match": "\\b(int|float|bool|str|list|dict|Result|Unknown|Task)\\b(?!\\s*\\()"
+        },
+        {
+          "name": "support.function.wys",
+          "match": "\\b(Ok|Err)\\b"
+        },
+        {
+          "name": "entity.name.type.wys",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "call": {
+      "match": "\\b([a-z_][A-Za-z0-9_]*)(?=\\s*(\\[[^\\]\\n]*\\])?\\s*\\()",
+      "captures": {
+        "1": {
+          "name": "entity.name.function.call.wys"
+        }
+      }
+    },
+    "operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.wys",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.comparison.wys",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.assignment.wys",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.arithmetic.wys",
+          "match": "\\+|-|\\*|/|%"
+        },
+        {
+          "name": "keyword.operator.try.wys",
+          "match": "\\?"
+        },
+        {
+          "name": "keyword.operator.union.wys",
+          "match": "\\|"
+        }
+      ]
+    }
+  }
+}

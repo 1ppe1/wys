@@ -1,0 +1,8 @@
+**
+!package.json
+!language-configuration.json
+!README.md
+!LICENSE-MIT
+!LICENSE-APACHE
+!syntaxes/*.json
+!out/extension.js

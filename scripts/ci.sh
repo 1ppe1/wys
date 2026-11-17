@@ -46,4 +46,10 @@ grep -qx 'license = "MIT OR Apache-2.0"' Cargo.toml || { echo "error: Cargo.toml
 python3 -B scripts/third-party-licenses.py --check
 echo "==> poc5 cases"
 ./scripts/poc5/verify.sh
+echo "==> VS Code extension (editors/vscode)"
+if command -v npm >/dev/null 2>&1; then
+  (cd editors/vscode && npm ci --no-audit --no-fund --silent && npm test && npm run compile --silent)
+else
+  echo "skipped: npm not found"
+fi
 echo "==> OK"
