@@ -29,6 +29,46 @@ def main() -> None:
 
 型の誤りはコンパイル時に見つかる（`wys check --format json` で機械向けの診断）。
 
+### ランタイムが止める
+
+ツールに `approval="required"` を付けると、LLM がそのツールを呼ぼうとしても、承認がなければランタイムが実行しない。[`examples/agent_demo.wys`](examples/agent_demo.wys) から:
+
+```wys
+@tool(description="Save a note to disk.", approval="required")
+def save_note(title: str) -> None uses io:
+    print("saved " + title)
+```
+
+既定の方針は拒否。LLM（この例ではモック）が `save_note` を呼んでも実行されず、監査イベントに残る:
+
+```console
+$ wys run examples/agent_demo.wys
+notes: 25 chars, saved=false
+0 llm_called
+1 tool_called char_count
+2 llm_called
+3 approval_requested save_note
+4 approval_denied save_note
+5 llm_called
+```
+
+`WYS_APPROVAL=allow` で許可すると、ツールが実行される:
+
+```console
+$ WYS_APPROVAL=allow wys run examples/agent_demo.wys
+saved notes
+notes: 25 chars, saved=false
+0 llm_called
+1 tool_called char_count
+2 llm_called
+3 approval_requested save_note
+4 approval_granted save_note
+5 tool_called save_note
+6 llm_called
+```
+
+保証する範囲と、しない範囲は [セキュリティ](docs/security.md) に書いてある。
+
 ## インストール
 
 対象環境は macOS arm64 と Linux x86_64（ADR-0029）。Windows は対象外。前提は `clang`（リンクに使う）。
