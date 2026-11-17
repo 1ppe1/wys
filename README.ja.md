@@ -35,7 +35,7 @@ def main() -> None:
 
 ツールに `approval="required"` を付けると、LLM がそのツールを呼ぼうとしても、承認がなければランタイムが実行しない。[`examples/agent_demo.wys`](examples/agent_demo.wys) から:
 
-```wys
+```wys fragment
 @tool(description="Save a note to disk.", approval="required")
 def save_note(title: str) -> None uses io:
     print("saved " + title)
