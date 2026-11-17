@@ -4,7 +4,7 @@
 
 `wys` は、人間と AI の双方が安全に開発できることを目指す、静的型付きのコンパイル言語。Python に近い書き方で、型を検査してから単独の Native 実行ファイルを作る。LLM の呼び出しとツールを使うエージェントを標準の関数とデコレータで書け、権限・承認・予算は**ランタイムが強制する**（プロンプトでの指示に頼らない）。
 
-> **現在のステータス:** 最初の公開版 [0.1.0](https://github.com/1ppe1/wys/releases/tag/v0.1.0) を公開（Phase 2 の AI ネイティブ MVP まで）。0.y の間は構文・組み込み・CLI が予告なく変わり得る（[安定性と互換性](docs/stability.md)）。
+> **現在のステータス:** 最新版は [0.1.1](https://github.com/1ppe1/wys/releases/tag/v0.1.1)（[変更履歴](CHANGELOG.md)。Phase 2 の AI ネイティブ MVP まで）。0.y の間は構文・組み込み・CLI が予告なく変わり得る（[安定性と互換性](docs/stability.md)）。
 
 ## 特徴
 
@@ -83,6 +83,12 @@ curl -fsSL https://raw.githubusercontent.com/1ppe1/wys/main/scripts/install.sh |
 
 既定では `~/.local` に入る。`sh -s -- --prefix <dir>` や `--version <版>` で変えられる。
 
+Homebrew から入れる:
+
+```sh
+brew install 1ppe1/wys/wys
+```
+
 macOS のバイナリは公証していないので、Gatekeeper に止められたら `xattr -d com.apple.quarantine "$HOME/.local/bin/wys"`。
 
 ソースから作る（Rust のツールチェーンは `rust-toolchain.toml` で固定）:
@@ -94,6 +100,12 @@ target/release/wys --version
 target/release/wys run examples/hello.wys
 target/release/wys run examples/agent_demo.wys   # @tool / @agent（既定のプロバイダはモック。ネットワークに出ない）
 ```
+
+## エディタ
+
+VS Code の拡張で、`.wys` の色付けと、`wys lsp` による診断・ホバー・定義ジャンプ・quickfix・整形が使える。[Release](https://github.com/1ppe1/wys/releases/latest) から `wys-<版>.vsix` を取ってきて、`code --install-extension wys-<版>.vsix`。詳しくは [editors/vscode](editors/vscode/README.md)。
+
+ほかのエディタでは、`wys lsp` を stdio の Language Server として起動する。
 
 ## ドキュメント
 

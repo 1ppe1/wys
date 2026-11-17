@@ -4,7 +4,7 @@
 
 `wys` is a statically typed, compiled language for writing programs that call LLMs and run tool-using agents. It reads much like Python, is type-checked ahead of time, and builds a standalone native executable. LLM calls and agents are written with ordinary functions and decorators from the standard SDK, and capabilities, approvals, and budgets are **enforced by the runtime**, not by instructions in a prompt.
 
-> **Status:** the first public release, [0.1.0](https://github.com/1ppe1/wys/releases/tag/v0.1.0), is out. While the version is 0.y, syntax, builtins, and the CLI can change without notice ([stability and compatibility](docs/en/stability.md)).
+> **Status:** the latest release is [0.1.1](https://github.com/1ppe1/wys/releases/tag/v0.1.1) ([changes](CHANGELOG.md)). While the version is 0.y, syntax, builtins, and the CLI can change without notice ([stability and compatibility](docs/en/stability.md)).
 
 ## The runtime says no
 
@@ -83,6 +83,12 @@ curl -fsSL https://raw.githubusercontent.com/1ppe1/wys/main/scripts/install.sh |
 
 Pass `--prefix <dir>` or `--version <version>` after `sh -s --` to change where and what it installs.
 
+With Homebrew:
+
+```sh
+brew install 1ppe1/wys/wys
+```
+
 The macOS binary is not notarized. If Gatekeeper blocks it, run `xattr -d com.apple.quarantine "$HOME/.local/bin/wys"`.
 
 Or build from source (the Rust toolchain is pinned in `rust-toolchain.toml`):
@@ -94,6 +100,12 @@ target/release/wys --version
 target/release/wys run examples/hello.wys
 target/release/wys run examples/agent_demo.wys   # @tool / @agent; the default provider is a mock and does not use the network
 ```
+
+## Editor support
+
+The VS Code extension highlights `.wys` files and shows diagnostics, hover, go to definition, quick fixes, and formatting from `wys lsp`. Download `wys-<version>.vsix` from [Releases](https://github.com/1ppe1/wys/releases/latest) and run `code --install-extension wys-<version>.vsix`. See [editors/vscode](editors/vscode/README.md).
+
+Other editors can run `wys lsp` as a language server over stdio.
 
 ## Documentation
 
