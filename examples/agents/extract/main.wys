@@ -1,0 +1,35 @@
+# 型付きの抽出: 請求書の文面から、決まった形のレコードを取り出す（llm_generate[T]）。
+# モデルの出力は Invoice として検証され、合わなければ Err(kind="schema") になる。
+#
+#   WYS_LLM_PROVIDER=anthropic WYS_LLM_MODEL=<モデル名> wys run examples/agents/extract/main.wys
+#   WYS_LLM_PROVIDER=replay:examples/agents/extract/recording.jsonl wys run examples/agents/extract/main.wys
+type LineItem = {description: str, amount_cents: int}
+type Invoice = {vendor: str, due_date: str, items: list[LineItem], total_cents: int}
+
+def invoice_text() -> str:
+    return "INVOICE #2026-114 from Northwind Paper Co. Payment due 2026-12-15. 3 boxes of A4 paper: $45.00. Delivery: $12.50. Total due: $57.50."
+
+async def extract(text: str) -> Result[Invoice, LlmError] uses llm:
+    req = LlmRequest(
+        model="",
+        system="Extract the invoice. Amounts are integers in cents. Dates are YYYY-MM-DD.",
+        messages=[Message(role="user", content=text)],
+        max_tokens=1024
+    )
+    return await llm_generate[Invoice](req)
+
+async def main() -> None uses io, llm:
+    match await extract(invoice_text()):
+        case Ok(inv):
+            print("vendor: " + inv.vendor)
+            print("due: " + inv.due_date)
+            sum = 0
+            for item in inv.items:
+                print("- " + item.description + ": " + to_json(item.amount_cents))
+                sum = sum + item.amount_cents
+            if sum == inv.total_cents:
+                print("total: " + to_json(inv.total_cents) + " (matches the items)")
+            else:
+                print("total: " + to_json(inv.total_cents) + " (items add up to " + to_json(sum) + ")")
+        case Err(e):
+            print("error " + e.kind + ": " + e.message)

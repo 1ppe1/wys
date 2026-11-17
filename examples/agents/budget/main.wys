@@ -1,0 +1,33 @@
+# 予算: agent が使える LLM の呼び出しとツールの呼び出しの回数を、ランタイムが数えて止める。
+# モデルがツールを呼び続けても、上限を超えたところで Err(kind="budget") になる（プロンプトでの指示に頼らない）。
+#
+#   WYS_LLM_PROVIDER=anthropic WYS_LLM_MODEL=<モデル名> wys run examples/agents/budget/main.wys
+#   WYS_LLM_PROVIDER=replay:examples/agents/budget/recording.jsonl wys run examples/agents/budget/main.wys
+type Answer = {city: str, population: int}
+
+@tool(description="Look up a fact about a city. Returns a short sentence.")
+def lookup(city: str) -> str uses pure:
+    return city + " is a city."
+
+@agent(tools=[lookup], capabilities=["llm"], max_llm_calls=3, max_tool_calls=2)
+async def researcher(question: str) -> Result[Answer, LlmError] uses llm:
+    req = LlmRequest(
+        model="",
+        system="Answer with the tools. Call lookup as often as you need.",
+        messages=[Message(role="user", content=question)],
+        max_tokens=1024
+    )
+    return await llm_generate[Answer](req)
+
+async def main() -> None uses io, llm:
+    match await researcher("What is the population of Springfield? Check every Springfield."):
+        case Ok(a):
+            print(a.city + ": " + to_json(a.population))
+        case Err(e):
+            print("stopped: " + e.kind)
+    for ev in audit_events():
+        match ev.tool:
+            case str():
+                print(to_json(ev.seq) + " " + ev.kind + " " + ev.tool)
+            case None:
+                print(to_json(ev.seq) + " " + ev.kind)
