@@ -2647,3 +2647,43 @@ fn oversized_provider_replies_are_refused() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `examples/agents/<name>/main.wys` を、同じディレクトリの `recording.jsonl` の再生で実行する。
+/// 記録はテスト用のプロバイダ（`fake_provider.sh`）で作ったもので、実際のモデルの出力ではない。
+fn run_agent_example(name: &str) -> String {
+    let dir = format!(
+        "{}/../../examples/agents/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let provider = format!("replay:{dir}/recording.jsonl");
+    let out = cli_env(
+        &["run", &format!("{dir}/main.wys")],
+        &[
+            ("WYS_LLM_PROVIDER", provider.as_str()),
+            ("WYS_VIRTUAL_TIME", "1"),
+        ],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn agent_example_extract_validates_the_typed_output() {
+    assert_eq!(
+        run_agent_example("extract"),
+        "vendor: Northwind Paper Co.\ndue: 2026-12-15\n- A4 paper, 3 boxes: 4500\n- Delivery: 1250\ntotal: 5750 (matches the items)\n"
+    );
+}
+
+#[test]
+fn agent_example_budget_stops_the_agent() {
+    assert_eq!(
+        run_agent_example("budget"),
+        "stopped: budget\n0 llm_called\n1 tool_called lookup\n2 llm_called\n3 tool_called lookup\n4 llm_called\n5 budget_exceeded lookup\n"
+    );
+}
