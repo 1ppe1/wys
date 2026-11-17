@@ -226,7 +226,7 @@ fn all_diagnostics_match_schema() {
     assert!(checked > 40, "too few cases checked: {checked}");
 }
 
-/// 利用者向けの文書（`docs/guide/*.md`）のコードブロックを、Conformance のケースと同じ方法で検査する（公開準備 T8）。
+/// 利用者向けの文書（`docs/guide/*.md`、英訳の `docs/en/*.md`、README）のコードブロックを、Conformance のケースと同じ方法で検査する（公開準備 T8）。
 ///
 /// - 情報文字列が `wys` のブロック: 書かれた `# expect-stdout:` / `# expect-error:` などの期待どおりに動き、
 ///   `wys fmt` の結果と一致する（文書の例が実装とずれない）
@@ -235,13 +235,19 @@ fn all_diagnostics_match_schema() {
 #[test]
 fn guide_code_blocks_run() {
     let root = repo_root();
-    let dir = root.join("docs/guide");
-    let mut pages: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
-        .unwrap_or_default();
-    pages.retain(|p| p.extension().is_some_and(|e| e == "md"));
-    pages.sort();
-    assert!(!pages.is_empty(), "no pages under docs/guide");
+    // 英訳（`docs/en/`、ADR-0031）と README のコード例も同じ検査にかける
+    let mut pages: Vec<PathBuf> = Vec::new();
+    for dir in ["docs/guide", "docs/en"] {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(root.join(dir))
+            .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
+            .unwrap_or_default();
+        found.retain(|p| p.extension().is_some_and(|e| e == "md"));
+        found.sort();
+        assert!(!found.is_empty(), "no pages under {dir}");
+        pages.extend(found);
+    }
+    pages.push(root.join("README.md"));
+    pages.push(root.join("README.ja.md"));
     let (rt, py) = runtime_libs();
     let opts = BuildOptions {
         runtime_lib: Some(rt),

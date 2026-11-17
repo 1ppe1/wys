@@ -84,3 +84,27 @@
 | 安定性の段階 | 公開する面（構文、エラーコード、診断の JSON、プロトコル、CLI、内部）ごとに、変わり得る度合いと約束を分けた表 | ADR-0029 |
 | Tier | 対象環境の支援の水準。Tier 1 はすべての CI を回す環境、Tier 2 は版ごとに CI を回す環境 | ADR-0029、NFR-006 |
 | 配布物 | リリースのアーカイブ（`bin/` のコンパイラ、`lib/` のランタイム、ライセンス）。`SHA256SUMS` を添える | ADR-0030 |
+
+## 英訳で使う対訳（ADR-0031）
+
+`docs/en/` と `README.md` の英訳は、次の対訳に揃える。
+
+| 日本語 | 英語 |
+|---|---|
+| 権限（Capability） | capability |
+| 承認 | approval |
+| 予算 | budget |
+| 監査イベント / 監査ログ | audit event |
+| トレース | trace / tracing |
+| 記録と再生 | record and replay |
+| 評価ケース | evaluation case |
+| 絞り込み | narrowing |
+| レコード | record |
+| 構造的 / 名目的 | structural / nominal |
+| 網羅性検査 | exhaustiveness checking |
+| 診断 | diagnostic |
+| 配布物 | release (archive) |
+| 対象環境 | supported platform |
+| 保証すること / しないこと | what is guaranteed / not guaranteed |
+| 本文（プロンプト・応答） | content |
+| ランタイムが強制する | enforced by the runtime |

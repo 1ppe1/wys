@@ -9,7 +9,8 @@
 配布物から入れる（ADR-0030。SHA-256 を確かめてから展開する）:
 
 ```sh
-scripts/install.sh --prefix "$HOME/.local"          # GitHub Releases の最新
+curl -fsSL https://raw.githubusercontent.com/1ppe1/wys/main/scripts/install.sh | sh    # GitHub Releases の最新を ~/.local に
+scripts/install.sh --prefix "$HOME/.local"          # 同じことを、手元のリポジトリから
 scripts/install.sh --from-archive wys-0.1.0-aarch64-apple-darwin.tar.gz   # 手元のアーカイブ
 ```
 

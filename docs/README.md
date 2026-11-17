@@ -16,6 +16,7 @@
 | [guide/ai-sdk.md](guide/ai-sdk.md) | 公開準備 | 利用者向けの AI SDK（型付きの出力、ツールと agent、権限と予算、実プロバイダ、記録と再生） |
 | [guide/python.md](guide/python.md) | 公開準備 | 利用者向けの Python との連携 |
 | [guide/reference.md](guide/reference.md) | 公開準備 | リファレンス v0.1（コマンド、型、組み込み、環境変数、診断） |
+| [en/](en/) | 0.1.x | 利用者向けの入口の英訳（`getting-started.md`、`ai-sdk.md`、`security.md`、`stability.md`）。日本語が正（ADR-0031 案）。元の文書とのずれは `scripts/check-translations.sh` が警告する |
 | [stability.md](stability.md) | 公開準備 | 版（SemVer 0.y.z）・安定性の段階・対象環境・サポート期間・失敗したときの挙動（NFR-006〜008、ADR-0029） |
 | [third-party-licenses.md](third-party-licenses.md) | 公開準備 | 依存クレートのライセンスの一覧（`scripts/third-party-licenses.py` が作る。ADR-0028） |
 | [security.md](security.md) | 公開準備 | セキュリティの保証範囲・範囲外・脅威モデル（NFR-001 / NFR-005、AC-007）。T11 の見直しの記録 |

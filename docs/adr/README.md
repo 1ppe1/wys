@@ -44,6 +44,7 @@
 | [0028](0028-license-governance-and-security-reporting.md) | ライセンス（MIT OR Apache-2.0）・ガバナンス・貢献（DCO）・脆弱性の報告 | Accepted | 2026-11-11 |
 | [0029](0029-versioning-stability-and-support.md) | 版（SemVer 0.y.z）・安定性の段階・互換性の範囲・サポート期間 | Accepted | 2026-11-11 |
 | [0030](0030-distribution-and-release-process.md) | 配布（GitHub Releases、`bin/` + `lib/`、SHA-256）とリリースの手順 | Accepted | 2026-11-11 |
+| [0031](0031-documentation-languages.md) | 文書の言語（日本語を正とし、利用者向けの入口に英訳を置く） | Proposed | 2026-11-17 |
 
 ## 未決定事項との対応
 

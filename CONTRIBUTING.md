@@ -2,7 +2,7 @@
 
 `wys` への貢献を歓迎する。文書と議論は日本語が正だが、英語の issue と PR も受け付ける。
 
-Contributions are welcome. Japanese is the primary language of the docs, but issues and PRs in English are fine.
+Contributions are welcome. Japanese is the primary language of the docs, but issues and PRs in English are fine. English translations of the user-facing documents are in [docs/en/](docs/en/); if they disagree with the Japanese, the Japanese is correct.
 
 ## 進め方
 

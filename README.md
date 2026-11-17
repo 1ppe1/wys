@@ -1,17 +1,59 @@
-# wys — AIネイティブ次世代プログラミング言語
+# wys
 
-`wys` は、人間と AI の双方が安全に開発できることを目指す、静的型付きのコンパイル言語。Python に近い書き方で、型を検査してから単独の Native 実行ファイルを作る。LLM の呼び出しとツールを使うエージェントを標準の関数とデコレータで書け、権限・承認・予算は**ランタイムが強制する**（プロンプトでの指示に頼らない）。
+[日本語](README.ja.md)
 
-> **現在のステータス:** 最初の公開版 [0.1.0](https://github.com/1ppe1/wys/releases/tag/v0.1.0) を公開（Phase 2 の AI ネイティブ MVP まで）。0.y の間は構文・組み込み・CLI が予告なく変わり得る（[安定性と互換性](docs/stability.md)）。
+`wys` is a statically typed, compiled language for writing programs that call LLMs and run tool-using agents. It reads much like Python, is type-checked ahead of time, and builds a standalone native executable. LLM calls and agents are written with ordinary functions and decorators from the standard SDK, and capabilities, approvals, and budgets are **enforced by the runtime**, not by instructions in a prompt.
 
-## 特徴
+> **Status:** the first public release, [0.1.0](https://github.com/1ppe1/wys/releases/tag/v0.1.0), is out. While the version is 0.y, syntax, builtins, and the CLI can change without notice ([stability and compatibility](docs/en/stability.md)).
 
-- **型安全:** 型注釈と推論、`T | None` の絞り込み、レコード（構造的）、Generics、`match` の網羅性検査、`Result[T, E]` と `?`。外から来る値は `Unknown` で、`validate[T]` で検証するまで使えない。
-- **Native 実行:** LLVM IR を生成し clang でリンクする。ランタイムを静的リンクした単独の実行ファイルになる。メモリは参照カウント（ARC）と Move 最適化。
-- **AI SDK:** 型付きの `llm_generate[T]`、`@tool` / `@agent`、Capability・承認・予算のランタイム強制、監査ログ、トレース、記録と再生、評価ケース（`wys eval`）。
-- **連携と道具:** CPython の埋め込み、`async` / `await`、`wys fmt` / `wys test` / `wys explain`、機械向けの JSON 診断、LSP（`wys lsp`）。
+## The runtime says no
 
-## 例
+Mark a tool with `approval="required"`. When the model asks to call it, the runtime does not run it unless the call is approved. From [`examples/agent_demo.wys`](examples/agent_demo.wys):
+
+```wys fragment
+@tool(description="Save a note to disk.", approval="required")
+def save_note(title: str) -> None uses io:
+    print("saved " + title)
+```
+
+The default policy is to deny. The model (a mock in this example) asks for `save_note`, the tool does not run, and the attempt is recorded as an audit event:
+
+```console
+$ wys run examples/agent_demo.wys
+notes: 25 chars, saved=false
+0 llm_called
+1 tool_called char_count
+2 llm_called
+3 approval_requested save_note
+4 approval_denied save_note
+5 llm_called
+```
+
+Allow it with `WYS_APPROVAL=allow`, and the tool runs:
+
+```console
+$ WYS_APPROVAL=allow wys run examples/agent_demo.wys
+saved notes
+notes: 25 chars, saved=false
+0 llm_called
+1 tool_called char_count
+2 llm_called
+3 approval_requested save_note
+4 approval_granted save_note
+5 tool_called save_note
+6 llm_called
+```
+
+What is and is not guaranteed is spelled out in [Security](docs/en/security.md).
+
+## Features
+
+- **Types:** annotations with inference, narrowing of `T | None`, structural records, generics, exhaustiveness checking for `match`, and `Result[T, E]` with `?`. Values that come from outside are `Unknown` and cannot be used until checked with `validate[T]`.
+- **Native executables:** the compiler emits LLVM IR and links with clang. The runtime is linked statically, so the output is a single executable. Memory is managed with reference counting (ARC) and a move optimization.
+- **AI SDK:** typed `llm_generate[T]`, `@tool` / `@agent`, runtime enforcement of capabilities, approvals, and budgets, audit events, tracing, record and replay, and evaluation cases (`wys eval`).
+- **Interop and tooling:** embedded CPython, `async` / `await`, `wys fmt` / `wys test` / `wys explain`, machine-readable JSON diagnostics, and a language server (`wys lsp`).
+
+## A small example
 
 ```wys
 type Point = {x: int, y: int}
@@ -27,62 +69,70 @@ def main() -> None:
     print(describe(None))
 ```
 
-型の誤りはコンパイル時に見つかる（`wys check --format json` で機械向けの診断）。
+Type errors are found at compile time. `wys check --format json` prints diagnostics for tools and AI agents to read.
 
-## インストール
+## Install
 
-対象環境は macOS arm64 と Linux x86_64（ADR-0029）。Windows は対象外。前提は `clang`（リンクに使う）。
+Supported platforms are macOS arm64 and Linux x86_64. Windows is not supported. You need `clang`, which `wys` uses to link.
 
-配布物から入れる（[Release](https://github.com/1ppe1/wys/releases/latest) の最新版を取ってきて、SHA-256 を確かめてから展開する。ADR-0030）:
+Install the latest release. The script downloads the archive from [Releases](https://github.com/1ppe1/wys/releases/latest), verifies its SHA-256, and unpacks it under `~/.local`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/1ppe1/wys/main/scripts/install.sh | sh
+```
+
+Pass `--prefix <dir>` or `--version <version>` after `sh -s --` to change where and what it installs.
+
+The macOS binary is not notarized. If Gatekeeper blocks it, run `xattr -d com.apple.quarantine "$HOME/.local/bin/wys"`.
+
+Or build from source (the Rust toolchain is pinned in `rust-toolchain.toml`):
 
 ```sh
 git clone https://github.com/1ppe1/wys.git && cd wys
-scripts/install.sh --prefix "$HOME/.local"
-```
-
-macOS のバイナリは公証していないので、Gatekeeper に止められたら `xattr -d com.apple.quarantine "$HOME/.local/bin/wys"`。
-
-ソースから作る（Rust のツールチェーンは `rust-toolchain.toml` で固定）:
-
-```sh
 cargo build --release
 target/release/wys --version
 target/release/wys run examples/hello.wys
-target/release/wys run examples/agent_demo.wys   # @tool / @agent（既定のプロバイダはモック。ネットワークに出ない）
+target/release/wys run examples/agent_demo.wys   # @tool / @agent; the default provider is a mock and does not use the network
 ```
 
-## ドキュメント
+## Documentation
 
-| ドキュメント | 内容 |
+| Document | Contents |
 |---|---|
-| [入門](docs/guide/getting-started.md) | インストールから、型・`None`・`Result`・テスト・非同期まで |
-| [AI SDK](docs/guide/ai-sdk.md) | 型付きの LLM 呼び出し、ツールと agent、権限・承認・予算 |
-| [Python との連携](docs/guide/python.md) | CPython の埋め込み |
-| [リファレンス](docs/guide/reference.md) | コマンド、組み込み、環境変数、エラーコード |
-| [セキュリティ](docs/security.md) | 保証すること・しないこと |
-| [ベンチマーク](docs/benchmarks.md) | 計測の方法と結果（絶対値と計測環境だけ） |
-| [文書の索引](docs/README.md) | 要件定義書、設計、ADR、計画などすべての文書 |
+| [Getting started](docs/en/getting-started.md) | From installation to types, `None`, `Result`, tests, and async |
+| [AI SDK](docs/en/ai-sdk.md) | Typed LLM calls, tools and agents, capabilities, approvals, and budgets |
+| [Security](docs/en/security.md) | What is guaranteed and what is not |
+| [Stability and compatibility](docs/en/stability.md) | What can change while the version is 0.y |
 
-## ロードマップ
+The documents above are translations. Japanese is the source of truth, and the rest of the documentation is in Japanese only:
 
-| フェーズ | 内容 | 状態 |
+| Document (Japanese) | Contents |
+|---|---|
+| [Python interop](docs/guide/python.md) | Embedding CPython |
+| [Reference](docs/guide/reference.md) | Commands, builtins, environment variables, and error codes |
+| [Benchmarks](docs/benchmarks.md) | Method and results (absolute numbers and the measurement environment only) |
+| [Index](docs/README.md) | Requirements, design, ADRs, plans, and everything else |
+
+## Roadmap
+
+| Phase | Contents | State |
 |---|---|---|
-| Phase 1 | 言語・Native の MVP（型検査、単独の実行ファイル、テスト） | 完了 |
-| Phase 2 | AI ネイティブ MVP（型付きの LLM 出力、権限拒否、予算超過の検証） | 完了 |
-| Phase 3 | 高性能・広域展開（SIMD・並列、Wasm、GPU、パッケージ管理） | 未着手 |
+| Phase 1 | Language and native MVP (type checking, standalone executables, tests) | Done |
+| Phase 2 | AI-native MVP (typed LLM output, capability denial, budget enforcement) | Done |
+| Phase 3 | Performance and reach (SIMD and parallelism, Wasm, GPU, package management) | Not started |
 
-詳細は [docs/roadmap.md](docs/roadmap.md) と要件定義書の「7. 優先順位とフェーズ」。
+Details are in [docs/roadmap.md](docs/roadmap.md) (Japanese).
 
-## 開発
+## Development
 
 ```sh
-./scripts/ci.sh   # fmt・clippy・テスト・Conformance（Debug / Release / AddressSanitizer）など、CI と同じ検査
+./scripts/ci.sh   # fmt, clippy, tests, and conformance (Debug / Release / AddressSanitizer): the same checks as CI
 ```
 
-設計判断は [ADR](docs/adr/README.md) に記録する。AI エージェント（Claude Code）向けの指示は [CLAUDE.md](CLAUDE.md)。
+Design decisions are recorded as [ADRs](docs/adr/README.md) (Japanese). Instructions for AI agents (Claude Code) are in [CLAUDE.md](CLAUDE.md).
 
-## ライセンス
+## License
 
-[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE) の二重ライセンス（利用者が選べる。ADR-0028）。Copyright (c) 2026 1ppe1。依存クレートのライセンスは [docs/third-party-licenses.md](docs/third-party-licenses.md)。
+Dual-licensed under [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE), at your option. Copyright (c) 2026 1ppe1. Licenses of the dependencies are listed in [docs/third-party-licenses.md](docs/third-party-licenses.md).
 
-貢献の手順は [CONTRIBUTING.md](CONTRIBUTING.md)、行動規範は [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)、脆弱性の報告は [SECURITY.md](SECURITY.md)、変更履歴は [CHANGELOG.md](CHANGELOG.md)。
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute, [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for the code of conduct, [SECURITY.md](SECURITY.md) for reporting vulnerabilities, and [CHANGELOG.md](CHANGELOG.md) for the history of changes.
