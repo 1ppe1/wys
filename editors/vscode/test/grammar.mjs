@@ -69,6 +69,43 @@ expectScope("    y = parse_digit(b)?", "?", "keyword.operator.try");
 expectScope("    f = 1.5e3", "1.5e3", "constant.numeric.float");
 expectScope("    n: int | None = None", "|", "keyword.operator.union");
 
+// The Markdown injection: a wys code block opens with ``` or ~~~ (3 or more), and closes with a fence
+// of the same character that is at least as long (CommonMark). The end pattern refers to the begin
+// captures, so substitute them the way vscode-textmate does before matching.
+const md = JSON.parse(readFileSync(join(here, "..", "syntaxes", "markdown-wys.tmLanguage.json"), "utf8"));
+const fence = md.patterns[0];
+function firstMatch(pattern, line) {
+  const scanner = new oniguruma.OnigScanner([pattern]);
+  const m = scanner.findNextMatchSync(new oniguruma.OnigString(line), 0);
+  return m ? m.captureIndices.map((c) => line.slice(c.start, c.end)) : null;
+}
+function closes(open, close) {
+  const b = firstMatch(fence.begin, open);
+  if (!b) {
+    return null;
+  }
+  const end = fence.end.replace(/\\(\d+)/g, (_, n) => (b[Number(n)] ?? "").replace(/[`~]/g, (c) => "\\" + c));
+  return firstMatch(end, close) !== null;
+}
+for (const [open, close, want] of [
+  ["```wys", "```", true],
+  ["```wys", "````", true],
+  ["````wys fragment", "````", true],
+  ["````wys", "```", false],
+  ["~~~wys", "~~~~", true],
+  ["```wys", "~~~", false],
+]) {
+  const got = closes(open, close);
+  if (got !== want) {
+    console.error(`FAIL fence ${JSON.stringify(open)} closed by ${JSON.stringify(close)}: want ${want}, got ${got}`);
+    failures++;
+  }
+}
+if (firstMatch(fence.begin, "```python") !== null) {
+  console.error("FAIL a python block must not open a wys block");
+  failures++;
+}
+
 // Every example tokenizes, and no line ends inside an unterminated string.
 const examples = join(root, "examples");
 let files = 0;
